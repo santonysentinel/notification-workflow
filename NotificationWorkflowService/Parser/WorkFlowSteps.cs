@@ -1,0 +1,2771 @@
+﻿namespace ActiveAlarmsParser
+{
+    using log4net;
+    using System;
+    using System.Collections.Generic;
+    using System.Data;
+    using System.Data.SqlClient;
+    using System.Globalization;
+    using System.Linq;
+    using System.Text;
+    using System.Threading;
+    using static System.Runtime.InteropServices.JavaScript.JSType;
+
+    /// <summary>
+    /// Defines the <see cref="StepParser" />.
+    /// </summary>
+    internal class WorkFlowSteps
+    {
+        /// <summary>
+        /// Defines the log.
+        /// </summary>
+        private static readonly ILog log = LogManager.GetLogger(typeof(Parser));
+
+        /// <summary>
+        /// Defines the activeProfiles.
+        /// </summary>
+        internal Dictionary<int, Profile> activeProfiles = new Dictionary<int, Profile>();
+
+        /// <summary>
+        /// Defines the activeHolidays.
+        /// </summary>
+        internal Dictionary<String, List<Holiday>> activeHolidays = new Dictionary<String, List<Holiday>>();
+
+        /// <summary>
+        /// Defines the roles.
+        /// </summary>
+        internal Dictionary<String, String> roles = new Dictionary<String, String>();
+
+        /// <summary>
+        /// Defines the victims.
+        /// </summary>
+        internal Dictionary<String, List<Victim>> victims = new Dictionary<String, List<Victim>>();
+
+        /// <summary>
+        /// Defines the clientProfileMapping.
+        /// </summary>
+        internal Dictionary<String, int> clientProfileMapping = new Dictionary<String, int>();
+
+        /// <summary>
+        /// Defines the clientHolidayProfileMapping.
+        /// </summary>
+        internal Dictionary<String, int> clientHolidayProfileMapping = new Dictionary<String, int>();
+
+        /// <summary>
+        /// Defines the activeAlarms.
+        /// </summary>
+        internal List<ActiveAlarm> activeAlarms = new List<ActiveAlarm>();
+
+        /// <summary>
+        /// Defines the AlarmsDatabase.
+        /// </summary>
+        private String AlarmsDatabase = "";
+
+        /// <summary>
+        /// Defines the platForm.
+        /// </summary>
+        private String platForm = "";
+
+        /// <summary>
+        /// Defines the READ_POGROUP_HOLIDAYS.
+        /// </summary>
+        private readonly string READ_POGROUP_HOLIDAYS = "ActiveAlarms_ReadGroupHolidays";
+
+        /// <summary>
+        /// Defines the MCAPP_CREATEAUDIT.
+        /// </summary>
+        private readonly string MCAPP_CREATEAUDIT = "mcapp_CreateAudit";
+
+        /// <summary>
+        /// Defines the INSERT_MCAPP.
+        /// </summary>
+        private readonly string INSERT_MCAPP = "ActiveAlarms_InsertIntoMCAPP";
+
+        /// <summary>
+        /// Defines the INSERT_NOTIFICATIONQUEUE.
+        /// </summary>
+        private readonly string INSERT_NOTIFICATIONQUEUE = "ActiveAlarms_InsertIntoNotificationQueue";
+
+        /// <summary>
+        /// Defines the INSERT_INTO_HISTORY.
+        /// </summary>
+        private readonly string INSERT_INTO_HISTORY = "ActiveAlarms_InsertIntoHistory";
+
+        /// <summary>
+        /// Defines the READ_AUDIT_HISTORY_EMAILS.
+        /// </summary>
+        private readonly string READ_AUDIT_HISTORY_EMAILS = "ActiveAlarms_ReadAuditEmails";
+
+        /// <summary>
+        /// Defines the INSERT_INTO_CURRENT_NOTIFICATION_STATE.
+        /// </summary>
+        private readonly string INSERT_INTO_CURRENT_NOTIFICATION_STATE = "ActiveAlarms_InsertIntoCNotificationState";
+
+        /// <summary>
+        /// Defines the REMOVE_EXPIRED_NOTIFICATION_ALARMS.
+        /// </summary>
+        private readonly string REMOVE_EXPIRED_NOTIFICATION_ALARMS = "ActiveAlarms_RemoveExpiredNotificationAlarms";
+
+        /// <summary>
+        /// Defines the INSERT_INTO_ALARM_NOTIFICATION.
+        /// </summary>
+        private readonly string INSERT_INTO_ALARM_NOTIFICATION = "ActiveAlarms_InsertIntoAlarmNotification";
+
+        /// <summary>
+        /// Defines the READ_ROLES.
+        /// </summary>
+        private readonly string READ_ROLES = "ActiveAlarms_ReadRoles";
+
+        /// <summary>
+        /// Defines the GET_ROLES.
+        /// </summary>
+        private readonly string GET_ROLES = "spGetListPOGroupRoles";
+
+        /// <summary>
+        /// Defines the READ_VICTIMS_EMAIL.
+        /// </summary>
+        private readonly string READ_VICTIMS_EMAIL = "ActiveAlarms_ReadVictimsEmail";
+
+        /// <summary>
+        /// Defines the GET_CIENT_PROFILE.
+        /// </summary>
+        private readonly string GET_CIENT_PROFILE = "ActiveAlarms_GetClientProfile";
+
+        /// <summary>
+        /// Defines the READ_PROFILE_ITEMS.
+        /// </summary>
+        private readonly string READ_PROFILE_ITEMS = "ActiveAlarms_ReadProfileItems";
+
+        /// <summary>
+        /// Defines the READ_CLIENT_EMAIL.
+        /// </summary>
+        private readonly string READ_CLIENT_EMAIL = "ActiveAlarms_ClientEmails";
+
+        /// <summary>
+        /// Defines the READ_CLIENT_TEXT.
+        /// </summary>
+        private readonly string READ_CLIENT_TEXT = "ActiveAlarms_ClientCell";
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="StepParser"/> class.
+        /// </summary>
+        /// <param name="connection">The connection<see cref="String"/>.</param>
+        public StepParser(string connection)
+        {
+            setUpConnnectionStrings(connection);
+        }
+
+        /// <summary>
+        /// Performs the necessary preliminary steps to set up the parser - is ran at runtime, and periodically to refresh
+        /// the updated parser state.
+        /// </summary>
+        /// <param name="platform">The platform<see cref="String"/>.</param>
+        /// <returns>The <see cref="bool"/>.</returns>
+        public bool setUpParser(string platform)
+        {
+            log4net.Config.XmlConfigurator.Configure();
+            platForm = platform;
+
+            if (!FetchClientProfile(0))
+            {
+                return false;
+            }
+
+            if (!FetchClientProfile(1))
+            {
+                return false;
+            }
+
+            if (!readAllProfiles())
+            {
+                return false;
+            }
+
+            if (!readAllHolidays())
+            {
+                return false;
+            }
+
+            if (!readAllRoles())
+            {
+                return false;
+            }
+
+            if (!readVictims())
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Reads the connection Strings in the App.config file.
+        /// </summary>
+        /// <param name="connection">The connection<see cref="String"/>.</param>
+        private void setUpConnnectionStrings(string connection)
+        {
+            AlarmsDatabase = connection;
+        }
+
+        /// <summary>
+        /// Creates in memory a full dictionary of all the client profiles which is used to map OID to profile ID.
+        /// </summary>
+        /// <param name="profileType">The profileType<see cref="int"/>.</param>
+        /// <returns>The <see cref="bool"/>.</returns>
+        private bool FetchClientProfile(int profileType)
+        {
+            bool success = true;
+            Console.ForegroundColor = ConsoleColor.White;
+            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " Refreshing Client Profiles");
+            if (profileType == 0)
+            {
+                clientProfileMapping = new Dictionary<String, int>();
+            }
+            else if (profileType == 1)
+            {
+                clientHolidayProfileMapping = new Dictionary<String, int>();
+            }
+            //Create a connection to the SQL Server;
+            string ConnectionString = AlarmsDatabase;
+
+            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            {
+                try
+                {
+                    using (SqlCommand cmd = new SqlCommand())
+                    {
+                        // Specify which stored procedure the SqlCommand will execute
+                        cmd.CommandText = GET_CIENT_PROFILE;
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        cmd.Connection = MyConnection;
+
+                        cmd.Parameters.Add("@HolidayProfile", SqlDbType.Int);
+
+                        cmd.Parameters["@HolidayProfile"].Value = profileType;
+
+                        int retries = 5;
+                        while (retries > 0)
+                        {
+                            try
+                            {
+                                MyConnection.Open();
+                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+
+                                while (MyDataReader.Read())
+                                {
+                                    if (profileType == 0)
+                                    {
+                                        if (!clientProfileMapping.ContainsKey(MyDataReader["OID"].ToString()))
+                                        {
+                                            clientProfileMapping.Add(MyDataReader["OID"].ToString(), Convert.ToInt32(MyDataReader["ProfileID"]));
+                                        }
+                                    }
+                                    if (profileType == 1)
+                                    {
+                                        if (!clientHolidayProfileMapping.ContainsKey(MyDataReader["OID"].ToString()))
+                                        {
+                                            clientHolidayProfileMapping.Add(MyDataReader["OID"].ToString(), Convert.ToInt32(MyDataReader["ProfileID"]));
+                                        }
+                                    }
+                                }
+                                success = true;
+                                break;
+                            }
+                            catch (SqlException ex)
+                            {
+                                success = false;
+                                log.Error("[" + platForm + "] " + "SQLException on FetchClientProfile in Parser ", ex);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on FetchClientProfile in Parser " + ex);
+                                if (ex.ErrorCode.Equals(1205) ||
+                                   ex.Message.ToLower().Contains("deadlock"))
+                                {
+                                    if (retries > 0)
+                                    {
+                                        retries--;
+                                        Thread.Sleep(10000);
+                                    }
+                                    else
+                                    {
+                                        throw ex;
+
+                                    }
+                                }
+                            }
+                            catch (Exception exc)
+                            {
+                                success = false;
+                                log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE CLIENT PROFILES ", exc);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE CLIENT PROFILES " + exc);
+                                if (retries > 0)
+                                {
+                                    retries--;
+                                    Thread.Sleep(10000);
+                                }
+                                else
+                                {
+                                    throw exc;
+                                }
+                            }
+
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    success = false;
+                    log.Info("[" + platForm + "] " + "FAILED TO RETRIEVE CLIENT PROFILES " + e);
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE CLIENT PROFILES " + e);
+                }
+            }
+
+            return success;
+        }
+
+        /// <summary>
+        /// Creates in memory a full dictionary of all the active profiles that the active alarms are used against.
+        /// </summary>
+        /// <returns>The <see cref="bool"/>.</returns>
+        private bool readAllProfiles()
+        {
+            bool success = true;
+            Console.ForegroundColor = ConsoleColor.White;
+            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " Refreshing Client Profiles");
+            activeProfiles = new Dictionary<int, Profile>();
+
+            //Create a connection to the SQL Server;
+            string ConnectionString = AlarmsDatabase;
+
+            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            {
+                try
+                {
+                    using (SqlCommand cmd = new SqlCommand())
+                    {
+                        // Specify which stored procedure the SqlCommand will execute
+                        cmd.CommandText = READ_PROFILE_ITEMS;
+                        cmd.CommandTimeout = 0;
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        cmd.Connection = MyConnection;
+
+                        int retries = 5;
+                        while (retries > 0)
+                        {
+                            try
+                            {
+                                MyConnection.Open();
+                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+
+                                while (MyDataReader.Read())
+                                {
+                                    int ProfileID = (int)MyDataReader["ProfileID"];
+                                    String ProfileName = MyDataReader["ProfileName"].ToString();
+                                    int currentDay = Convert.ToInt32(MyDataReader["Day"].ToString());
+                                    String currentEvent = MyDataReader["EventCode"].ToString();
+
+                                    if (!activeProfiles.ContainsKey(ProfileID))
+                                    {
+                                        Dictionary<String, Dictionary<int, List<ProfileItem>>> profileEvents = new Dictionary<String, Dictionary<int, List<ProfileItem>>>();
+                                        Dictionary<int, List<ProfileItem>> dayEvents = new Dictionary<int, List<ProfileItem>>();
+                                        List<ProfileItem> profileItems = new List<ProfileItem>();
+
+
+                                        ProfileItem pi = new ProfileItem()
+                                        {
+                                            ProfileID = ProfileID,
+                                            EventCode = currentEvent,
+                                            StartTime = DateTime.ParseExact(MyDataReader["StartTime"].ToString(), "HH:mm:ss", CultureInfo.InvariantCulture),
+                                            EndTime = DateTime.ParseExact(MyDataReader["EndTime"].ToString(), "HH:mm:ss", CultureInfo.InvariantCulture),
+                                            Day = currentDay,
+                                            Action = Convert.ToInt32(MyDataReader["Action"]),
+                                            HoldDuration = (int)MyDataReader["HoldDuration"],
+                                            GracePeriod = (int)MyDataReader["GracePeriod"],
+                                            Instruction = MyDataReader["Instruction"].ToString(),
+                                            Email = MyDataReader["EmailAddress"].ToString(),
+                                            EmailJoin = Convert.ToInt32(MyDataReader["EmailJoin"]),
+                                            StateNo = Convert.ToInt32(MyDataReader["StateNo"]),
+                                            StateTime = (int)MyDataReader["StateTime"],
+                                            FeedBackRequired = Convert.ToBoolean(MyDataReader["FeedbackRequired"]),
+                                            ProfileType = (int)MyDataReader["ProfileType"],
+                                            TimeIntervalsID = (int)MyDataReader["TimeIntervalsID"],
+                                            NextState = Convert.ToInt32(MyDataReader["NextState"]),
+                                            LoopStartState = Convert.ToInt32(MyDataReader["LoopStartState"]),
+                                            NumberOfLoops = Convert.ToInt32(MyDataReader["NumberOfLoops"]),
+                                            RoleID = Convert.ToInt32(MyDataReader["RoleID"]),
+                                            RoleAction = Convert.ToInt32(MyDataReader["RoleAction"])
+                                        };
+                                        profileItems.Add(pi);
+                                        dayEvents.Add(currentDay, profileItems);
+                                        profileEvents.Add(currentEvent, dayEvents);
+
+                                        Profile p = new Profile()
+                                        {
+                                            ProfileID = ProfileID,
+                                            ProfileName = ProfileName,
+                                            Events = profileEvents
+                                        };
+
+                                        activeProfiles.Add(ProfileID, p);
+                                    }
+                                    else
+                                    {
+                                        Profile p = activeProfiles[ProfileID];
+
+                                        Dictionary<String, Dictionary<int, List<ProfileItem>>> profileEvents = p.Events;
+
+                                        if (!profileEvents.ContainsKey(currentEvent))
+                                        {
+                                            Dictionary<int, List<ProfileItem>> dayEvents = new Dictionary<int, List<ProfileItem>>();
+
+                                            List<ProfileItem> profileItems = new List<ProfileItem>();
+
+                                            ProfileItem pi = new ProfileItem()
+                                            {
+                                                ProfileID = ProfileID,
+                                                EventCode = currentEvent,
+                                                StartTime = DateTime.ParseExact(MyDataReader["StartTime"].ToString(), "HH:mm:ss", CultureInfo.InvariantCulture),
+                                                EndTime = DateTime.ParseExact(MyDataReader["EndTime"].ToString(), "HH:mm:ss", CultureInfo.InvariantCulture),
+                                                Day = currentDay,
+                                                Action = Convert.ToInt32(MyDataReader["Action"]),
+                                                HoldDuration = (int)MyDataReader["HoldDuration"],
+                                                GracePeriod = (int)MyDataReader["GracePeriod"],
+                                                Instruction = MyDataReader["Instruction"].ToString(),
+                                                Email = MyDataReader["EmailAddress"].ToString(),
+                                                EmailJoin = Convert.ToInt32(MyDataReader["EmailJoin"]),
+                                                StateNo = Convert.ToInt32(MyDataReader["StateNo"]),
+                                                StateTime = (int)MyDataReader["StateTime"],
+                                                FeedBackRequired = Convert.ToBoolean(MyDataReader["FeedbackRequired"]),
+                                                ProfileType = (int)MyDataReader["ProfileType"],
+                                                TimeIntervalsID = (int)MyDataReader["TimeIntervalsID"],
+                                                NextState = Convert.ToInt32(MyDataReader["NextState"]),
+                                                LoopStartState = Convert.ToInt32(MyDataReader["LoopStartState"]),
+                                                NumberOfLoops = Convert.ToInt32(MyDataReader["NumberOfLoops"]),
+                                                RoleID = Convert.ToInt32(MyDataReader["RoleID"]),
+                                                RoleAction = Convert.ToInt32(MyDataReader["RoleAction"]),
+                                            };
+                                            profileItems.Add(pi);
+
+                                            dayEvents.Add(currentDay, profileItems);
+
+                                            profileEvents.Add(currentEvent, dayEvents);
+                                        }
+                                        else
+                                        {
+                                            Dictionary<int, List<ProfileItem>> dayEvents = profileEvents[currentEvent];
+
+                                            if (!dayEvents.ContainsKey(currentDay))
+                                            {
+                                                List<ProfileItem> profileItems = new List<ProfileItem>();
+
+                                                ProfileItem pi = new ProfileItem()
+                                                {
+                                                    ProfileID = ProfileID,
+                                                    EventCode = currentEvent,
+                                                    StartTime = DateTime.ParseExact(MyDataReader["StartTime"].ToString(), "HH:mm:ss", CultureInfo.InvariantCulture),
+                                                    EndTime = DateTime.ParseExact(MyDataReader["EndTime"].ToString(), "HH:mm:ss", CultureInfo.InvariantCulture),
+                                                    Day = currentDay,
+                                                    Action = Convert.ToInt32(MyDataReader["Action"]),
+                                                    HoldDuration = (int)MyDataReader["HoldDuration"],
+                                                    GracePeriod = (int)MyDataReader["GracePeriod"],
+                                                    Instruction = MyDataReader["Instruction"].ToString(),
+                                                    Email = MyDataReader["EmailAddress"].ToString(),
+                                                    EmailJoin = Convert.ToInt32(MyDataReader["EmailJoin"]),
+                                                    StateNo = Convert.ToInt32(MyDataReader["StateNo"]),
+                                                    StateTime = (int)MyDataReader["StateTime"],
+                                                    FeedBackRequired = Convert.ToBoolean(MyDataReader["FeedbackRequired"]),
+                                                    ProfileType = (int)MyDataReader["ProfileType"],
+                                                    TimeIntervalsID = (int)MyDataReader["TimeIntervalsID"],
+                                                    NextState = Convert.ToInt32(MyDataReader["NextState"]),
+                                                    LoopStartState = Convert.ToInt32(MyDataReader["LoopStartState"]),
+                                                    NumberOfLoops = Convert.ToInt32(MyDataReader["NumberOfLoops"]),
+                                                    RoleID = Convert.ToInt32(MyDataReader["RoleID"]),
+                                                    RoleAction = Convert.ToInt32(MyDataReader["RoleAction"])
+                                                };
+                                                profileItems.Add(pi);
+                                                dayEvents.Add(currentDay, profileItems);
+                                            }
+                                            else
+                                            {
+                                                List<ProfileItem> profileItems = dayEvents[currentDay];
+
+                                                ProfileItem pi = new ProfileItem()
+                                                {
+                                                    ProfileID = ProfileID,
+                                                    EventCode = currentEvent,
+                                                    StartTime = DateTime.ParseExact(MyDataReader["StartTime"].ToString(), "HH:mm:ss", CultureInfo.InvariantCulture),
+                                                    EndTime = DateTime.ParseExact(MyDataReader["EndTime"].ToString(), "HH:mm:ss", CultureInfo.InvariantCulture),
+                                                    Day = currentDay,
+                                                    Action = Convert.ToInt32(MyDataReader["Action"]),
+                                                    HoldDuration = (int)MyDataReader["HoldDuration"],
+                                                    GracePeriod = (int)MyDataReader["GracePeriod"],
+                                                    Instruction = MyDataReader["Instruction"].ToString(),
+                                                    Email = MyDataReader["EmailAddress"].ToString(),
+                                                    EmailJoin = Convert.ToInt32(MyDataReader["EmailJoin"]),
+                                                    StateNo = Convert.ToInt32(MyDataReader["StateNo"]),
+                                                    StateTime = (int)MyDataReader["StateTime"],
+                                                    FeedBackRequired = Convert.ToBoolean(MyDataReader["FeedbackRequired"]),
+                                                    ProfileType = (int)MyDataReader["ProfileType"],
+                                                    TimeIntervalsID = (int)MyDataReader["TimeIntervalsID"],
+                                                    NextState = Convert.ToInt32(MyDataReader["NextState"]),
+                                                    LoopStartState = Convert.ToInt32(MyDataReader["LoopStartState"]),
+                                                    NumberOfLoops = Convert.ToInt32(MyDataReader["NumberOfLoops"]),
+                                                    RoleID = Convert.ToInt32(MyDataReader["RoleID"]),
+                                                    RoleAction = Convert.ToInt32(MyDataReader["RoleAction"])
+                                                };
+                                                profileItems.Add(pi);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                success = true;
+                                break;
+                            }
+                            catch (SqlException ex)
+                            {
+                                success = false;
+                                log.Error("[" + platForm + "] " + "SQLException on readAllProfiles in Parser ", ex);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readAllProfiles in Parser " + ex);
+                                if (ex.ErrorCode.Equals(1205) ||
+                                   ex.Message.ToLower().Contains("deadlock"))
+                                {
+                                    if (retries > 0)
+                                    {
+                                        retries--;
+                                        Thread.Sleep(10000);
+                                    }
+                                    else
+                                    {
+                                        throw ex;
+                                    }
+                                }
+
+                                //System.Environment.Exit(1);
+                            }
+                            catch (Exception exc)
+                            {
+                                success = false;
+                                log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE PROFILES ", exc);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE PROFILES IN PARSER " + exc);
+                                if (retries > 0)
+                                {
+                                    retries--;
+                                    Thread.Sleep(10000);
+                                }
+                                else
+                                {
+                                    throw exc;
+                                }
+                            }
+
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    success = false;
+                    log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE PROFILES ", e);
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE PROFILES IN PARSER " + e);
+                }
+            }
+
+            return success;
+        }
+
+        /// <summary>
+        /// Creates in memory a full dictionary of all the active profiles that the active alarms are used against.
+        /// </summary>
+        /// <returns>The <see cref="bool"/>.</returns>
+        private bool readAllHolidays()
+        {
+            bool success = true;
+            Console.ForegroundColor = ConsoleColor.White;
+            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " Refreshing PO GRoup Holidays");
+            activeHolidays = new Dictionary<String, List<Holiday>>();
+
+            //Create a connection to the SQL Server;
+            string ConnectionString = AlarmsDatabase;
+
+            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            {
+                try
+                {
+                    using (SqlCommand cmd = new SqlCommand())
+                    {
+                        // Specify which stored procedure the SqlCommand will execute
+                        cmd.CommandText = READ_POGROUP_HOLIDAYS;
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        cmd.Connection = MyConnection;
+
+                        int retries = 3;
+                        while (retries > 0)
+                        {
+                            try
+                            {
+                                MyConnection.Open();
+                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+
+                                List<Holiday> holidays = new List<Holiday>();
+                                String currentPOGroup = "";
+
+                                while (MyDataReader.Read())
+                                {
+                                    if (currentPOGroup != MyDataReader["POGroup"].ToString())
+                                    {
+                                        if (currentPOGroup != "")
+                                        {
+                                            activeHolidays.Add(currentPOGroup, holidays);
+                                            holidays = new List<Holiday>();
+                                        }
+                                        currentPOGroup = MyDataReader["POGroup"].ToString();
+                                    }
+
+                                    DateTime startDate = Convert.ToDateTime(MyDataReader["StartDate"].ToString());
+                                    DateTime endDate = Convert.ToDateTime(MyDataReader["EndDate"].ToString());
+                                    String holidayName = MyDataReader["HolidayName"].ToString();
+
+                                    Holiday h = new Holiday()
+                                    {
+                                        HolidayName = holidayName,
+                                        StartDate = startDate,
+                                        EndDate = endDate
+                                    };
+                                    holidays.Add(h);
+                                }
+
+                                if (holidays.Count > 0)
+                                {
+                                    activeHolidays.Add(currentPOGroup, holidays);
+                                }
+
+                                success = true;
+                                break;
+                            }
+                            catch (SqlException ex)
+                            {
+                                success = false;
+                                log.Error("[" + platForm + "] " + "SQLException on readAllHolidays in Parser ", ex);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readAllHolidays in Parser " + ex);
+                                if (ex.ErrorCode.Equals(1205) ||
+                                   ex.Message.ToLower().Contains("deadlock"))
+                                {
+                                    if (retries > 0)
+                                    {
+                                        retries--;
+                                        Thread.Sleep(5000);
+                                    }
+                                    else
+                                    {
+                                        throw ex;
+                                    }
+                                }
+                            }
+                            catch (Exception exc)
+                            {
+                                success = false;
+                                log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE HOLIDAYS ", exc);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE HOLIDAYS IN PARSER " + exc);
+                                if (retries > 0)
+                                {
+                                    retries--;
+                                    Thread.Sleep(5000);
+                                }
+                                else
+                                {
+                                    throw exc;
+                                }
+                            }
+
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    success = false;
+                    log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE HOLIDAYS ", e);
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE HOLIDAYS IN PARSER " + e);
+                }
+            }
+            return success;
+        }
+
+        /// <summary>
+        /// Reads in the list of all POGroup Roles.
+        /// </summary>
+        /// <returns>The <see cref="bool"/>.</returns>
+        private bool readAllRoles()
+        {
+            bool success = true;
+
+            Console.ForegroundColor = ConsoleColor.White;
+            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " Refreshing POGroup Roles");
+            roles = new Dictionary<String, String>();
+
+            //Create a connection to the SQL Server;
+            string ConnectionString = AlarmsDatabase;
+
+            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            {
+                try
+                {
+                    using (SqlCommand cmd = new SqlCommand())
+                    {
+                        // Specify which stored procedure the SqlCommand will execute
+                        cmd.CommandText = GET_ROLES;
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        cmd.Connection = MyConnection;
+
+                        int retries = 3;
+                        while (retries > 0)
+                        {
+                            try
+                            {
+                                MyConnection.Open();
+                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+
+                                while (MyDataReader.Read())
+                                {
+                                    roles.Add(MyDataReader["SystemID"].ToString(), MyDataReader["RoleName"].ToString());
+                                }
+                                success = true;
+                                break;
+                            }
+                            catch (SqlException ex)
+                            {
+                                success = false;
+                                log.Error("[" + platForm + "] " + "SQLException on readAllRoles in Parser ", ex);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readAllRoles in Parser " + ex);
+                                if (ex.ErrorCode.Equals(1205) ||
+                                   ex.Message.ToLower().Contains("deadlock"))
+                                {
+                                    if (retries > 0)
+                                    {
+                                        retries--;
+                                        Thread.Sleep(3000);
+                                    }
+                                    else
+                                    {
+                                        throw ex;
+                                    }
+                                }
+                            }
+                            catch (Exception exc)
+                            {
+                                success = false;
+                                log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE ROLES ", exc);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ROLES IN PARSER " + exc);
+                                if (retries > 0)
+                                {
+                                    retries--;
+                                    Thread.Sleep(3000);
+                                }
+                                else
+                                {
+                                    throw exc;
+                                }
+                            }
+
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    success = false;
+                    log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE ROLES ", e);
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ROLES IN PARSER " + e);
+                }
+            }
+            return success;
+        }
+
+        /// <summary>
+        /// Gets the active alarms that have expired from the CurrentNotificationState Table and processes their next state.
+        /// </summary>
+        /// <returns>.</returns>
+        public bool getExpiredAlarms()
+        {
+            log.Info(String.Format("StepParser::getExpiredAlarms::DBCall"));
+            bool success = true;
+            activeAlarms = new List<ActiveAlarm>();
+
+            string ConnectionString = AlarmsDatabase;
+
+            StringBuilder sb = new StringBuilder();
+            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            {
+                try
+                {
+                    using (SqlCommand cmd = new SqlCommand(sb.ToString(), MyConnection))
+                    {
+                        // Specify which stored procedure the SqlCommand will execute
+                        cmd.CommandText = REMOVE_EXPIRED_NOTIFICATION_ALARMS;
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        cmd.Connection = MyConnection;
+
+                        cmd.Parameters.Add("@CurrentTime", SqlDbType.DateTime);
+
+                        cmd.Parameters["@CurrentTime"].Value = DateTime.UtcNow;
+
+                        int retries = 3;
+                        while (retries > 0)
+                        {
+                            try
+                            {
+                                MyConnection.Open();
+                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+
+                                while (MyDataReader.Read())
+                                {
+                                    ActiveAlarm a = new ActiveAlarm()
+                                    {
+                                        HistoryID = (int)MyDataReader["HistoryID"],
+                                        AgencyID = (int)MyDataReader["AgencyID"],
+                                        ClientSystemID = (int)MyDataReader["ClientID"],
+                                        ClientID = MyDataReader["OID"].ToString(),
+                                        ClientTZ = MyDataReader["OTZ"].ToString(),
+                                        AlarmSystemID = (int)MyDataReader["AlarmSystemID"],
+                                        AlarmID = MyDataReader["AlarmID"].ToString(),
+                                        DeviceID = MyDataReader["DeviceID"].ToString(),
+                                        StateID = Convert.ToInt32(MyDataReader["StateID"]),
+                                        ReceivedDateTime = Convert.ToInt64(MyDataReader["ReceivedDateTime"]),
+                                        EventDateTime = Convert.ToInt64(MyDataReader["EventDateTime"]),
+                                        AlarmText = MyDataReader["EventDescription"].ToString(),
+                                        SystemID = Convert.ToInt32(MyDataReader["SystemID"]),
+                                        POGroupNum = MyDataReader["POGroupNum"].ToString(),
+                                        POGroup1 = MyDataReader["POGroup1"].ToString(),
+                                        POGroup2 = MyDataReader["POGroup2"].ToString(),
+                                        POGroup3 = MyDataReader["POGroup3"].ToString(),
+                                        ExpiryTime = MyDataReader["ExpiryTime"].ToString()
+                                    };
+                                    a.StateNo = Convert.ToInt32(MyDataReader["ParserStateNo"]);
+                                    if (Convert.ToInt32(MyDataReader["CurrentStateNo"]) == 1)
+                                    {
+                                        a.CurrentStateNo = 2;
+                                    }
+                                    else
+                                    {
+                                        a.CurrentStateNo = Convert.ToInt32(MyDataReader["CurrentStateNo"]) + 1;
+                                    }
+                                    a.CurrentLoopNumber = Convert.ToInt32(MyDataReader["CurrentLoopNo"]);
+                                    activeAlarms.Add(a);
+                                }
+                                getPriorityAndEmail(ref activeAlarms);
+                                success = true;
+                                break;
+                            }
+                            catch (SqlException ex)
+                            {
+                                success = false;
+                                log.Info("[" + platForm + "] " + "SQLException on getExpiredAlarms in Step Parser " + ex);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on getExpiredAlarms in Step Parser " + ex);
+                                if (ex.ErrorCode.Equals(1205) ||
+                                   ex.Message.ToLower().Contains("deadlock"))
+                                {
+                                    if (retries > 0)
+                                    {
+                                        retries--;
+                                        Thread.Sleep(3000);
+                                    }
+                                    else
+                                    {
+                                        throw ex;
+                                    }
+                                }
+                            }
+                            catch (Exception exc)
+                            {
+                                success = false;
+                                log.Info("[" + platForm + "] " + "FAILED TO RUN REMOVE_EXPIRED_NOTIFICATION_ALARMS IN STEP PARSER " + exc);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN REMOVE_EXPIRED_NOTIFICATION_ALARMS IN STEP PARSER " + exc);
+                                if (retries > 0)
+                                {
+                                    retries--;
+                                    Thread.Sleep(3000);
+                                }
+                                else
+                                {
+                                    throw exc;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    success = false;
+                    log.Info("[" + platForm + "] " + "FAILED TO RUN REMOVE_EXPIRED_NOTIFICATION_ALARMS IN STEP PARSER " + e);
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN REMOVE_EXPIRED_NOTIFICATION_ALARMS IN STEP PARSER " + e);
+                }
+            }
+            return success;
+        }
+
+        /// <summary>
+        /// Sets the priority, emails, email join, and State Numbers for each of the active alarms.
+        /// </summary>
+        /// <param name="activeAlarms">.</param>
+        private void getPriorityAndEmail(ref List<ActiveAlarm> activeAlarms)
+        {
+            List<int> toRemove = new List<int>();
+            log.Info(String.Format("StepParser::getPriorityAndEmail::ActiveAlarmsCount::{0}", activeAlarms.Count));
+            foreach (ActiveAlarm a in activeAlarms)
+            {
+                log.Info(String.Format("StepParser::getPriorityAndEmail::AlarmSystemID::{0}", a.SystemID));
+                TimeZoneInfo zoneInfo = TimeZoneInfo.FindSystemTimeZoneById(a.ClientTZ);
+
+                DateTime nowUTC = DateTime.UtcNow;
+                DateTime cleanedUTCNow = new DateTime(nowUTC.Year, nowUTC.Month, nowUTC.Day, nowUTC.Hour, nowUTC.Minute, nowUTC.Second);
+
+                DateTime current = TimeZoneInfo.ConvertTimeFromUtc(cleanedUTCNow, zoneInfo);
+
+                int day = (int)current.DayOfWeek + 1;
+
+                Boolean found = false;
+
+                Boolean isHoliday = holidayCheck(a, current);
+
+                Profile p = null;
+
+                if (!isHoliday)
+                {
+                    if (clientProfileMapping.ContainsKey(a.ClientID))
+                    {
+                        if (activeProfiles.ContainsKey(clientProfileMapping[a.ClientID]))
+                        {
+                            p = activeProfiles[clientProfileMapping[a.ClientID]];
+                        }
+                    }
+                }
+                else
+                {
+                    if (clientHolidayProfileMapping.ContainsKey(a.ClientID))
+                    {
+                        if (activeProfiles.ContainsKey(clientHolidayProfileMapping[a.ClientID]))
+                        {
+                            p = activeProfiles[clientHolidayProfileMapping[a.ClientID]];
+                        }
+                    }
+                }
+
+                if (p != null)
+                {
+                    if (p.Events.ContainsKey(a.AlarmID))
+                    {
+                        Dictionary<int, List<ProfileItem>> dayEvents = p.Events[a.AlarmID];
+
+                        if (dayEvents.ContainsKey(day))
+                        {
+                            List<ProfileItem> tempDayEvents = new List<ProfileItem>();
+
+                            foreach (ProfileItem pi in dayEvents[day])
+                            {
+                                if (pi.StartTime.TimeOfDay <= current.TimeOfDay && pi.EndTime.TimeOfDay > current.TimeOfDay)
+                                {
+                                    tempDayEvents.Add(pi);
+                                }
+                            }
+                            tempDayEvents = tempDayEvents.OrderBy(o => o.StateNo).ToList();
+
+                            foreach (ProfileItem pi in tempDayEvents)
+                            {
+                                if (pi.StartTime.TimeOfDay <= current.TimeOfDay && pi.EndTime.TimeOfDay > current.TimeOfDay && (a.StateNo) == pi.StateNo)
+                                {
+                                    found = true;
+                                    ProfileItem temppi = pi;
+
+                                    if (a.StateNo == pi.LoopStartState)
+                                    {
+                                        a.CurrentLoopNumber = a.CurrentLoopNumber + 1;
+                                    }
+
+                                    if (a.CurrentLoopNumber >= pi.NumberOfLoops)
+                                    {
+                                        found = false;
+                                        foreach (ProfileItem tpi in tempDayEvents)
+                                        {
+                                            if (tpi.StartTime.TimeOfDay <= current.TimeOfDay && tpi.EndTime.TimeOfDay > current.TimeOfDay && tpi.StateNo > temppi.StateNo && (tpi.LoopStartState == -1 || tpi.LoopStartState > temppi.LoopStartState))
+                                            {
+                                                found = true;
+                                                a.CurrentLoopNumber = -1;
+                                                a.Priority = tpi.Action;
+                                                a.EmailAddresses = tpi.Email;
+                                                a.EmailJoin = tpi.EmailJoin;
+                                                a.StateNo = tpi.StateNo;
+                                                a.StateTime = tpi.StateTime;
+                                                a.NextStateNo = tpi.NextState;
+                                                a.Instruction = tpi.Instruction;
+                                                a.ProfileName = p.ProfileName;
+                                                a.ProfileID = p.ProfileID;
+                                                a.RoleAction = tpi.RoleAction;
+                                                a.RoleID = tpi.RoleID;
+                                                a.FeedbackREQ = tpi.FeedBackRequired;
+
+                                                if (pi.Action == 12)
+                                                {
+                                                    readRoles(a, tpi.RoleID, tpi.RoleAction);
+                                                }
+                                                break;
+                                            }
+                                        }
+                                        break;
+                                    }
+
+                                    a.Priority = pi.Action;
+                                    a.EmailAddresses = pi.Email;
+                                    a.EmailJoin = pi.EmailJoin;
+                                    a.StateNo = pi.StateNo;
+                                    a.StateTime = pi.StateTime;
+                                    a.NextStateNo = pi.NextState;
+                                    a.Instruction = pi.Instruction;
+                                    a.ProfileName = p.ProfileName;
+                                    a.ProfileID = p.ProfileID;
+                                    a.RoleAction = pi.RoleAction;
+                                    a.RoleID = pi.RoleID;
+                                    a.FeedbackREQ = pi.FeedBackRequired;
+
+                                    if (pi.Action == 12)
+                                    {
+                                        readRoles(a, pi.RoleID, pi.RoleAction);
+                                    }
+
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (!found)
+                {
+                    //log.Info(String.Format("StepParser::getPriorityAndEmail::AlarmSystemID::{0}::ProfileID::{1}::found::false", a.SystemID, a.ProfileID));
+                    log.Info(String.Format("StepParser::getPriorityAndEmail: No Profile found meet current time AlarmSysID::{0}", a.SystemID));
+
+                    toRemove.Add(activeAlarms.IndexOf(a));
+                }
+            }
+
+            foreach (int indice in toRemove.OrderByDescending(v => v))
+            {
+                activeAlarms.RemoveAt(indice);
+            }
+        }
+
+        /// <summary>
+        /// The Main active loop of the step parser, loops through all the activeAlarms and performs the necessary actions.
+        /// </summary>
+        public void parseAlarms()
+        {
+            Dictionary<int, String> PriorityMapping = new Dictionary<int, string>();
+
+            PriorityMapping.Add(0, "Do Nothing");
+            PriorityMapping.Add(1, "Do Nothing");
+            PriorityMapping.Add(2, "Auto Email");
+            PriorityMapping.Add(3, "McApp");
+            PriorityMapping.Add(4, "Auto Fax");
+            PriorityMapping.Add(5, "Auto Page");
+            PriorityMapping.Add(6, "McApp and Auto Fax");
+            PriorityMapping.Add(7, "McApp and Auto Email");
+            PriorityMapping.Add(9, "McApp and Auto Page");
+            PriorityMapping.Add(11, "Delay");
+            PriorityMapping.Add(12, "Role Based");
+            PriorityMapping.Add(13, "Email-Victims");
+            PriorityMapping.Add(14, "Contact Victims");
+            PriorityMapping.Add(15, "Alert Client - Email");
+            PriorityMapping.Add(16, "Alert Client - Text");
+            PriorityMapping.Add(17, "Text All Victims");
+
+            Dictionary<int, String> RoleActionMapping = new Dictionary<int, String>();
+            RoleActionMapping.Add(1, "Call");
+            RoleActionMapping.Add(2, "E-mail");
+            RoleActionMapping.Add(3, "Text");
+
+            log.Info(String.Format("StepParser::parseAlarms::activeAlarmsCount{0}", activeAlarms.Count));
+            foreach (ActiveAlarm a in activeAlarms)
+            {
+                try
+                {
+                    bool insert = true;
+                    StringBuilder sb = new StringBuilder();
+                    sb.Append("Action as per the profile assigned:");
+                    log.Info(String.Format("StepParserBeforeCheck::AlarmSystemID::{0}::Priority::{1}", a.SystemID, a.Priority));
+                    log.Info(String.Format("StepParserBeforeCheck::AlarmSystemID::{0}::CurrentStateNo::{1}::NextStateNo::{2}::ProcessNextStep::{3}::StateTime::{4}::CurrentLoopNumber::{5}::insert::{6}"
+                        , a.SystemID
+                        , a.CurrentStateNo
+                        , a.NextStateNo
+                        , a.ProcessNextStep
+                        , a.StateTime
+                        , a.CurrentStateNo
+                        , insert.ToString()
+                        ));
+
+                    switch (a.Priority)
+                    {
+                        case 1:
+                            sb.Append("Do Nothing");
+                            Console.ForegroundColor = ConsoleColor.Cyan;
+                            Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Do Nothing " + "(Step " + a.StateNo + ")");
+                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Do Nothing " + "(Step " + a.StateNo + ")");
+                            insert = false;
+                            break;
+
+                        case 2:
+                            sb.Append("Auto Email");
+                            Console.ForegroundColor = ConsoleColor.Cyan;
+                            Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email " + "(Step " + a.StateNo + ")");
+                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email " + "(Step " + a.StateNo + ")");
+                            SendNotificationsToOfficersInSameGroup(a);
+                            AddToNotificationQueue(a, 3);
+                            string emailAdresses = "Pages sent to: " + a.EmailAddresses;
+                            if (emailAdresses.Length > 4096)
+                            {
+                                emailAdresses = emailAdresses.Substring(0, 4096);
+                            }
+                            CreateAlarmAudit(1, emailAdresses, a.HistoryID, a.CurrentStateNo);
+                            AddActiveAlarmActionToActivity(a.HistoryID, a.EmailAddresses, 1);
+                            break;
+                        case 3:
+                            sb.Append("McApp");
+                            Console.ForegroundColor = ConsoleColor.Cyan;
+                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp " + "(Step " + a.StateNo + ")");
+                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp " + "(Step " + a.StateNo + ")");
+                            SendNotificationsToOfficersInSameGroup(a);
+                            PushAlertToMcApp(a);
+                            a.ProcessNextStep = 0;
+                            break;
+                        case 4:
+                            sb.Append("Auto Fax");
+                            Console.ForegroundColor = ConsoleColor.Cyan;
+                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Fax " + "(Step " + a.StateNo + ")");
+                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Fax " + "(Step " + a.StateNo + ")");
+                            SendNotificationsToOfficersInSameGroup(a);
+                            break;
+                        case 5:
+                            sb.Append("Auto Page");
+                            Console.ForegroundColor = ConsoleColor.Cyan;
+                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Page " + "(Step " + a.StateNo + ")");
+                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Page " + "(Step " + a.StateNo + ")");
+                            SendNotificationsToOfficersInSameGroup(a);
+                            AddToNotificationQueue(a, 1);
+                            string autoPageEmails = "Pages sent to: " + getInsertEmails(a);
+                            if (autoPageEmails.Length > 4096)
+                            {
+                                autoPageEmails = autoPageEmails.Substring(0, 4096);
+                            }
+                            CreateAlarmAudit(3, autoPageEmails, a.HistoryID, a.CurrentStateNo);
+                            AddActiveAlarmActionToActivity(a.HistoryID, autoPageEmails, 0);
+                            break;
+                        case 6:
+                            sb.Append("McApp and Auto Fax");
+                            Console.ForegroundColor = ConsoleColor.Cyan;
+                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Fax " + "(Step " + a.StateNo + ")");
+                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Fax " + "(Step " + a.StateNo + ")");
+                            SendNotificationsToOfficersInSameGroup(a);
+                            PushAlertToMcApp(a);
+                            a.ProcessNextStep = 0;
+                            break;
+                        case 7:
+                            sb.Append("McApp and Auto Email");
+                            Console.ForegroundColor = ConsoleColor.Cyan;
+                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Email " + "(Step " + a.StateNo + ")");
+                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Email " + "(Step " + a.StateNo + ")");
+                            PushAlertToMcApp(a);
+                            SendNotificationsToOfficersInSameGroup(a);
+                            AddToNotificationQueue(a, 3);
+                            string emailAdresses7 = "Pages sent to: " + a.EmailAddresses;
+                            if (emailAdresses7.Length > 4096)
+                            {
+                                emailAdresses7 = emailAdresses7.Substring(0, 4096);
+                            }
+                            CreateAlarmAudit(3, emailAdresses7, a.HistoryID, a.CurrentStateNo);
+                            AddActiveAlarmActionToActivity(a.HistoryID, a.EmailAddresses, 1);
+                            a.ProcessNextStep = 0;
+                            break;
+                        case 9:
+                            sb.Append("McApp and Auto Page");
+                            Console.ForegroundColor = ConsoleColor.Cyan;
+                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Page " + "(Step " + a.StateNo + ")");
+                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Page " + "(Step " + a.StateNo + ")");
+                            SendNotificationsToOfficersInSameGroup(a);
+                            PushAlertToMcApp(a);
+                            AddToNotificationQueue(a, 1);
+                            string autoPageMcAppEmails = "Pages sent to: " + getInsertEmails(a);
+                            if (autoPageMcAppEmails.Length > 4096)
+                            {
+                                autoPageMcAppEmails = autoPageMcAppEmails.Substring(0, 4096);
+                            }
+                            CreateAlarmAudit(3, autoPageMcAppEmails, a.HistoryID, a.CurrentStateNo);
+                            AddActiveAlarmActionToActivity(a.HistoryID, autoPageMcAppEmails, 0);
+                            a.ProcessNextStep = 0;
+                            break;
+                        case 11:
+                            sb.Append("Delay");
+                            Console.ForegroundColor = ConsoleColor.Cyan;
+                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Delay " + "(Step " + a.StateNo + ")");
+                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Delay " + "(Step " + a.StateNo + ")");
+                            insert = true;
+                            break;
+                        case 12:
+                            sb.Append("Role Based - ");
+                            sb.Append(RoleActionMapping[a.RoleAction] + " ");
+                            sb.Append(roles[a.RoleID.ToString()]);
+                            switch (a.RoleAction)
+                            {
+                                case 1:
+                                    if (a.Instruction != "")
+                                    {
+                                        Console.ForegroundColor = ConsoleColor.Green;
+                                        Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp Call Officers " + "(Step " + a.StateNo + ")");
+                                        log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp Call Officers " + "(Step " + a.StateNo + ")");
+                                        PushAlertToMcApp(a);
+                                        a.ProcessNextStep = 0;
+                                    }
+                                    break;
+                                case 2:
+                                    if (a.EmailAddresses != "")
+                                    {
+                                        Console.ForegroundColor = ConsoleColor.Green;
+                                        Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email " + "(Step " + a.StateNo + ")");
+                                        log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email " + "(Step " + a.StateNo + ")");
+                                        AddToNotificationQueue(a, 3);
+                                        string emails = "Pages sent to: " + a.EmailAddresses;
+                                        if (emails.Length > 4096)
+                                        {
+                                            emails = emails.Substring(0, 4096);
+                                        }
+                                        CreateAlarmAudit(14, emails, a.HistoryID, a.CurrentStateNo);
+                                        AddActiveAlarmActionToActivity(a.HistoryID, a.EmailAddresses, 1);
+                                    }
+                                    break;
+                                case 3:
+                                    if (a.EmailAddresses != "")
+                                    {
+                                        Console.ForegroundColor = ConsoleColor.Green;
+                                        Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email " + "(Step " + a.StateNo + ")");
+                                        log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email " + "(Step " + a.StateNo + ")");
+                                        AddToNotificationQueue(a, 3);
+                                        string txtMessages = "Pages sent to: " + a.EmailAddresses;
+                                        if (txtMessages.Length > 4096)
+                                        {
+                                            txtMessages = txtMessages.Substring(0, 4096);
+                                        }
+                                        CreateAlarmAudit(14, txtMessages, a.HistoryID, a.CurrentStateNo);
+                                        AddActiveAlarmActionToActivity(a.HistoryID, a.EmailAddresses, 1);
+                                    }
+                                    break;
+                                default: break;
+                            }
+                            break;
+                        case 13: //send victims email
+
+                            Console.ForegroundColor = ConsoleColor.Green;
+                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Email-Victims");
+                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Email-Victims");
+
+                            string victimsMail = "";
+                            try
+                            {
+                                List<Victim> offenderVictims = victims[a.ClientID];
+                                StringBuilder victimEmail = new StringBuilder();
+                                foreach (Victim vi in offenderVictims)
+                                {
+                                    if (!string.IsNullOrEmpty(vi.Email))
+                                    {
+                                        victimEmail.Append(vi.Email);
+                                        victimEmail.Append(";");
+                                    }
+                                }
+
+                                victimsMail = victimEmail.ToString();
+                                insertNotificationQueueVictim(a, 3, victimsMail, true);
+                            }
+                            catch (Exception ex)
+                            {
+                                log.Error("victimsMail", ex);
+                                victimsMail = "";
+                            }
+
+                            string victimEmails = "Pages sent to: " + victimsMail;
+                            if (victimEmails.Length > 4096)
+                            {
+                                victimEmails = victimEmails.Substring(0, 4096);
+                            }
+                            CreateAlarmAudit(14, victimEmails, a.HistoryID, 1);
+                            AddActiveAlarmActionToActivity(a.HistoryID, victimEmails, 1);
+                            break;
+                        case 14:
+                            sb.Append("Contact Victim");
+                            Console.ForegroundColor = ConsoleColor.Green;
+                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Contact Victim");
+                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Contact Victim");
+                            SendNotificationsToOfficersInSameGroup(a);
+                            PushAlertToMcApp(a);
+                            a.ProcessNextStep = 0;
+                            break;
+
+                        case 15: //alert client
+                            Console.ForegroundColor = ConsoleColor.Green;
+                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Alert Client");
+                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Alert Client");
+
+                            string clientMail = "";
+                            try
+                            {
+                                clientMail = getClientEmail(a).Trim();
+                                if (clientMail != string.Empty)
+                                {
+                                    insertNotificationQueueVictim(a, 3, clientMail);
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                log.Error("clientMail", ex);
+                                clientMail = "";
+                            }
+
+                            string cMail = "Pages sent to: " + clientMail;
+                            if (cMail.Length > 4096)
+                            {
+                                cMail = cMail.Substring(0, 4096);
+                            }
+                            CreateAlarmAudit(14, cMail, a.HistoryID, 1);
+                            AddActiveAlarmActionToActivity(a.HistoryID, cMail, 1);
+                            break;
+                        case 16: //alert client text
+                            Console.ForegroundColor = ConsoleColor.Green;
+                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Alert Client Text");
+                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Alert Client Text");
+
+                            string clientText = "";
+                            try
+                            {
+                                clientText = getClientText(a).Trim();
+                                if (clientText != string.Empty)
+                                {
+                                    insertNotificationQueueVictim(a, 4, clientText);
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                log.Error("clientText", ex);
+                                clientText = "";
+                            }
+
+                            string cText = "Pages sent to: " + clientText;
+                            if (cText.Length > 4096)
+                            {
+                                cText = cText.Substring(0, 4096);
+                            }
+                            CreateAlarmAudit(14, cText, a.HistoryID, 1);
+                            AddActiveAlarmActionToActivity(a.HistoryID, cText, 1);
+                            break;
+                        case 17: //Send text to all victims
+                            sb.Append("Text All Victims");
+                            Console.ForegroundColor = ConsoleColor.Green;
+                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Text All Victims");
+                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Text All Victims");
+
+                            string victimsText = "";
+                            try
+                            {
+                                List<Victim> offenderVictims = victims[a.ClientID];
+                                StringBuilder victimText = new StringBuilder();
+                                foreach (Victim vi in offenderVictims)
+                                {
+                                    if (!string.IsNullOrEmpty(vi.CellPhone))
+                                    {
+                                        victimText.Append(vi.CellPhone);
+                                        victimText.Append(";");
+                                    }
+                                }
+
+                                victimsText = victimText.ToString();
+                                insertNotificationQueueVictim(a, 4, victimsText, true);
+                            }
+                            catch (Exception ex)
+                            {
+                                log.Error("victimsText", ex);
+                                victimsText = "";
+                            }
+
+
+                            string Msg = "Text sent to: " + victimsText;
+                            if (Msg.Length > 4096)
+                            {
+                                Msg = Msg.Substring(0, 4096);
+                            }
+                            CreateAlarmAudit(14, Msg, a.HistoryID, 1);
+                            AddActiveAlarmActionToActivity(a.HistoryID, Msg, 1);
+                            break;
+                        default: sb.Append("Do Nothing"); break;
+                    }
+
+                    CreateAlarmAudit(14, sb.ToString(), a.HistoryID, a.CurrentStateNo);
+
+                    insertIntoAlarmNotification(a.SystemID, a.CurrentStateNo, DateTime.UtcNow.AddMinutes(a.StateTime), PriorityMapping[a.Priority]);
+
+                    log.Info(String.Format("StepParserAfterCheck::AlarmSystemID::{0}::CurrentStateNo::{1}::NextStateNo::{2}::ProcessNextStep::{3}::StateTime::{4}::CurrentLoopNumber::{5}::insert::{6}", a.SystemID, a.CurrentStateNo, a.NextStateNo, a.ProcessNextStep, a.StateTime, a.CurrentStateNo, insert.ToString()));
+                    if (a.NextStateNo != -1 && insert)
+                    {
+                        insertIntoCurrentAlarmNotification(a.SystemID, a.NextStateNo, DateTime.UtcNow.AddMinutes(a.StateTime), a.CurrentStateNo, a.CurrentLoopNumber, a.ProcessNextStep);
+                    }
+                    else if (insert)
+                    {
+                        insertIntoCurrentAlarmNotification(a.SystemID, a.CurrentStateNo + 1, DateTime.UtcNow.AddMinutes(a.StateTime), a.CurrentStateNo, 0, 1);
+                    }
+
+                    //DateTime ExpiryTime = DateTime.Parse(a.ExpiryTime);
+                    //DateTime ExpiryTimeByPreviousExpiryTime = ExpiryTime.AddMinutes(a.StateTime);
+                    //DateTime ExpiryTimeByUTCNow = DateTime.UtcNow.AddMinutes(a.StateTime);
+
+                    //DateTime ExpiryTimeApplied;
+                    //if (ExpiryTimeByPreviousExpiryTime < ExpiryTimeByUTCNow)
+                    //{
+                    //    ExpiryTimeApplied = ExpiryTimeByPreviousExpiryTime;
+                    //}
+                    //else
+                    //{
+                    //    ExpiryTimeApplied = ExpiryTimeByUTCNow;
+                    //}
+
+                    //log.Info(String.Format("ExpiryTimeByPreviousExpiryTime - {0} :: ExpiryTimeByUTCNow - {1} :: ExpiryTimeApplied - {2}"
+                    //                        , ExpiryTimeByPreviousExpiryTime.ToString()
+                    //                        , ExpiryTimeByUTCNow.ToString()
+                    //                        , ExpiryTimeApplied.ToString()
+                    //                        )
+                    //);
+
+                    //insertIntoAlarmNotification(a.SystemID, a.CurrentStateNo, ExpiryTimeApplied, PriorityMapping[a.Priority]);
+
+                    //if (a.NextStateNo != -1 && insert)
+                    //{
+                    //    insertIntoCurrentAlarmNotification(a.SystemID, a.NextStateNo, ExpiryTimeApplied, a.CurrentStateNo, a.CurrentLoopNumber, a.ProcessNextStep);
+                    //}
+                    //else if (insert)
+                    //{
+                    //    insertIntoCurrentAlarmNotification(a.SystemID, a.CurrentStateNo + 1, ExpiryTimeApplied, a.CurrentStateNo, 0, 1);
+                    //}
+                }
+                catch (Exception ex)
+                {
+                    log.Error("Step Parser Parse Error", ex);
+                }
+
+            }
+        }
+
+        /// <summary>
+        /// Inserts a row into the Audit Alarms Table.
+        /// </summary>
+        /// <param name="type">.</param>
+        /// <param name="action">.</param>
+        /// <param name="historyID">.</param>
+        /// <param name="StepNo">The StepNo<see cref="int"/>.</param>
+        /// <returns>The <see cref="bool"/>.</returns>
+        private bool CreateAlarmAudit(int type, String action, int historyID, int StepNo)
+        {
+            bool success = true;
+            //Create a connection to the SQL Server;
+            string ConnectionString = AlarmsDatabase;
+
+            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            {
+                try
+                {
+                    using (SqlCommand cmd = new SqlCommand())
+                    {
+                        // Specify which stored procedure the SqlCommand will execute
+                        cmd.CommandText = MCAPP_CREATEAUDIT;
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        cmd.Connection = MyConnection;
+
+                        cmd.Parameters.Add("@Login", SqlDbType.VarChar, 30);
+                        cmd.Parameters.Add("@Type", SqlDbType.Int);
+                        cmd.Parameters.Add("@Action", SqlDbType.VarChar, 4096);
+                        cmd.Parameters.Add("@historyID", SqlDbType.Int);
+                        cmd.Parameters.Add("@stepno", SqlDbType.Int);
+
+                        cmd.Parameters["@Login"].Value = "system";
+                        cmd.Parameters["@Type"].Value = type;
+                        cmd.Parameters["@Action"].Value = action;
+                        cmd.Parameters["@historyID"].Value = historyID;
+                        cmd.Parameters["@stepno"].Value = StepNo;
+
+                        int retries = 3;
+                        while (retries > 0)
+                        {
+                            try
+                            {
+                                MyConnection.Open();
+                                cmd.ExecuteNonQuery();
+                                success = true;
+                                break;
+                            }
+                            catch (SqlException ex)
+                            {
+                                success = false;
+                                log.Info("[" + platForm + "] " + "SQLException on CreateAlarmAudit in Step Parser " + ex);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on CreateAlarmAudit in Step Parser " + ex);
+                                if (ex.ErrorCode.Equals(1205) ||
+                                   ex.Message.ToLower().Contains("deadlock"))
+                                {
+                                    if (retries > 0)
+                                    {
+                                        retries--;
+                                        Thread.Sleep(2000);
+                                    }
+                                    else
+                                    {
+                                        throw;
+                                    }
+                                }
+                            }
+                            catch (Exception exc)
+                            {
+                                success = false;
+                                log.Info("[" + platForm + "] " + "FAILED TO RUN MCAPP_CREATEAUDIT IN STEP PARSER " + exc);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN MCAPP_CREATEAUDIT IN STEP PARSER " + exc);
+                                if (retries > 0)
+                                {
+                                    retries--;
+                                    Thread.Sleep(2000);
+                                }
+                                else
+                                {
+                                    throw;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    success = false;
+                    log.Info("[" + platForm + "] " + "FAILED TO RUN MCAPP_CREATEAUDIT IN STEP PARSER " + e);
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN MCAPP_CREATEAUDIT IN STEP PARSER " + e);
+                }
+            }
+            return success;
+        }
+
+        /// <summary>
+        /// Inserts events into the McAPP queue, if the item priority numbers require it.
+        /// </summary>
+        /// <param name="a">.</param>
+        /// <returns>The <see cref="bool"/>.</returns>
+        private bool PushAlertToMcApp(ActiveAlarm a)
+        {
+            bool success = true;
+            //Create a connection to the SQL Server;
+            string ConnectionString = AlarmsDatabase;
+
+            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            {
+                try
+                {
+                    using (SqlCommand cmd = new SqlCommand())
+                    {
+                        // Specify which stored procedure the SqlCommand will execute
+                        cmd.CommandText = INSERT_MCAPP;
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        cmd.Connection = MyConnection;
+
+                        cmd.Parameters.Add("@HistoryID", SqlDbType.Int);
+                        cmd.Parameters.Add("@AgencyID", SqlDbType.Int);
+                        cmd.Parameters.Add("@ClientID", SqlDbType.Int);
+                        cmd.Parameters.Add("@AlarmID", SqlDbType.Int);
+                        cmd.Parameters.Add("@DeviceID", SqlDbType.VarChar, 20);
+                        cmd.Parameters.Add("@StateID", SqlDbType.Int);
+                        cmd.Parameters.Add("@RecievedDateTime", SqlDbType.Int);
+                        cmd.Parameters.Add("@EventDateTime", SqlDbType.Int);
+                        cmd.Parameters.Add("@ProfileName", SqlDbType.VarChar, 100);
+                        cmd.Parameters.Add("@Instruction", SqlDbType.VarChar, 1500);
+                        cmd.Parameters.Add("@StepNo", SqlDbType.Int);
+                        cmd.Parameters.Add("@IsUpdatedStep", SqlDbType.Bit);
+                        cmd.Parameters.Add("@ProfileID", SqlDbType.Int);
+                        cmd.Parameters.Add("@OID", SqlDbType.VarChar, 20);
+
+                        cmd.Parameters["@HistoryID"].Value = a.HistoryID;
+                        cmd.Parameters["@AgencyID"].Value = a.AgencyID;
+                        cmd.Parameters["@ClientID"].Value = a.ClientSystemID;
+                        cmd.Parameters["@AlarmID"].Value = a.AlarmSystemID;
+                        cmd.Parameters["@DeviceID"].Value = a.DeviceID;
+                        cmd.Parameters["@StateID"].Value = a.StateID;
+                        cmd.Parameters["@RecievedDateTime"].Value = a.ReceivedDateTime;
+                        cmd.Parameters["@EventDateTime"].Value = a.EventDateTime;
+                        cmd.Parameters["@ProfileName"].Value = a.ProfileName;
+                        cmd.Parameters["@Instruction"].Value = a.Instruction;
+                        cmd.Parameters["@StepNo"].Value = a.StateNo;
+                        cmd.Parameters["@IsUpdatedStep"].Value = 1;
+                        cmd.Parameters["@ProfileID"].Value = a.ProfileID;
+                        cmd.Parameters["@OID"].Value = a.ClientID;
+
+                        int retries = 3;
+                        while (retries > 0)
+                        {
+                            try
+                            {
+                                MyConnection.Open();
+                                cmd.ExecuteNonQuery();
+                                success = true;
+                                break;
+                            }
+                            catch (SqlException ex)
+                            {
+                                success = false;
+                                log.Info("[" + platForm + "] " + "SQLException on PushAlertToMcApp in Step Parser " + ex);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on PushAlertToMcApp in Step Parser " + ex);
+                                if (ex.ErrorCode.Equals(1205) ||
+                                   ex.Message.ToLower().Contains("deadlock"))
+                                {
+                                    if (retries > 0)
+                                    {
+                                        retries--;
+                                        Thread.Sleep(2000);
+                                    }
+                                    else
+                                    {
+                                        throw;
+                                    }
+                                }
+                            }
+                            catch (Exception exc)
+                            {
+                                success = false;
+                                log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + exc);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + exc);
+                                if (retries > 0)
+                                {
+                                    retries--;
+                                    Thread.Sleep(2000);
+                                }
+                                else
+                                {
+                                    throw;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    success = false;
+                    log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + e);
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + e);
+                    throw;
+                }
+            }
+            return success;
+        }
+
+        /// <summary>
+        /// Inserts a Row Into The History Table.
+        /// </summary>
+        /// <param name="historyID">.</param>
+        /// <param name="email">The email<see cref="String"/>.</param>
+        /// <param name="type">.</param>
+        /// <returns>The <see cref="bool"/>.</returns>
+        private bool AddActiveAlarmActionToActivity(int historyID, string email, int type)
+        {
+            bool success = true;
+            //Create a connection to the SQL Server;
+            string ConnectionString = AlarmsDatabase;
+
+            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            {
+                try
+                {
+                    using (SqlCommand cmd = new SqlCommand())
+                    {
+                        // Specify which stored procedure the SqlCommand will execute
+                        cmd.CommandText = INSERT_INTO_HISTORY;
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        cmd.Connection = MyConnection;
+
+                        cmd.Parameters.Add("@HistoryID", SqlDbType.Int);
+                        cmd.Parameters.Add("@emails", SqlDbType.VarChar, 1024);
+                        cmd.Parameters.Add("@type", SqlDbType.Int);
+
+                        cmd.Parameters["@HistoryID"].Value = historyID;
+                        cmd.Parameters["@emails"].Value = email;
+                        cmd.Parameters["@type"].Value = type;
+
+                        int retries = 3;
+                        while (retries > 0)
+                        {
+                            try
+                            {
+                                MyConnection.Open();
+                                cmd.ExecuteNonQuery();
+                                success = true;
+                                break;
+                            }
+                            catch (SqlException ex)
+                            {
+                                success = false;
+                                log.Info("[" + platForm + "] " + "SQLException on ActiveAlarms_InsertIntoHistory in Step Parser " + ex);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on ActiveAlarms_InsertIntoHistory in Step Parser " + ex);
+                                if (ex.ErrorCode.Equals(1205) ||
+                                   ex.Message.ToLower().Contains("deadlock"))
+                                {
+                                    if (retries > 0)
+                                    {
+                                        retries--;
+                                        Thread.Sleep(2000);
+                                    }
+                                    else
+                                    {
+                                        throw ex;
+                                    }
+                                }
+                            }
+                            catch (Exception exc)
+                            {
+                                success = false;
+                                log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_HISTORY IN STEP PARSER " + exc);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_INTO_HISTORY IN STEP PARSER " + exc);
+                                if (retries > 0)
+                                {
+                                    retries--;
+                                    Thread.Sleep(2000);
+                                }
+                                else
+                                {
+                                    throw exc;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    success = false;
+                    log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_HISTORY IN STEP PARSER " + e);
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_INTO_HISTORY IN STEP PARSER " + e);
+                }
+            }
+            return success;
+        }
+
+        /// <summary>
+        /// Inserts A Row into the Alarm Notification Table - used as an archive of all processed alarms.
+        /// </summary>
+        /// <param name="AlarmSystemID">.</param>
+        /// <param name="CurentStateNo">.</param>
+        /// <param name="ExpiryTime">.</param>
+        /// <param name="Action">.</param>
+        /// <returns>The <see cref="bool"/>.</returns>
+        private bool insertIntoAlarmNotification(int AlarmSystemID, int CurentStateNo, DateTime ExpiryTime, String Action)
+        {
+            bool success = true;
+            string ConnectionString = AlarmsDatabase;
+
+            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            {
+                try
+                {
+                    using (SqlCommand cmd = new SqlCommand())
+                    {
+                        // Specify which stored procedure the SqlCommand will execute
+                        cmd.CommandText = INSERT_INTO_ALARM_NOTIFICATION;
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        cmd.Connection = MyConnection;
+
+                        cmd.Parameters.Add("@AlarmSystemID", SqlDbType.Int);
+                        cmd.Parameters.Add("@CurrentStateNo", SqlDbType.Int);
+                        cmd.Parameters.Add("@ExpiryTime", SqlDbType.DateTime);
+                        cmd.Parameters.Add("@Action", SqlDbType.VarChar, 50);
+
+                        cmd.Parameters["@AlarmSystemID"].Value = AlarmSystemID;
+                        cmd.Parameters["@CurrentStateNo"].Value = CurentStateNo;
+                        cmd.Parameters["@ExpiryTime"].Value = ExpiryTime;
+                        cmd.Parameters["@Action"].Value = Action;
+
+                        int retries = 3;
+                        while (retries > 0)
+                        {
+                            try
+                            {
+                                MyConnection.Open();
+                                cmd.ExecuteNonQuery();
+                                success = true;
+                                break;
+                            }
+                            catch (SqlException ex)
+                            {
+                                success = false;
+                                log.Info("[" + platForm + "] " + "SQLException on insertIntoAlarmNotification in Step Parser " + ex);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on insertIntoAlarmNotification in Step Parser " + ex);
+                                if (ex.ErrorCode.Equals(1205) ||
+                                   ex.Message.ToLower().Contains("deadlock"))
+                                {
+                                    if (retries > 0)
+                                    {
+                                        retries--;
+                                        Thread.Sleep(2000);
+                                    }
+                                    else
+                                    {
+                                        throw;
+                                    }
+                                }
+                            }
+                            catch (Exception exc)
+                            {
+                                success = false;
+                                log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + exc);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + exc);
+                                if (retries > 0)
+                                {
+                                    retries--;
+                                    Thread.Sleep(2000);
+                                }
+                                else
+                                {
+                                    throw;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    success = false;
+                    log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + e);
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + e);
+                    throw;
+                }
+            }
+            return success;
+        }
+
+        /// <summary>
+        /// Inserts a row into the Current Notification State Table, which is used to keep track of all the alarm states,
+        /// when their expiry times are and the current state number that they are in.
+        /// </summary>
+        /// <param name="AlarmSystemID">.</param>
+        /// <param name="CurentStateNo">.</param>
+        /// <param name="ExpiryTime">.</param>
+        /// <param name="DisplayStateNo">The DisplayStateNo<see cref="int"/>.</param>
+        /// <param name="currentLoopNumber">The currentLoopNumber<see cref="int"/>.</param>
+        /// <param name="processNext">The processNext<see cref="int"/>.</param>
+        /// <returns>The <see cref="bool"/>.</returns>
+        private bool insertIntoCurrentAlarmNotification(int AlarmSystemID, int CurentStateNo, DateTime ExpiryTime, int DisplayStateNo, int currentLoopNumber, int processNext)
+        {
+            bool success = true;
+            //Create a connection to the SQL Server;
+            string ConnectionString = AlarmsDatabase;
+
+            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            {
+                try
+                {
+                    using (SqlCommand cmd = new SqlCommand())
+                    {
+                        // Specify which stored procedure the SqlCommand will execute
+                        cmd.CommandText = INSERT_INTO_CURRENT_NOTIFICATION_STATE;
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        cmd.Connection = MyConnection;
+
+                        cmd.Parameters.Add("@AlarmSystemID", SqlDbType.Int);
+                        cmd.Parameters.Add("@CurrentStateNo", SqlDbType.Int);
+                        cmd.Parameters.Add("@ExpiryTime", SqlDbType.DateTime);
+                        cmd.Parameters.Add("@ParserStateNo", SqlDbType.Int);
+                        cmd.Parameters.Add("@ProcessNextStep", SqlDbType.Bit);
+                        cmd.Parameters.Add("@CurrentLoopNumber", SqlDbType.Int);
+
+                        cmd.Parameters["@AlarmSystemID"].Value = AlarmSystemID;
+                        cmd.Parameters["@CurrentStateNo"].Value = DisplayStateNo;
+                        cmd.Parameters["@ExpiryTime"].Value = ExpiryTime;
+                        cmd.Parameters["@ParserStateNo"].Value = CurentStateNo;
+                        cmd.Parameters["@ProcessNextStep"].Value = processNext;
+                        cmd.Parameters["@CurrentLoopNumber"].Value = currentLoopNumber;
+
+                        int retries = 3;
+                        while (retries > 0)
+                        {
+                            try
+                            {
+                                MyConnection.Open();
+                                cmd.ExecuteNonQuery();
+                                success = true;
+                                break;
+                            }
+                            catch (SqlException ex)
+                            {
+                                success = false;
+                                log.Info("[" + platForm + "] " + "SQLException on insertIntoCurrentAlarmNotification in Step Parser " + ex);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on insertIntoCurrentAlarmNotification in Step Parser " + ex);
+                                if (ex.ErrorCode.Equals(1205) ||
+                                   ex.Message.ToLower().Contains("deadlock"))
+                                {
+                                    if (retries > 0)
+                                    {
+                                        retries--;
+                                        Thread.Sleep(2000);
+                                    }
+                                    else
+                                    {
+                                        throw;
+                                    }
+                                }
+                            }
+                            catch (Exception exc)
+                            {
+                                success = false;
+                                log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + exc);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + exc);
+                                if (retries > 0)
+                                {
+                                    retries--;
+                                    Thread.Sleep(2000);
+                                }
+                                else
+                                {
+                                    throw;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    success = false;
+                    log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + e);
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + e);
+                    throw;
+                }
+            }
+            return success;
+        }
+
+        /// <summary>
+        /// Runs the email join logic if the active alarm state has the email join flag set.
+        /// </summary>
+        /// <param name="a">.</param>
+        protected void SendNotificationsToOfficersInSameGroup(ActiveAlarm a)
+        {
+            if (a.EmailJoin == 1)
+            {
+                if (AddToNotificationQueue(a, 2))
+                {
+                    string emails = "Email also sent to: " + getInsertEmails(a);
+                    if (emails.Length > 4096)
+                    {
+                        emails = emails.Substring(0, 4096);
+                    }
+                    CreateAlarmAudit(3, emails, a.HistoryID, a.CurrentStateNo);
+                    AddActiveAlarmActionToActivity(a.HistoryID, getInsertEmails(a), 0);
+                }
+                else
+                {
+                    log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: Notify to all officers in group failed");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Returns the email addresses of the top 10 individuals that were contacted as the result of an alarm.
+        /// </summary>
+        /// <param name="a">The a<see cref="ActiveAlarm"/>.</param>
+        /// <returns>.</returns>
+        private string getInsertEmails(ActiveAlarm a)
+        {
+            string ConnectionString = AlarmsDatabase;
+
+            StringBuilder sb = new StringBuilder();
+            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            {
+                try
+                {
+                    using (SqlCommand cmd = new SqlCommand(sb.ToString(), MyConnection))
+                    {
+                        // Specify which stored procedure the SqlCommand will execute
+                        cmd.CommandText = READ_AUDIT_HISTORY_EMAILS;
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        cmd.Connection = MyConnection;
+
+                        cmd.Parameters.Add("@ClientSystemID", SqlDbType.Int);
+
+                        cmd.Parameters["@ClientSystemID"].Value = a.ClientSystemID;
+
+                        int retries = 3;
+                        while (retries > 0)
+                        {
+                            try
+                            {
+                                MyConnection.Open();
+                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+
+                                while (MyDataReader.Read())
+                                {
+                                    sb.Append(MyDataReader["POMSGAddress"].ToString());
+                                    sb.Append(",");
+                                }
+                                break;
+                            }
+                            catch (SqlException ex)
+                            {
+                                log.Info("[" + platForm + "] " + "SQLException on getInsertEmails in Step Parser " + ex);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on getInsertEmails in Step Parser " + ex);
+                                if (ex.ErrorCode.Equals(1205) ||
+                                   ex.Message.ToLower().Contains("deadlock"))
+                                {
+                                    if (retries > 0)
+                                    {
+                                        retries--;
+                                        Thread.Sleep(2000);
+                                    }
+                                    else
+                                    {
+                                        throw;
+                                    }
+                                }
+                            }
+                            catch (Exception exc)
+                            {
+                                log.Info("[" + platForm + "] " + "ERROR: Unable to Read Audit and History Emails in Step Parser " + exc);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Audit and History Emails in Step Parser " + exc);
+                                if (retries > 0)
+                                {
+                                    retries--;
+                                    Thread.Sleep(2000);
+                                }
+                                else
+                                {
+                                    throw;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    log.Info("[" + platForm + "] " + "ERROR: Unable to Read Audit and History Emails in Step Parser " + e);
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Audit and History Emails in Step Parser " + e);
+                    throw;
+                }
+            }
+
+            return sb.ToString().TrimEnd(',');
+        }
+
+        /// <summary>
+        /// The holidayCheck.
+        /// </summary>
+        /// <param name="a">The a<see cref="ActiveAlarm"/>.</param>
+        /// <param name="current">The current<see cref="DateTime"/>.</param>
+        /// <returns>The <see cref="Boolean"/>.</returns>
+        private bool holidayCheck(ActiveAlarm a, DateTime current)
+        {
+            Boolean holiday = false;
+
+            if (a.POGroupNum.Trim() != "")
+            {
+                if (activeHolidays.ContainsKey(a.POGroupNum))
+                {
+                    List<Holiday> holidays = activeHolidays[a.POGroupNum];
+
+                    foreach (Holiday h in holidays)
+                    {
+                        if (h.StartDate.Date <= current.Date && h.EndDate.Date >= current.Date)
+                        {
+                            holiday = true;
+                        }
+                    }
+                }
+            }
+
+            if (a.POGroup1.Trim() != "")
+            {
+                if (activeHolidays.ContainsKey(a.POGroup1))
+                {
+                    List<Holiday> holidays = activeHolidays[a.POGroup1];
+
+                    foreach (Holiday h in holidays)
+                    {
+                        if (h.StartDate.Date <= current.Date && h.EndDate.Date >= current.Date)
+                        {
+                            holiday = true;
+                        }
+                    }
+                }
+            }
+
+            if (a.POGroup2.Trim() != "")
+            {
+                if (activeHolidays.ContainsKey(a.POGroup2))
+                {
+                    List<Holiday> holidays = activeHolidays[a.POGroup2];
+
+                    foreach (Holiday h in holidays)
+                    {
+                        if (h.StartDate.Date <= current.Date && h.EndDate.Date >= current.Date)
+                        {
+                            holiday = true;
+                        }
+                    }
+                }
+            }
+
+            if (a.POGroup3.Trim() != "")
+            {
+                if (activeHolidays.ContainsKey(a.POGroup3))
+                {
+                    List<Holiday> holidays = activeHolidays[a.POGroup3];
+
+                    foreach (Holiday h in holidays)
+                    {
+                        if (h.StartDate.Date <= current.Date && h.EndDate.Date >= current.Date)
+                        {
+                            holiday = true;
+                        }
+                    }
+                }
+            }
+
+            return holiday;
+        }
+
+        /// <summary>
+        /// Inserts The Active Alarm Into The Notification Queue.
+        /// </summary>
+        /// <param name="a">The a<see cref="ActiveAlarm"/>.</param>
+        /// <param name="insertType">The insertType<see cref="int"/>.</param>
+        /// <returns>The <see cref="bool"/>.</returns>
+        private bool AddToNotificationQueue(ActiveAlarm a, int insertType)
+        {
+            bool success = true;
+            string ConnectionString = AlarmsDatabase;
+
+            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            {
+                try
+                {
+                    using (SqlCommand cmd = new SqlCommand())
+                    {
+                        // Specify which stored procedure the SqlCommand will execute
+                        cmd.CommandText = INSERT_NOTIFICATIONQUEUE;
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        cmd.Connection = MyConnection;
+
+                        cmd.Parameters.Add("@AlarmID", SqlDbType.Int);
+                        cmd.Parameters.Add("@HistoryID", SqlDbType.Int);
+                        cmd.Parameters.Add("@ClientID", SqlDbType.VarChar, 20);
+                        cmd.Parameters.Add("@MsgReceivedDateTime", SqlDbType.Char, 20);
+                        cmd.Parameters.Add("@EventDateTime", SqlDbType.Char, 30);
+                        cmd.Parameters.Add("@MsgSubject", SqlDbType.VarChar, 128);
+                        cmd.Parameters.Add("@MsgToAddress", SqlDbType.NVarChar, 1000);
+                        cmd.Parameters.Add("@MsgSource", SqlDbType.VarChar, 50);
+                        cmd.Parameters.Add("@InsertType", SqlDbType.Int);
+                        cmd.Parameters.Add("@FeedBackReq", SqlDbType.Int);
+
+                        cmd.Parameters["@AlarmID"].Value = a.SystemID;
+                        cmd.Parameters["@HistoryID"].Value = a.HistoryID;
+                        cmd.Parameters["@ClientID"].Value = a.ClientID;
+                        cmd.Parameters["@MsgReceivedDateTime"].Value = a.MessageReceivedDateTime();
+                        cmd.Parameters["@EventDateTime"].Value = a.EventRecievedDateTime();
+                        cmd.Parameters["@MsgSubject"].Value = "Alarm Notification";
+                        cmd.Parameters["@MsgToAddress"].Value = a.EmailAddresses;
+                        cmd.Parameters["@MsgSource"].Value = "Sentrak Live Notify Trigger";
+                        cmd.Parameters["@InsertType"].Value = insertType;
+                        cmd.Parameters["@FeedBackReq"].Value = a.FeedbackREQ;
+
+                        int retries = 3;
+                        while (retries > 0)
+                        {
+                            try
+                            {
+                                MyConnection.Open();
+                                cmd.ExecuteNonQuery();
+                                success = true;
+                                break;
+                            }
+                            catch (SqlException ex)
+                            {
+                                success = false;
+                                log.Info("[" + platForm + "] " + "SQLException on AddToNotificationQueue in Step Parser " + ex);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on AddToNotificationQueue in Step Parser " + ex);
+                                if (ex.ErrorCode.Equals(1205) ||
+                                   ex.Message.ToLower().Contains("deadlock"))
+                                {
+                                    if (retries > 0)
+                                    {
+                                        retries--;
+                                        Thread.Sleep(2000);
+                                    }
+                                    else
+                                    {
+                                        throw;
+                                    }
+                                }
+                            }
+                            catch (Exception exc)
+                            {
+                                success = false;
+                                log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + exc);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + exc);
+                                if (retries > 0)
+                                {
+                                    retries--;
+                                    Thread.Sleep(2000);
+                                }
+                                else
+                                {
+                                    throw;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    success = false;
+                    log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + e);
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + e);
+                    throw;
+                }
+            }
+            return success;
+        }
+
+        /// <summary>
+        /// Inserts The Active Alarm Into The Notification Queue.
+        /// </summary>
+        /// <param name="a">The a<see cref="ActiveAlarm"/>.</param>
+        /// <param name="insertType">The insertType<see cref="int"/>.</param>
+        /// <param name="victimsEmails">The victimsEmails<see cref="String"/>.</param>
+        /// /// <param name="isVictimNotification">The isVictimNotification<see cref="bool"/>.</param>
+        /// <returns>The <see cref="bool"/>.</returns>
+        private bool insertNotificationQueueVictim(ActiveAlarm a, int insertType, String victimsEmails, bool isVictimNotification = false)
+        {
+            bool success = true;
+
+            string ConnectionString = AlarmsDatabase;
+
+            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            {
+                try
+                {
+                    using (SqlCommand cmd = new SqlCommand())
+                    {
+                        // Specify which stored procedure the SqlCommand will execute
+                        cmd.CommandText = INSERT_NOTIFICATIONQUEUE;
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        cmd.Connection = MyConnection;
+
+                        cmd.Parameters.Add("@AlarmID", SqlDbType.Int);
+                        cmd.Parameters.Add("@HistoryID", SqlDbType.Int);
+                        cmd.Parameters.Add("@ClientID", SqlDbType.VarChar, 20);
+                        cmd.Parameters.Add("@MsgReceivedDateTime", SqlDbType.Char, 20);
+                        cmd.Parameters.Add("@EventDateTime", SqlDbType.Char, 30);
+                        cmd.Parameters.Add("@MsgSubject", SqlDbType.VarChar, 128);
+                        cmd.Parameters.Add("@MsgToAddress", SqlDbType.NVarChar, 1000);
+                        cmd.Parameters.Add("@MsgSource", SqlDbType.VarChar, 50);
+                        cmd.Parameters.Add("@InsertType", SqlDbType.Int);
+                        cmd.Parameters.Add("@FeedBackReq", SqlDbType.Int);
+                        cmd.Parameters.Add("@IsVictimNotification", SqlDbType.Bit);
+
+                        cmd.Parameters["@AlarmID"].Value = a.SystemID;
+                        cmd.Parameters["@HistoryID"].Value = a.HistoryID;
+                        cmd.Parameters["@ClientID"].Value = a.ClientID;
+                        cmd.Parameters["@MsgReceivedDateTime"].Value = a.MessageReceivedDateTime();
+                        cmd.Parameters["@EventDateTime"].Value = a.EventRecievedDateTime();
+                        cmd.Parameters["@MsgSubject"].Value = "Alarm Notification";
+                        cmd.Parameters["@MsgToAddress"].Value = victimsEmails;
+                        cmd.Parameters["@MsgSource"].Value = "Notification Parser";
+                        cmd.Parameters["@InsertType"].Value = insertType;
+                        cmd.Parameters["@FeedBackReq"].Value = a.FeedbackREQ;
+                        cmd.Parameters["@IsVictimNotification"].Value = isVictimNotification;
+
+                        int retries = 3;
+                        while (retries > 0)
+                        {
+                            try
+                            {
+                                MyConnection.Open();
+                                cmd.ExecuteNonQuery();
+                                success = true;
+                                break;
+                            }
+                            catch (SqlException ex)
+                            {
+                                success = false;
+                                log.Info("[" + platForm + "] " + "SQLException on insertNotificationQueueVictim in Parser " + ex);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on insertNotificationQueueVictim in Parser " + ex);
+                                if (ex.ErrorCode.Equals(1205) ||
+                                   ex.Message.ToLower().Contains("deadlock"))
+                                {
+                                    if (retries > 0)
+                                    {
+                                        retries--;
+                                        Thread.Sleep(3000);
+                                    }
+                                    else
+                                    {
+                                        throw;
+                                    }
+                                }
+                            }
+                            catch (Exception exc)
+                            {
+                                success = false;
+                                log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + exc);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + exc);
+                                if (retries > 0)
+                                {
+                                    retries--;
+                                    Thread.Sleep(3000);
+                                }
+                                else
+                                {
+                                    throw;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    success = false;
+                    log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + e);
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + e);
+                    throw;
+                }
+            }
+
+            return success;
+        }
+
+        /// <summary>
+        /// The readRoles.
+        /// </summary>
+        /// <param name="a">The a<see cref="ActiveAlarm"/>.</param>
+        /// <param name="RoleID">The RoleID<see cref="int"/>.</param>
+        /// <param name="RoleAction">The RoleAction<see cref="int"/>.</param>
+        /// <returns>The <see cref="bool"/>.</returns>
+        private bool readRoles(ActiveAlarm a, int RoleID, int RoleAction)
+        {
+            bool success = true;
+            //Create a connection to the SQL Server;
+            string ConnectionString = AlarmsDatabase;
+
+            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            {
+                try
+                {
+                    using (SqlCommand cmd = new SqlCommand())
+                    {
+                        // Specify which stored procedure the SqlCommand will execute
+                        cmd.CommandText = READ_ROLES;
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        cmd.Connection = MyConnection;
+
+                        cmd.Parameters.Add("@RoleID", SqlDbType.Int);
+                        cmd.Parameters.Add("@POGroup", SqlDbType.VarChar, 32);
+
+                        cmd.Parameters["@RoleID"].Value = RoleID;
+                        cmd.Parameters["@POGroup"].Value = a.POGroupNum;
+
+                        int retries = 3;
+                        while (retries > 0)
+                        {
+                            try
+                            {
+                                MyConnection.Open();
+                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+
+                                while (MyDataReader.Read())
+                                {
+
+                                    if (RoleAction == 2)
+                                    {
+                                        a.EmailAddresses = MyDataReader["EmailAddress"].ToString();
+                                    }
+                                    else if (RoleAction == 3)
+                                    {
+                                        a.EmailAddresses = MyDataReader["MessageAddress"].ToString();
+                                    }
+
+                                    if (RoleAction == 1)
+                                    {
+                                        a.Instruction = a.Instruction + " Please Call " + MyDataReader["RoleName"].ToString() + " And Inform The Following Phone Number(s) " + MyDataReader["OfficePhone"].ToString();
+                                    }
+                                }
+                                success = true;
+                                break;
+                            }
+                            catch (SqlException ex)
+                            {
+                                success = false;
+                                log.Info("[" + platForm + "] " + "SQLException on readRoles in Step Parser " + ex);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readRoles in Step Parser " + ex);
+                                if (ex.ErrorCode.Equals(1205) ||
+                                   ex.Message.ToLower().Contains("deadlock"))
+                                {
+                                    if (retries > 0)
+                                    {
+                                        retries--;
+                                        Thread.Sleep(2000);
+                                    }
+                                    else
+                                    {
+                                        throw;
+                                    }
+                                }
+                            }
+                            catch (Exception exc)
+                            {
+                                success = false;
+                                log.Info("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + exc);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + exc);
+                                if (retries > 0)
+                                {
+                                    retries--;
+                                    Thread.Sleep(2000);
+                                }
+                                else
+                                {
+                                    throw;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    success = false;
+                    log.Info("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + e);
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + e);
+                    throw;
+                }
+            }
+            return success;
+        }
+
+        /// <summary>
+        /// The readVictims.
+        /// </summary>
+        /// <returns>The <see cref="bool"/>.</returns>
+        private bool readVictims()
+        {
+            bool success = true;
+
+            victims = new Dictionary<string, List<Victim>>();
+            //Create a connection to the SQL Server;
+            string ConnectionString = AlarmsDatabase;
+
+            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            {
+                try
+                {
+                    using (SqlCommand cmd = new SqlCommand())
+                    {
+                        // Specify which stored procedure the SqlCommand will execute
+                        cmd.CommandText = READ_VICTIMS_EMAIL;
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        cmd.Connection = MyConnection;
+
+                        int retries = 3;
+                        while (retries > 0)
+                        {
+                            try
+                            {
+                                MyConnection.Open();
+                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+
+                                while (MyDataReader.Read())
+                                {
+                                    Victim v = new Victim()
+                                    {
+                                        OID = MyDataReader["Victim"].ToString(),
+                                        Email = MyDataReader["EmailAddress"].ToString(),
+                                        CellPhone = MyDataReader["CellPhone"].ToString()
+                                    };
+                                    String Offender = MyDataReader["Offender"].ToString();
+
+                                    if (victims.ContainsKey(Offender))
+                                    {
+                                        List<Victim> vList = victims[Offender];
+                                        vList.Add(v);
+                                    }
+                                    else
+                                    {
+                                        List<Victim> vList = new List<Victim>();
+                                        vList.Add(v);
+                                        victims.Add(Offender, vList);
+                                    }
+                                }
+
+                                success = true;
+                                break;
+                            }
+                            catch (SqlException ex)
+                            {
+                                success = false;
+                                log.Error("[" + platForm + "] " + "SQLException on readVictims in Parser ", ex);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readVictims in Parser " + ex);
+                                if (ex.ErrorCode.Equals(1205) ||
+                                   ex.Message.ToLower().Contains("deadlock"))
+                                {
+                                    if (retries > 0)
+                                    {
+                                        retries--;
+                                        Thread.Sleep(2000);
+                                    }
+                                    else
+                                    {
+                                        throw;
+                                    }
+                                }
+                            }
+                            catch (Exception exc)
+                            {
+                                success = false;
+                                log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER ", exc);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER " + exc);
+                                if (retries > 0)
+                                {
+                                    retries--;
+                                    Thread.Sleep(2000);
+                                }
+                                else
+                                {
+                                    throw;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    success = false;
+                    log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER ", e);
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER " + e);
+                    throw;
+                }
+            }
+            return success;
+        }
+
+        /// <summary>
+        /// Returns the email addresses of the client that was contacted as the result of an alarm.
+        /// </summary>
+        /// <param name="a">The a<see cref="ActiveAlarm"/>.</param>
+        /// <returns>.</returns>
+        private string getClientEmail(ActiveAlarm a)
+        {
+            string ConnectionString = AlarmsDatabase;
+
+            StringBuilder sb = new StringBuilder();
+            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            {
+                try
+                {
+                    using (SqlCommand cmd = new SqlCommand(sb.ToString(), MyConnection))
+                    {
+                        // Specify which stored procedure the SqlCommand will execute
+                        cmd.CommandText = READ_CLIENT_EMAIL;
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        cmd.Connection = MyConnection;
+
+                        cmd.Parameters.Add("@ClientSystemID", SqlDbType.Int);
+
+                        cmd.Parameters["@ClientSystemID"].Value = a.ClientSystemID;
+
+                        int retries = 3;
+                        while (retries > 0)
+                        {
+                            try
+                            {
+                                MyConnection.Open();
+                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+
+                                while (MyDataReader.Read())
+                                {
+                                    sb.Append(MyDataReader["EmailAddress"].ToString());
+                                }
+                                break;
+                            }
+                            catch (SqlException ex)
+                            {
+                                log.Info("[" + platForm + "] " + "SQLException on getClientEmail in Parser " + ex);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on getClientEmail in Parser " + ex);
+                                if (ex.ErrorCode.Equals(1205) ||
+                                   ex.Message.ToLower().Contains("deadlock"))
+                                {
+                                    if (retries > 0)
+                                    {
+                                        retries--;
+                                        Thread.Sleep(2000);
+                                    }
+                                    else
+                                    {
+                                        throw;
+                                    }
+                                }
+                            }
+                            catch (Exception exc)
+                            {
+                                log.Info("[" + platForm + "] " + "ERROR: Unable to Read Client Email IN PARSER " + exc);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Email IN PARSER " + exc);
+                                if (retries > 0)
+                                {
+                                    retries--;
+                                    Thread.Sleep(2000);
+                                }
+                                else
+                                {
+                                    throw;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    log.Info("[" + platForm + "] " + "ERROR: Unable to Read Client Email IN PARSER " + e);
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Email IN PARSER " + e);
+                    throw;
+                }
+            }
+
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Returns the texting address client that was contacted as the result of an alarm.
+        /// </summary>
+        /// <param name="a">The a<see cref="ActiveAlarm"/>.</param>
+        /// <returns>.</returns>
+        private string getClientText(ActiveAlarm a)
+        {
+            string ConnectionString = AlarmsDatabase;
+
+            StringBuilder sb = new StringBuilder();
+            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            {
+                try
+                {
+                    using (SqlCommand cmd = new SqlCommand(sb.ToString(), MyConnection))
+                    {
+                        // Specify which stored procedure the SqlCommand will execute
+                        cmd.CommandText = READ_CLIENT_TEXT;
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        cmd.Connection = MyConnection;
+
+                        cmd.Parameters.Add("@ClientSystemID", SqlDbType.Int);
+
+                        cmd.Parameters["@ClientSystemID"].Value = a.ClientSystemID;
+
+                        int retries = 3;
+                        while (retries > 0)
+                        {
+                            try
+                            {
+                                MyConnection.Open();
+                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+
+                                while (MyDataReader.Read())
+                                {
+                                    sb.Append(MyDataReader["Cell"].ToString());
+                                }
+                                break;
+                            }
+                            catch (SqlException ex)
+                            {
+                                log.Info("[" + platForm + "] " + "SQLException on getClientText in Parser " + ex);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on getClientText in Parser " + ex);
+                                if (ex.ErrorCode.Equals(1205) ||
+                                   ex.Message.ToLower().Contains("deadlock"))
+                                {
+                                    if (retries > 0)
+                                    {
+                                        retries--;
+                                        Thread.Sleep(3000);
+                                    }
+                                    else
+                                    {
+                                        throw;
+                                    }
+                                }
+                            }
+                            catch (Exception exc)
+                            {
+                                log.Info("[" + platForm + "] " + "ERROR: Unable to Read Client Text IN PARSER " + exc);
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Text IN PARSER " + exc);
+                                if (retries > 0)
+                                {
+                                    retries--;
+                                    Thread.Sleep(1000);
+                                }
+                                else
+                                {
+                                    throw;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    log.Info("[" + platForm + "] " + "ERROR: Unable to Read Client Text IN PARSER " + e);
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Text IN PARSER " + e);
+                    throw;
+                }
+            }
+
+            return sb.ToString();
+        }
+    }
+}
