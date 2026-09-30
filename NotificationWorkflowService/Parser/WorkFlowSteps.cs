@@ -1,25 +1,29 @@
 ﻿namespace ActiveAlarmsParser
 {
-    using log4net;
+
     using System;
     using System.Collections.Generic;
     using System.Data;
-    using System.Data.SqlClient;
+    using Microsoft.Data.SqlClient;
     using System.Globalization;
     using System.Linq;
     using System.Text;
     using System.Threading;
-    using static System.Runtime.InteropServices.JavaScript.JSType;
+    using NotificationWorkflowService.Entity;
+    using Microsoft.Extensions.Configuration;
+    using Microsoft.Extensions.Logging;
+
+    //using static System.Runtime.InteropServices.JavaScript.JSType;
 
     /// <summary>
-    /// Defines the <see cref="StepParser" />.
+    /// Defines the <see cref="WorkFlowSteps" />.
     /// </summary>
     internal class WorkFlowSteps
     {
         /// <summary>
         /// Defines the log.
         /// </summary>
-        private static readonly ILog log = LogManager.GetLogger(typeof(Parser));
+        private readonly ILogger<WorkFlowSteps> log;
 
         /// <summary>
         /// Defines the activeProfiles.
@@ -146,13 +150,18 @@
         /// </summary>
         private readonly string READ_CLIENT_TEXT = "ActiveAlarms_ClientCell";
 
+        private readonly IConfiguration configuration;
+
         /// <summary>
-        /// Initializes a new instance of the <see cref="StepParser"/> class.
+        /// Initializes a new instance of the <see cref="WorkFlowSteps"/> class.
         /// </summary>
-        /// <param name="connection">The connection<see cref="String"/>.</param>
-        public StepParser(string connection)
+        /// <param name="logger">The logger.</param>
+        /// <param name="configuration">The application configuration.</param>
+        public WorkFlowSteps(ILogger<WorkFlowSteps> logger, IConfiguration configuration)
         {
-            setUpConnnectionStrings(connection);
+            this.log = logger;
+            this.configuration = configuration;
+            setUpConnnectionStrings();
         }
 
         /// <summary>
@@ -163,7 +172,6 @@
         /// <returns>The <see cref="bool"/>.</returns>
         public bool setUpParser(string platform)
         {
-            log4net.Config.XmlConfigurator.Configure();
             platForm = platform;
 
             if (!FetchClientProfile(0))
@@ -200,12 +208,12 @@
         }
 
         /// <summary>
-        /// Reads the connection Strings in the App.config file.
+        /// Reads the connection string from configuration.
         /// </summary>
-        /// <param name="connection">The connection<see cref="String"/>.</param>
-        private void setUpConnnectionStrings(string connection)
+        private void setUpConnnectionStrings()
         {
-            AlarmsDatabase = connection;
+            AlarmsDatabase = configuration.GetConnectionString("connstr")
+                ?? throw new InvalidOperationException("Connection string 'connstr' is not configured.");
         }
 
         /// <summary>
@@ -275,7 +283,7 @@
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "SQLException on FetchClientProfile in Parser ", ex);
+                                log.LogError(ex, "[" + platForm + "] " + "SQLException on FetchClientProfile in Parser ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on FetchClientProfile in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -296,7 +304,7 @@
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE CLIENT PROFILES ", exc);
+                                log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE CLIENT PROFILES ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE CLIENT PROFILES " + exc);
                                 if (retries > 0)
@@ -316,7 +324,7 @@
                 catch (Exception e)
                 {
                     success = false;
-                    log.Info("[" + platForm + "] " + "FAILED TO RETRIEVE CLIENT PROFILES " + e);
+                    log.LogInformation("[" + platForm + "] " + "FAILED TO RETRIEVE CLIENT PROFILES " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE CLIENT PROFILES " + e);
                 }
@@ -527,7 +535,7 @@
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "SQLException on readAllProfiles in Parser ", ex);
+                                log.LogError(ex, "[" + platForm + "] " + "SQLException on readAllProfiles in Parser ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readAllProfiles in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -549,7 +557,7 @@
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE PROFILES ", exc);
+                                log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE PROFILES ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE PROFILES IN PARSER " + exc);
                                 if (retries > 0)
@@ -569,7 +577,7 @@
                 catch (Exception e)
                 {
                     success = false;
-                    log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE PROFILES ", e);
+                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE PROFILES ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE PROFILES IN PARSER " + e);
                 }
@@ -650,7 +658,7 @@
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "SQLException on readAllHolidays in Parser ", ex);
+                                log.LogError(ex, "[" + platForm + "] " + "SQLException on readAllHolidays in Parser ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readAllHolidays in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -670,7 +678,7 @@
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE HOLIDAYS ", exc);
+                                log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE HOLIDAYS ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE HOLIDAYS IN PARSER " + exc);
                                 if (retries > 0)
@@ -690,7 +698,7 @@
                 catch (Exception e)
                 {
                     success = false;
-                    log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE HOLIDAYS ", e);
+                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE HOLIDAYS ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE HOLIDAYS IN PARSER " + e);
                 }
@@ -742,7 +750,7 @@
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "SQLException on readAllRoles in Parser ", ex);
+                                log.LogError(ex, "[" + platForm + "] " + "SQLException on readAllRoles in Parser ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readAllRoles in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -762,7 +770,7 @@
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE ROLES ", exc);
+                                log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE ROLES ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ROLES IN PARSER " + exc);
                                 if (retries > 0)
@@ -782,7 +790,7 @@
                 catch (Exception e)
                 {
                     success = false;
-                    log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE ROLES ", e);
+                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ROLES ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ROLES IN PARSER " + e);
                 }
@@ -796,7 +804,7 @@
         /// <returns>.</returns>
         public bool getExpiredAlarms()
         {
-            log.Info(String.Format("StepParser::getExpiredAlarms::DBCall"));
+            log.LogInformation(String.Format("StepParser::getExpiredAlarms::DBCall"));
             bool success = true;
             activeAlarms = new List<ActiveAlarm>();
 
@@ -868,7 +876,7 @@
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "SQLException on getExpiredAlarms in Step Parser " + ex);
+                                log.LogInformation("[" + platForm + "] " + "SQLException on getExpiredAlarms in Step Parser " + ex);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on getExpiredAlarms in Step Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -888,7 +896,7 @@
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "FAILED TO RUN REMOVE_EXPIRED_NOTIFICATION_ALARMS IN STEP PARSER " + exc);
+                                log.LogInformation("[" + platForm + "] " + "FAILED TO RUN REMOVE_EXPIRED_NOTIFICATION_ALARMS IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN REMOVE_EXPIRED_NOTIFICATION_ALARMS IN STEP PARSER " + exc);
                                 if (retries > 0)
@@ -907,7 +915,7 @@
                 catch (Exception e)
                 {
                     success = false;
-                    log.Info("[" + platForm + "] " + "FAILED TO RUN REMOVE_EXPIRED_NOTIFICATION_ALARMS IN STEP PARSER " + e);
+                    log.LogInformation("[" + platForm + "] " + "FAILED TO RUN REMOVE_EXPIRED_NOTIFICATION_ALARMS IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN REMOVE_EXPIRED_NOTIFICATION_ALARMS IN STEP PARSER " + e);
                 }
@@ -922,10 +930,10 @@
         private void getPriorityAndEmail(ref List<ActiveAlarm> activeAlarms)
         {
             List<int> toRemove = new List<int>();
-            log.Info(String.Format("StepParser::getPriorityAndEmail::ActiveAlarmsCount::{0}", activeAlarms.Count));
+            log.LogInformation(String.Format("StepParser::getPriorityAndEmail::ActiveAlarmsCount::{0}", activeAlarms.Count));
             foreach (ActiveAlarm a in activeAlarms)
             {
-                log.Info(String.Format("StepParser::getPriorityAndEmail::AlarmSystemID::{0}", a.SystemID));
+                log.LogInformation(String.Format("StepParser::getPriorityAndEmail::AlarmSystemID::{0}", a.SystemID));
                 TimeZoneInfo zoneInfo = TimeZoneInfo.FindSystemTimeZoneById(a.ClientTZ);
 
                 DateTime nowUTC = DateTime.UtcNow;
@@ -939,7 +947,7 @@
 
                 Boolean isHoliday = holidayCheck(a, current);
 
-                Profile p = null;
+                Profile? p = null;
 
                 if (!isHoliday)
                 {
@@ -1052,8 +1060,8 @@
 
                 if (!found)
                 {
-                    //log.Info(String.Format("StepParser::getPriorityAndEmail::AlarmSystemID::{0}::ProfileID::{1}::found::false", a.SystemID, a.ProfileID));
-                    log.Info(String.Format("StepParser::getPriorityAndEmail: No Profile found meet current time AlarmSysID::{0}", a.SystemID));
+                    //log.LogInfo(String.Format("StepParser::getPriorityAndEmail::AlarmSystemID::{0}::ProfileID::{1}::found::false", a.SystemID, a.ProfileID));
+                    log.LogInformation(String.Format("StepParser::getPriorityAndEmail: No Profile found meet current time AlarmSysID::{0}", a.SystemID));
 
                     toRemove.Add(activeAlarms.IndexOf(a));
                 }
@@ -1094,7 +1102,7 @@
             RoleActionMapping.Add(2, "E-mail");
             RoleActionMapping.Add(3, "Text");
 
-            log.Info(String.Format("StepParser::parseAlarms::activeAlarmsCount{0}", activeAlarms.Count));
+            log.LogInformation(String.Format("StepParser::parseAlarms::activeAlarmsCount{0}", activeAlarms.Count));
             foreach (ActiveAlarm a in activeAlarms)
             {
                 try
@@ -1102,8 +1110,8 @@
                     bool insert = true;
                     StringBuilder sb = new StringBuilder();
                     sb.Append("Action as per the profile assigned:");
-                    log.Info(String.Format("StepParserBeforeCheck::AlarmSystemID::{0}::Priority::{1}", a.SystemID, a.Priority));
-                    log.Info(String.Format("StepParserBeforeCheck::AlarmSystemID::{0}::CurrentStateNo::{1}::NextStateNo::{2}::ProcessNextStep::{3}::StateTime::{4}::CurrentLoopNumber::{5}::insert::{6}"
+                    log.LogInformation(String.Format("StepParserBeforeCheck::AlarmSystemID::{0}::Priority::{1}", a.SystemID, a.Priority));
+                    log.LogInformation(String.Format("StepParserBeforeCheck::AlarmSystemID::{0}::CurrentStateNo::{1}::NextStateNo::{2}::ProcessNextStep::{3}::StateTime::{4}::CurrentLoopNumber::{5}::insert::{6}"
                         , a.SystemID
                         , a.CurrentStateNo
                         , a.NextStateNo
@@ -1119,7 +1127,7 @@
                             sb.Append("Do Nothing");
                             Console.ForegroundColor = ConsoleColor.Cyan;
                             Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Do Nothing " + "(Step " + a.StateNo + ")");
-                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Do Nothing " + "(Step " + a.StateNo + ")");
+                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Do Nothing " + "(Step " + a.StateNo + ")");
                             insert = false;
                             break;
 
@@ -1127,7 +1135,7 @@
                             sb.Append("Auto Email");
                             Console.ForegroundColor = ConsoleColor.Cyan;
                             Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email " + "(Step " + a.StateNo + ")");
-                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email " + "(Step " + a.StateNo + ")");
+                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email " + "(Step " + a.StateNo + ")");
                             SendNotificationsToOfficersInSameGroup(a);
                             AddToNotificationQueue(a, 3);
                             string emailAdresses = "Pages sent to: " + a.EmailAddresses;
@@ -1142,7 +1150,7 @@
                             sb.Append("McApp");
                             Console.ForegroundColor = ConsoleColor.Cyan;
                             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp " + "(Step " + a.StateNo + ")");
-                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp " + "(Step " + a.StateNo + ")");
+                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp " + "(Step " + a.StateNo + ")");
                             SendNotificationsToOfficersInSameGroup(a);
                             PushAlertToMcApp(a);
                             a.ProcessNextStep = 0;
@@ -1151,14 +1159,14 @@
                             sb.Append("Auto Fax");
                             Console.ForegroundColor = ConsoleColor.Cyan;
                             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Fax " + "(Step " + a.StateNo + ")");
-                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Fax " + "(Step " + a.StateNo + ")");
+                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Fax " + "(Step " + a.StateNo + ")");
                             SendNotificationsToOfficersInSameGroup(a);
                             break;
                         case 5:
                             sb.Append("Auto Page");
                             Console.ForegroundColor = ConsoleColor.Cyan;
                             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Page " + "(Step " + a.StateNo + ")");
-                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Page " + "(Step " + a.StateNo + ")");
+                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Page " + "(Step " + a.StateNo + ")");
                             SendNotificationsToOfficersInSameGroup(a);
                             AddToNotificationQueue(a, 1);
                             string autoPageEmails = "Pages sent to: " + getInsertEmails(a);
@@ -1173,7 +1181,7 @@
                             sb.Append("McApp and Auto Fax");
                             Console.ForegroundColor = ConsoleColor.Cyan;
                             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Fax " + "(Step " + a.StateNo + ")");
-                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Fax " + "(Step " + a.StateNo + ")");
+                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Fax " + "(Step " + a.StateNo + ")");
                             SendNotificationsToOfficersInSameGroup(a);
                             PushAlertToMcApp(a);
                             a.ProcessNextStep = 0;
@@ -1182,7 +1190,7 @@
                             sb.Append("McApp and Auto Email");
                             Console.ForegroundColor = ConsoleColor.Cyan;
                             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Email " + "(Step " + a.StateNo + ")");
-                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Email " + "(Step " + a.StateNo + ")");
+                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Email " + "(Step " + a.StateNo + ")");
                             PushAlertToMcApp(a);
                             SendNotificationsToOfficersInSameGroup(a);
                             AddToNotificationQueue(a, 3);
@@ -1199,7 +1207,7 @@
                             sb.Append("McApp and Auto Page");
                             Console.ForegroundColor = ConsoleColor.Cyan;
                             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Page " + "(Step " + a.StateNo + ")");
-                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Page " + "(Step " + a.StateNo + ")");
+                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Page " + "(Step " + a.StateNo + ")");
                             SendNotificationsToOfficersInSameGroup(a);
                             PushAlertToMcApp(a);
                             AddToNotificationQueue(a, 1);
@@ -1216,7 +1224,7 @@
                             sb.Append("Delay");
                             Console.ForegroundColor = ConsoleColor.Cyan;
                             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Delay " + "(Step " + a.StateNo + ")");
-                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Delay " + "(Step " + a.StateNo + ")");
+                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Delay " + "(Step " + a.StateNo + ")");
                             insert = true;
                             break;
                         case 12:
@@ -1230,7 +1238,7 @@
                                     {
                                         Console.ForegroundColor = ConsoleColor.Green;
                                         Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp Call Officers " + "(Step " + a.StateNo + ")");
-                                        log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp Call Officers " + "(Step " + a.StateNo + ")");
+                                        log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp Call Officers " + "(Step " + a.StateNo + ")");
                                         PushAlertToMcApp(a);
                                         a.ProcessNextStep = 0;
                                     }
@@ -1240,7 +1248,7 @@
                                     {
                                         Console.ForegroundColor = ConsoleColor.Green;
                                         Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email " + "(Step " + a.StateNo + ")");
-                                        log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email " + "(Step " + a.StateNo + ")");
+                                        log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email " + "(Step " + a.StateNo + ")");
                                         AddToNotificationQueue(a, 3);
                                         string emails = "Pages sent to: " + a.EmailAddresses;
                                         if (emails.Length > 4096)
@@ -1256,7 +1264,7 @@
                                     {
                                         Console.ForegroundColor = ConsoleColor.Green;
                                         Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email " + "(Step " + a.StateNo + ")");
-                                        log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email " + "(Step " + a.StateNo + ")");
+                                        log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email " + "(Step " + a.StateNo + ")");
                                         AddToNotificationQueue(a, 3);
                                         string txtMessages = "Pages sent to: " + a.EmailAddresses;
                                         if (txtMessages.Length > 4096)
@@ -1274,7 +1282,7 @@
 
                             Console.ForegroundColor = ConsoleColor.Green;
                             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Email-Victims");
-                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Email-Victims");
+                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Email-Victims");
 
                             string victimsMail = "";
                             try
@@ -1295,7 +1303,7 @@
                             }
                             catch (Exception ex)
                             {
-                                log.Error("victimsMail", ex);
+                                log.LogError(ex, "victimsMail");
                                 victimsMail = "";
                             }
 
@@ -1311,7 +1319,7 @@
                             sb.Append("Contact Victim");
                             Console.ForegroundColor = ConsoleColor.Green;
                             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Contact Victim");
-                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Contact Victim");
+                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Contact Victim");
                             SendNotificationsToOfficersInSameGroup(a);
                             PushAlertToMcApp(a);
                             a.ProcessNextStep = 0;
@@ -1320,7 +1328,7 @@
                         case 15: //alert client
                             Console.ForegroundColor = ConsoleColor.Green;
                             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Alert Client");
-                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Alert Client");
+                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Alert Client");
 
                             string clientMail = "";
                             try
@@ -1333,7 +1341,7 @@
                             }
                             catch (Exception ex)
                             {
-                                log.Error("clientMail", ex);
+                                log.LogError(ex, "clientMail");
                                 clientMail = "";
                             }
 
@@ -1348,7 +1356,7 @@
                         case 16: //alert client text
                             Console.ForegroundColor = ConsoleColor.Green;
                             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Alert Client Text");
-                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Alert Client Text");
+                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Alert Client Text");
 
                             string clientText = "";
                             try
@@ -1361,7 +1369,7 @@
                             }
                             catch (Exception ex)
                             {
-                                log.Error("clientText", ex);
+                                log.LogError(ex, "clientText");
                                 clientText = "";
                             }
 
@@ -1377,7 +1385,7 @@
                             sb.Append("Text All Victims");
                             Console.ForegroundColor = ConsoleColor.Green;
                             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Text All Victims");
-                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Text All Victims");
+                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Text All Victims");
 
                             string victimsText = "";
                             try
@@ -1398,7 +1406,7 @@
                             }
                             catch (Exception ex)
                             {
-                                log.Error("victimsText", ex);
+                                log.LogError(ex, "victimsText");
                                 victimsText = "";
                             }
 
@@ -1418,7 +1426,7 @@
 
                     insertIntoAlarmNotification(a.SystemID, a.CurrentStateNo, DateTime.UtcNow.AddMinutes(a.StateTime), PriorityMapping[a.Priority]);
 
-                    log.Info(String.Format("StepParserAfterCheck::AlarmSystemID::{0}::CurrentStateNo::{1}::NextStateNo::{2}::ProcessNextStep::{3}::StateTime::{4}::CurrentLoopNumber::{5}::insert::{6}", a.SystemID, a.CurrentStateNo, a.NextStateNo, a.ProcessNextStep, a.StateTime, a.CurrentStateNo, insert.ToString()));
+                    log.LogInformation(String.Format("StepParserAfterCheck::AlarmSystemID::{0}::CurrentStateNo::{1}::NextStateNo::{2}::ProcessNextStep::{3}::StateTime::{4}::CurrentLoopNumber::{5}::insert::{6}", a.SystemID, a.CurrentStateNo, a.NextStateNo, a.ProcessNextStep, a.StateTime, a.CurrentStateNo, insert.ToString()));
                     if (a.NextStateNo != -1 && insert)
                     {
                         insertIntoCurrentAlarmNotification(a.SystemID, a.NextStateNo, DateTime.UtcNow.AddMinutes(a.StateTime), a.CurrentStateNo, a.CurrentLoopNumber, a.ProcessNextStep);
@@ -1442,7 +1450,7 @@
                     //    ExpiryTimeApplied = ExpiryTimeByUTCNow;
                     //}
 
-                    //log.Info(String.Format("ExpiryTimeByPreviousExpiryTime - {0} :: ExpiryTimeByUTCNow - {1} :: ExpiryTimeApplied - {2}"
+                    //log.LogInfo(String.Format("ExpiryTimeByPreviousExpiryTime - {0} :: ExpiryTimeByUTCNow - {1} :: ExpiryTimeApplied - {2}"
                     //                        , ExpiryTimeByPreviousExpiryTime.ToString()
                     //                        , ExpiryTimeByUTCNow.ToString()
                     //                        , ExpiryTimeApplied.ToString()
@@ -1462,7 +1470,7 @@
                 }
                 catch (Exception ex)
                 {
-                    log.Error("Step Parser Parse Error", ex);
+                    log.LogError(ex, "Step Parser Parse Error");
                 }
 
             }
@@ -1518,7 +1526,7 @@
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "SQLException on CreateAlarmAudit in Step Parser " + ex);
+                                log.LogInformation("[" + platForm + "] " + "SQLException on CreateAlarmAudit in Step Parser " + ex);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on CreateAlarmAudit in Step Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -1538,7 +1546,7 @@
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "FAILED TO RUN MCAPP_CREATEAUDIT IN STEP PARSER " + exc);
+                                log.LogInformation("[" + platForm + "] " + "FAILED TO RUN MCAPP_CREATEAUDIT IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN MCAPP_CREATEAUDIT IN STEP PARSER " + exc);
                                 if (retries > 0)
@@ -1557,7 +1565,7 @@
                 catch (Exception e)
                 {
                     success = false;
-                    log.Info("[" + platForm + "] " + "FAILED TO RUN MCAPP_CREATEAUDIT IN STEP PARSER " + e);
+                    log.LogInformation("[" + platForm + "] " + "FAILED TO RUN MCAPP_CREATEAUDIT IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN MCAPP_CREATEAUDIT IN STEP PARSER " + e);
                 }
@@ -1630,7 +1638,7 @@
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "SQLException on PushAlertToMcApp in Step Parser " + ex);
+                                log.LogInformation("[" + platForm + "] " + "SQLException on PushAlertToMcApp in Step Parser " + ex);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on PushAlertToMcApp in Step Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -1650,7 +1658,7 @@
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + exc);
+                                log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + exc);
                                 if (retries > 0)
@@ -1669,7 +1677,7 @@
                 catch (Exception e)
                 {
                     success = false;
-                    log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + e);
+                    log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + e);
                     throw;
@@ -1723,7 +1731,7 @@
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "SQLException on ActiveAlarms_InsertIntoHistory in Step Parser " + ex);
+                                log.LogInformation("[" + platForm + "] " + "SQLException on ActiveAlarms_InsertIntoHistory in Step Parser " + ex);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on ActiveAlarms_InsertIntoHistory in Step Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -1743,7 +1751,7 @@
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_HISTORY IN STEP PARSER " + exc);
+                                log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_HISTORY IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_INTO_HISTORY IN STEP PARSER " + exc);
                                 if (retries > 0)
@@ -1762,7 +1770,7 @@
                 catch (Exception e)
                 {
                     success = false;
-                    log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_HISTORY IN STEP PARSER " + e);
+                    log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_HISTORY IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_INTO_HISTORY IN STEP PARSER " + e);
                 }
@@ -1817,7 +1825,7 @@
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "SQLException on insertIntoAlarmNotification in Step Parser " + ex);
+                                log.LogInformation("[" + platForm + "] " + "SQLException on insertIntoAlarmNotification in Step Parser " + ex);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on insertIntoAlarmNotification in Step Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -1837,7 +1845,7 @@
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + exc);
+                                log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + exc);
                                 if (retries > 0)
@@ -1856,7 +1864,7 @@
                 catch (Exception e)
                 {
                     success = false;
-                    log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + e);
+                    log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + e);
                     throw;
@@ -1920,7 +1928,7 @@
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "SQLException on insertIntoCurrentAlarmNotification in Step Parser " + ex);
+                                log.LogInformation("[" + platForm + "] " + "SQLException on insertIntoCurrentAlarmNotification in Step Parser " + ex);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on insertIntoCurrentAlarmNotification in Step Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -1940,7 +1948,7 @@
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + exc);
+                                log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + exc);
                                 if (retries > 0)
@@ -1959,7 +1967,7 @@
                 catch (Exception e)
                 {
                     success = false;
-                    log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + e);
+                    log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + e);
                     throw;
@@ -1988,7 +1996,7 @@
                 }
                 else
                 {
-                    log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: Notify to all officers in group failed");
+                    log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: Notify to all officers in group failed");
                 }
             }
         }
@@ -2035,7 +2043,7 @@
                             }
                             catch (SqlException ex)
                             {
-                                log.Info("[" + platForm + "] " + "SQLException on getInsertEmails in Step Parser " + ex);
+                                log.LogInformation("[" + platForm + "] " + "SQLException on getInsertEmails in Step Parser " + ex);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on getInsertEmails in Step Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -2054,7 +2062,7 @@
                             }
                             catch (Exception exc)
                             {
-                                log.Info("[" + platForm + "] " + "ERROR: Unable to Read Audit and History Emails in Step Parser " + exc);
+                                log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Audit and History Emails in Step Parser " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Audit and History Emails in Step Parser " + exc);
                                 if (retries > 0)
@@ -2072,7 +2080,7 @@
                 }
                 catch (Exception e)
                 {
-                    log.Info("[" + platForm + "] " + "ERROR: Unable to Read Audit and History Emails in Step Parser " + e);
+                    log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Audit and History Emails in Step Parser " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Audit and History Emails in Step Parser " + e);
                     throw;
@@ -2216,7 +2224,7 @@
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "SQLException on AddToNotificationQueue in Step Parser " + ex);
+                                log.LogInformation("[" + platForm + "] " + "SQLException on AddToNotificationQueue in Step Parser " + ex);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on AddToNotificationQueue in Step Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -2236,7 +2244,7 @@
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + exc);
+                                log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + exc);
                                 if (retries > 0)
@@ -2255,7 +2263,7 @@
                 catch (Exception e)
                 {
                     success = false;
-                    log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + e);
+                    log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + e);
                     throw;
@@ -2326,7 +2334,7 @@
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "SQLException on insertNotificationQueueVictim in Parser " + ex);
+                                log.LogInformation("[" + platForm + "] " + "SQLException on insertNotificationQueueVictim in Parser " + ex);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on insertNotificationQueueVictim in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -2346,7 +2354,7 @@
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + exc);
+                                log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + exc);
                                 if (retries > 0)
@@ -2365,7 +2373,7 @@
                 catch (Exception e)
                 {
                     success = false;
-                    log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + e);
+                    log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + e);
                     throw;
@@ -2436,7 +2444,7 @@
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "SQLException on readRoles in Step Parser " + ex);
+                                log.LogInformation("[" + platForm + "] " + "SQLException on readRoles in Step Parser " + ex);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readRoles in Step Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -2456,7 +2464,7 @@
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + exc);
+                                log.LogInformation("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + exc);
                                 if (retries > 0)
@@ -2475,7 +2483,7 @@
                 catch (Exception e)
                 {
                     success = false;
-                    log.Info("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + e);
+                    log.LogInformation("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + e);
                     throw;
@@ -2544,7 +2552,7 @@
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "SQLException on readVictims in Parser ", ex);
+                                log.LogError(ex, "[" + platForm + "] " + "SQLException on readVictims in Parser ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readVictims in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -2564,7 +2572,7 @@
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER ", exc);
+                                log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER " + exc);
                                 if (retries > 0)
@@ -2583,7 +2591,7 @@
                 catch (Exception e)
                 {
                     success = false;
-                    log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER ", e);
+                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER " + e);
                     throw;
@@ -2633,7 +2641,7 @@
                             }
                             catch (SqlException ex)
                             {
-                                log.Info("[" + platForm + "] " + "SQLException on getClientEmail in Parser " + ex);
+                                log.LogInformation("[" + platForm + "] " + "SQLException on getClientEmail in Parser " + ex);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on getClientEmail in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -2652,7 +2660,7 @@
                             }
                             catch (Exception exc)
                             {
-                                log.Info("[" + platForm + "] " + "ERROR: Unable to Read Client Email IN PARSER " + exc);
+                                log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Client Email IN PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Email IN PARSER " + exc);
                                 if (retries > 0)
@@ -2670,7 +2678,7 @@
                 }
                 catch (Exception e)
                 {
-                    log.Info("[" + platForm + "] " + "ERROR: Unable to Read Client Email IN PARSER " + e);
+                    log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Client Email IN PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Email IN PARSER " + e);
                     throw;
@@ -2721,7 +2729,7 @@
                             }
                             catch (SqlException ex)
                             {
-                                log.Info("[" + platForm + "] " + "SQLException on getClientText in Parser " + ex);
+                                log.LogInformation("[" + platForm + "] " + "SQLException on getClientText in Parser " + ex);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on getClientText in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -2740,7 +2748,7 @@
                             }
                             catch (Exception exc)
                             {
-                                log.Info("[" + platForm + "] " + "ERROR: Unable to Read Client Text IN PARSER " + exc);
+                                log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Client Text IN PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Text IN PARSER " + exc);
                                 if (retries > 0)
@@ -2758,7 +2766,7 @@
                 }
                 catch (Exception e)
                 {
-                    log.Info("[" + platForm + "] " + "ERROR: Unable to Read Client Text IN PARSER " + e);
+                    log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Client Text IN PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Text IN PARSER " + e);
                     throw;
