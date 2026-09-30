@@ -54,8 +54,7 @@ namespace ActiveAlarmsParser
             .ConfigureServices((hostContext, services) =>
             {
                 services.AddHostedService<Worker>();
-                services.AddHostedService<DeadBatteryWorker>();
-
+               
                 //services.AddSingleton<IDataRouter, DataRouter>();
                 
                 //Register the HttpClient factory

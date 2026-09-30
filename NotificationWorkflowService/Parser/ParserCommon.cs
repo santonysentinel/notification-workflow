@@ -1,5 +1,7 @@
-﻿using NotificationWorkflowService.Entity;
-using Serilog;
+﻿using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using NotificationWorkflowService.Entity;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -25,7 +27,7 @@ namespace NotificationWorkflowService.Parser
         /// <summary>
         /// Defines the log.
         /// </summary>
-        private static readonly ILog log = LogManager.GetLogger(typeof(Parser));
+        private readonly ILogger<Parser> log;
 
         /// <summary>
         /// Defines the activeAlarms.
@@ -207,20 +209,21 @@ namespace NotificationWorkflowService.Parser
         /// </summary>
         private readonly String READ_CLIENT_TEXT = "ActiveAlarms_ClientCell";
 
-        /// <summary>
-        /// Defines the Platform
-        /// </summary>
-        /// 
-        private String Platform = ConfigurationManager.AppSettings["Platform"];
+        private readonly IConfiguration configuration;
+        private readonly String Platform;
+
 
         //private readonly String READ_PUSH_NOTIFICATION_SETTINGS = "ActiveAlarms_GetPushNotificationSettings";
         /// <summary>
         /// Initializes a new instance of the <see cref="Parser"/> class.
         /// </summary>
         /// <param name="connection">The connection<see cref="String"/>.</param>
-        public Parser(String connection)
+        public Parser(ILogger<Parser> logger, IConfiguration configuration)
         {
-            setUpConnnectionStrings(connection);
+            this.log = logger;
+            this.configuration = configuration;
+            Platform = configuration["Platform"] ?? "";
+            setUpConnnectionStrings();
         }
 
         /// <summary>
@@ -230,7 +233,7 @@ namespace NotificationWorkflowService.Parser
         /// <returns>The <see cref="bool"/>.</returns>
         public bool setUpParser(String platform)
         {
-            log4net.Config.XmlConfigurator.Configure();
+            
             platForm = platform;
 
             if (!FetchClientProfile(0))
@@ -284,12 +287,12 @@ namespace NotificationWorkflowService.Parser
         }
 
         /// <summary>
-        /// Reads the connection Strings in the App.config file.
+        /// Reads the connection string from configuration.
         /// </summary>
-        /// <param name="connection">The connection<see cref="String"/>.</param>
-        private void setUpConnnectionStrings(String connection)
+        private void setUpConnnectionStrings()
         {
-            AlarmsDatabase = connection;
+            AlarmsDatabase = configuration.GetConnectionString("connstr")
+                ?? throw new InvalidOperationException("Connection string 'connstr' is not configured.");
         }
 
         /// <summary>
@@ -301,7 +304,7 @@ namespace NotificationWorkflowService.Parser
         {
             bool success = true;
 
-            int LastProcessedPoint = readLastSuccessfulProcess(Convert.ToInt32(ConfigurationManager.AppSettings[platForm + "ParserID"]));
+            int LastProcessedPoint = readLastSuccessfulProcess(Convert.ToInt32(configuration[platForm + "ParserID"]));
             int pointsBehind = ReadCurrentActiveAlarmPoint() - LastProcessedPoint;
 
             int replaceIndex = Console.Title.IndexOf(platForm + " Parser Acvity");
@@ -338,8 +341,8 @@ namespace NotificationWorkflowService.Parser
                         cmd.Parameters.Add("@NumberToRead", SqlDbType.Int);
                         cmd.Parameters.Add("@StartingSystemID", SqlDbType.Int);
 
-                        cmd.Parameters["@NumberToRead"].Value = ConfigurationManager.AppSettings["NumberOfProcessPoints"];
-                        cmd.Parameters["@StartingSystemID"].Value = readLastSuccessfulProcess(Convert.ToInt32(ConfigurationManager.AppSettings[platForm + "ParserID"]));
+                        cmd.Parameters["@NumberToRead"].Value = configuration["NumberOfProcessPoints"];
+                        cmd.Parameters["@StartingSystemID"].Value = readLastSuccessfulProcess(Convert.ToInt32(configuration[platForm + "ParserID"]));
 
                         int retries = 3;
                         while (retries > 0)
@@ -392,7 +395,7 @@ namespace NotificationWorkflowService.Parser
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "SQLException on readPoints in Parser ", ex);
+                                log.LogError(ex, "[" + platForm + "] " + "SQLException on readPoints in Parser ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readPoints in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -412,7 +415,7 @@ namespace NotificationWorkflowService.Parser
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM POINTS IN PARSER ", exc);
+                                log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM POINTS IN PARSER ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM POINTS IN PARSER " + exc);
                                 if (retries > 0)
@@ -432,7 +435,7 @@ namespace NotificationWorkflowService.Parser
                 catch (Exception e)
                 {
                     success = false;
-                    log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM POINTS IN PARSER ", e);
+                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM POINTS IN PARSER ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM POINTS IN PARSER " + e);
 
@@ -464,7 +467,7 @@ namespace NotificationWorkflowService.Parser
 
                 Boolean isHoliday = holidayCheck(a, current);
 
-                Profile p = null;
+                Profile? p = null;
 
                 if (!isHoliday)
                 {
@@ -551,7 +554,7 @@ namespace NotificationWorkflowService.Parser
                             {
                                 try
                                 {
-                                    log.Info(String.Format("FindStepOneProfileItem: No Profile found meet current time AlarmSysID::{0}", a.SystemID));
+                                    log.LogInformation(String.Format("FindStepOneProfileItem: No Profile found meet current time AlarmSysID::{0}", a.SystemID));
                                 }
                                 catch (Exception exx)
                                 {
@@ -565,7 +568,7 @@ namespace NotificationWorkflowService.Parser
                 {
                     try
                     {
-                        log.Info(String.Format("getPriorityAndEmail: No Profile found meet current time AlarmSysID::{0}", a.SystemID));
+                        log.LogInformation(String.Format("getPriorityAndEmail: No Profile found meet current time AlarmSysID::{0}", a.SystemID));
                     }
                     catch (Exception exx)
                     {
@@ -585,10 +588,10 @@ namespace NotificationWorkflowService.Parser
                     }
                     catch (Exception e)
                     {
-                        log.Error("Error getPriorityAndEmail: ", e);
+                        log.LogError(e, "Error getPriorityAndEmail: ");
                     }
 
-                    if (ConfigurationManager.AppSettings["DefaultMcAppFlag"].Equals("1"))
+                    if (configuration["DefaultMcAppFlag"] == "1")
                     {
                         a.Priority = 3;
                         a.ProfileName = "";
@@ -601,7 +604,7 @@ namespace NotificationWorkflowService.Parser
                 }
             }
         }
-        public ProfileItem FindStepOneProfileItem(List<ProfileItem> profileItems, DateTime current)
+        public ProfileItem? FindStepOneProfileItem(List<ProfileItem> profileItems, DateTime current)
         {
             try
             {
@@ -643,7 +646,7 @@ namespace NotificationWorkflowService.Parser
             }
             catch (Exception e)
             {
-                log.Error("FindStepOneProfileItem Error", e);
+                log.LogError(e, "FindStepOneProfileItem Error");
                 return null;
             }
         }
@@ -654,7 +657,7 @@ namespace NotificationWorkflowService.Parser
         public void parseAlarms()
         {
             //NotificationService.NotificationServiceSetting.GetAlarmVAPPTexT("", "", "9999");
-            ActiveAlarm curr = null;
+            ActiveAlarm? curr = null;
 
             try
             {
@@ -684,10 +687,10 @@ namespace NotificationWorkflowService.Parser
 
                 int? sysID = null;
 
-                log.Info(String.Format("ParseAlarm::CurrentNumberOfActiveAlarms::{0}", activeAlarms.Count));
+                log.LogInformation(String.Format("ParseAlarm::CurrentNumberOfActiveAlarms::{0}", activeAlarms.Count));
                 foreach (ActiveAlarm a in activeAlarms)
                 {
-                    log.Info(String.Format("ParseAlarm::AlarmSystemID::{0}", a.SystemID));
+                    log.LogInformation(String.Format("ParseAlarm::AlarmSystemID::{0}", a.SystemID));
                     try
                     {
                         curr = a;
@@ -698,7 +701,7 @@ namespace NotificationWorkflowService.Parser
                         }
                         catch (Exception ex)
                         {
-                            log.Error("PushAlertsToVictims Error", ex);
+                            log.LogError(ex, "PushAlertsToVictims Error");
                         }
 
                         try
@@ -713,7 +716,7 @@ namespace NotificationWorkflowService.Parser
                         }
                         catch (Exception ex)
                         {
-                            log.Error("PushNotificationToVictim Error", ex);
+                            log.LogError(ex, "PushNotificationToVictim Error");
                         }
 
 
@@ -745,8 +748,8 @@ namespace NotificationWorkflowService.Parser
 
                             ClearMcAppAlarm(clearEvents, a.ClientID);
                         }
-                        log.Info(String.Format("ParserBeforeCheck::AlarmSystemID::{0}::Priority::{1}", a.SystemID, a.Priority));
-                        log.Info(String.Format("ParserBeforeCheck::AlarmSystemID::{0}::CurrentStateNo::{1}::NextStateNo::{2}::ProcessNextStep::{3}::StateTime::{4}::CurrentLoopNumber::{5}::insert::{6}", a.SystemID, a.CurrentStateNo, a.NextStateNo, a.ProcessNextStep, a.StateTime, a.CurrentStateNo, insert.ToString()));
+                        log.LogInformation(String.Format("ParserBeforeCheck::AlarmSystemID::{0}::Priority::{1}", a.SystemID, a.Priority));
+                        log.LogInformation(String.Format("ParserBeforeCheck::AlarmSystemID::{0}::CurrentStateNo::{1}::NextStateNo::{2}::ProcessNextStep::{3}::StateTime::{4}::CurrentLoopNumber::{5}::insert::{6}", a.SystemID, a.CurrentStateNo, a.NextStateNo, a.ProcessNextStep, a.StateTime, a.CurrentStateNo, insert.ToString()));
 
                         switch (a.Priority)
                         {
@@ -754,14 +757,14 @@ namespace NotificationWorkflowService.Parser
                                 sb.Append("Do Nothing");
                                 Console.ForegroundColor = ConsoleColor.Green;
                                 Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Do Nothing");
-                                log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Do Nothing");
+                                log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Do Nothing");
                                 insert = false;
                                 break;
                             case 2:
                                 sb.Append("Auto Email");
                                 Console.ForegroundColor = ConsoleColor.Green;
                                 Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email");
-                                log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email");
+                                log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email");
                                 SendNotificationsToOfficersInSameGroup(a);
                                 AddToNotificationQueue(a, 3);
                                 String emailAdresses = "Pages sent to: " + a.EmailAddresses;
@@ -776,7 +779,7 @@ namespace NotificationWorkflowService.Parser
                                 sb.Append("McApp");
                                 Console.ForegroundColor = ConsoleColor.Green;
                                 Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp");
-                                log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp");
+                                log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp");
                                 SendNotificationsToOfficersInSameGroup(a);
                                 PushAlertToMcApp(a);
                                 a.ProcessNextStep = 0;
@@ -785,14 +788,14 @@ namespace NotificationWorkflowService.Parser
                                 sb.Append("Auto Fax");
                                 Console.ForegroundColor = ConsoleColor.Green;
                                 Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Fax");
-                                log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Fax");
+                                log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Fax");
                                 SendNotificationsToOfficersInSameGroup(a);
                                 break;
                             case 5:
                                 sb.Append("Auto Page");
                                 Console.ForegroundColor = ConsoleColor.Green;
                                 Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Page");
-                                log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Page");
+                                log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Page");
                                 SendNotificationsToOfficersInSameGroup(a);
                                 AddToNotificationQueue(a, 1);
                                 String autoPageEmails = "Pages sent to: " + getInsertEmails(a);
@@ -807,7 +810,7 @@ namespace NotificationWorkflowService.Parser
                                 sb.Append("McApp and Auto Fax");
                                 Console.ForegroundColor = ConsoleColor.Green;
                                 Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Fax");
-                                log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Fax");
+                                log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Fax");
                                 SendNotificationsToOfficersInSameGroup(a);
                                 PushAlertToMcApp(a);
                                 a.ProcessNextStep = 0;
@@ -816,7 +819,7 @@ namespace NotificationWorkflowService.Parser
                                 sb.Append("McApp and Auto Email");
                                 Console.ForegroundColor = ConsoleColor.Green;
                                 Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Email");
-                                log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Email");
+                                log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Email");
                                 PushAlertToMcApp(a);
                                 SendNotificationsToOfficersInSameGroup(a);
                                 AddToNotificationQueue(a, 3);
@@ -833,7 +836,7 @@ namespace NotificationWorkflowService.Parser
                                 sb.Append("McApp and Auto Page");
                                 Console.ForegroundColor = ConsoleColor.Green;
                                 Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Page");
-                                log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Page");
+                                log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Page");
                                 SendNotificationsToOfficersInSameGroup(a);
                                 PushAlertToMcApp(a);
                                 AddToNotificationQueue(a, 1);
@@ -850,7 +853,7 @@ namespace NotificationWorkflowService.Parser
                                 sb.Append("Delay");
                                 Console.ForegroundColor = ConsoleColor.Green;
                                 Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Delay " + "(Step " + a.StateNo + ")");
-                                log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Delay " + "(Step " + a.StateNo + ")");
+                                log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Delay " + "(Step " + a.StateNo + ")");
                                 break;
                             case 12:
                                 sb.Append("Role Based - ");
@@ -863,7 +866,7 @@ namespace NotificationWorkflowService.Parser
                                         {
                                             Console.ForegroundColor = ConsoleColor.Green;
                                             Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp - Call Officers");
-                                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp - Call Officers");
+                                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp - Call Officers");
                                             PushAlertToMcApp(a);
                                             a.ProcessNextStep = 0;
                                         }
@@ -873,7 +876,7 @@ namespace NotificationWorkflowService.Parser
                                         {
                                             Console.ForegroundColor = ConsoleColor.Green;
                                             Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email");
-                                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email");
+                                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email");
                                             AddToNotificationQueue(a, 3);
                                             String emails = "Pages sent to: " + a.EmailAddresses;
                                             if (emails.Length > 4096)
@@ -889,7 +892,7 @@ namespace NotificationWorkflowService.Parser
                                         {
                                             Console.ForegroundColor = ConsoleColor.Green;
                                             Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email");
-                                            log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email");
+                                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email");
                                             AddToNotificationQueue(a, 3);
                                             String txtMessages = "Pages sent to: " + a.EmailAddresses;
                                             if (txtMessages.Length > 4096)
@@ -907,7 +910,7 @@ namespace NotificationWorkflowService.Parser
                                 sb.Append("Email-Victims");
                                 Console.ForegroundColor = ConsoleColor.Green;
                                 Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Email-Victims");
-                                log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Email-Victims");
+                                log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Email-Victims");
 
                                 String victimsMail = "";
                                 try
@@ -929,7 +932,7 @@ namespace NotificationWorkflowService.Parser
                                 }
                                 catch (Exception ex)
                                 {
-                                    log.Error("Read Victim Emails", ex);
+                                    log.LogError(ex, "Read Victim Emails");
                                     victimsMail = "";
                                 }
 
@@ -945,7 +948,7 @@ namespace NotificationWorkflowService.Parser
                                 sb.Append("Contact Victims");
                                 Console.ForegroundColor = ConsoleColor.Green;
                                 Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Contact Victim");
-                                log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Contact Victim");
+                                log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Contact Victim");
                                 SendNotificationsToOfficersInSameGroup(a);
                                 PushAlertToMcApp(a);
                                 a.ProcessNextStep = 0;
@@ -954,7 +957,7 @@ namespace NotificationWorkflowService.Parser
                                 sb.Append("Alert Client - Email");
                                 Console.ForegroundColor = ConsoleColor.Green;
                                 Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Alert Client Email");
-                                log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Alert Client Email");
+                                log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Alert Client Email");
 
                                 String clientMail = "";
                                 try
@@ -967,7 +970,7 @@ namespace NotificationWorkflowService.Parser
                                 }
                                 catch (Exception ex)
                                 {
-                                    log.Error("clientMail", ex);
+                                    log.LogError(ex, "clientMail");
                                     clientMail = "";
                                 }
 
@@ -983,7 +986,7 @@ namespace NotificationWorkflowService.Parser
                                 sb.Append("Alert Client - Text");
                                 Console.ForegroundColor = ConsoleColor.Green;
                                 Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Alert Client Text");
-                                log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Alert Client Text");
+                                log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Alert Client Text");
 
                                 String clientText = "";
                                 try
@@ -996,7 +999,7 @@ namespace NotificationWorkflowService.Parser
                                 }
                                 catch (Exception ex)
                                 {
-                                    log.Error("getClientText", ex);
+                                    log.LogError(ex, "getClientText");
                                     clientText = "";
                                 }
 
@@ -1012,7 +1015,7 @@ namespace NotificationWorkflowService.Parser
                                 sb.Append("Text All Victims");
                                 Console.ForegroundColor = ConsoleColor.Green;
                                 Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Text All Victims");
-                                log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Text All Victims");
+                                log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Text All Victims");
 
                                 String victimsText = "";
                                 try
@@ -1034,7 +1037,7 @@ namespace NotificationWorkflowService.Parser
                                 }
                                 catch (Exception ex)
                                 {
-                                    log.Error("victimsText", ex);
+                                    log.LogError(ex, "victimsText");
                                     victimsText = "";
                                 }
 
@@ -1051,7 +1054,7 @@ namespace NotificationWorkflowService.Parser
                                 sb.Append("Do Nothing");
                                 Console.ForegroundColor = ConsoleColor.Green;
                                 Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Do Nothing");
-                                log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Do Nothing");
+                                log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Do Nothing");
                                 insert = false;
                                 break;
                         }
@@ -1073,7 +1076,7 @@ namespace NotificationWorkflowService.Parser
                             ExpiryTimeApplied = ExpiryTimeByUTCNow;
                         }
 
-                        log.Info(String.Format("AlarmSystemID- {0} :: ExpiryTimeByEventDateTime - {1} :: ExpiryTimeByUTCNow - {2} :: ExpiryTimeApplied - {3}"
+                        log.LogInformation(String.Format("AlarmSystemID- {0} :: ExpiryTimeByEventDateTime - {1} :: ExpiryTimeByUTCNow - {2} :: ExpiryTimeApplied - {3}"
                                                 , a.SystemID.ToString()
                                                 , ExpiryTimeByEventDateTime.ToString()
                                                 , ExpiryTimeByUTCNow.ToString()
@@ -1082,7 +1085,7 @@ namespace NotificationWorkflowService.Parser
                         );
 
                         insertIntoAlarmNotification(a.SystemID, 1, ExpiryTimeApplied, PriorityMapping[a.Priority]);
-                        log.Info(String.Format("ParserAfterCheck::AlarmSystemID::{0}::CurrentStateNo::{1}::NextStateNo::{2}::ProcessNextStep::{3}::StateTime::{4}::CurrentLoopNumber::{5}::insert::{6}", a.SystemID, a.CurrentStateNo, a.NextStateNo, a.ProcessNextStep, a.StateTime, a.CurrentStateNo, insert.ToString()));
+                        log.LogInformation(String.Format("ParserAfterCheck::AlarmSystemID::{0}::CurrentStateNo::{1}::NextStateNo::{2}::ProcessNextStep::{3}::StateTime::{4}::CurrentLoopNumber::{5}::insert::{6}", a.SystemID, a.CurrentStateNo, a.NextStateNo, a.ProcessNextStep, a.StateTime, a.CurrentStateNo, insert.ToString()));
 
                         if (a.NextStateNo != -1 && insert)
                         {
@@ -1097,7 +1100,7 @@ namespace NotificationWorkflowService.Parser
                     }
                     catch (Exception e)
                     {
-                        log.Error("Error processing alarm", e);
+                        log.LogError(e, "Error processing alarm");
                         break;
                     }
                 }
@@ -1109,10 +1112,10 @@ namespace NotificationWorkflowService.Parser
             }
             catch (Exception ex)
             {
-                log.Info("FAILED TO PARSE ALARMS " + ex);
+                log.LogInformation("FAILED TO PARSE ALARMS " + ex);
                 if (curr != null)
                 {
-                    log.Info("ERROR @ ActiveAlarmID - " + curr.SystemID);
+                    log.LogInformation("ERROR @ ActiveAlarmID - " + curr.SystemID);
                 }
             }
         }
@@ -1206,7 +1209,7 @@ namespace NotificationWorkflowService.Parser
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "SQLException on FetchClientProfile in Parser ", ex);
+                                log.LogError(ex, "[" + platForm + "] " + "SQLException on FetchClientProfile in Parser ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on FetchClientProfile in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -1227,7 +1230,7 @@ namespace NotificationWorkflowService.Parser
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE CLIENT PROFILES ", exc);
+                                log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE CLIENT PROFILES ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE CLIENT PROFILES " + exc);
                                 if (retries > 0)
@@ -1247,7 +1250,7 @@ namespace NotificationWorkflowService.Parser
                 catch (Exception e)
                 {
                     success = false;
-                    log.Info("[" + platForm + "] " + "FAILED TO RETRIEVE CLIENT PROFILES " + e);
+                    log.LogInformation("[" + platForm + "] " + "FAILED TO RETRIEVE CLIENT PROFILES " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE CLIENT PROFILES " + e);
 
@@ -1459,7 +1462,7 @@ namespace NotificationWorkflowService.Parser
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "SQLException on readAllProfiles in Parser ", ex);
+                                log.LogError(ex, "[" + platForm + "] " + "SQLException on readAllProfiles in Parser ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readAllProfiles in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -1481,7 +1484,7 @@ namespace NotificationWorkflowService.Parser
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE PROFILES ", exc);
+                                log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE PROFILES ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE PROFILES IN PARSER " + exc);
                                 if (retries > 0)
@@ -1501,7 +1504,7 @@ namespace NotificationWorkflowService.Parser
                 catch (Exception e)
                 {
                     success = false;
-                    log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE PROFILES ", e);
+                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE PROFILES ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE PROFILES IN PARSER " + e);
 
@@ -1585,7 +1588,7 @@ namespace NotificationWorkflowService.Parser
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "SQLException on readAllHolidays in Parser ", ex);
+                                log.LogError(ex, "[" + platForm + "] " + "SQLException on readAllHolidays in Parser ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readAllHolidays in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -1605,7 +1608,7 @@ namespace NotificationWorkflowService.Parser
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE HOLIDAYS ", exc);
+                                log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE HOLIDAYS ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE HOLIDAYS IN PARSER " + exc);
                                 if (retries > 0)
@@ -1625,7 +1628,7 @@ namespace NotificationWorkflowService.Parser
                 catch (Exception e)
                 {
                     success = false;
-                    log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE HOLIDAYS ", e);
+                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE HOLIDAYS ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE HOLIDAYS IN PARSER " + e);
 
@@ -1678,7 +1681,7 @@ namespace NotificationWorkflowService.Parser
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "SQLException on readAllRoles in Parser ", ex);
+                                log.LogError(ex, "[" + platForm + "] " + "SQLException on readAllRoles in Parser ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readAllRoles in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -1698,7 +1701,7 @@ namespace NotificationWorkflowService.Parser
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE ROLES ", exc);
+                                log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE ROLES ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ROLES IN PARSER " + exc);
                                 if (retries > 0)
@@ -1718,7 +1721,7 @@ namespace NotificationWorkflowService.Parser
                 catch (Exception e)
                 {
                     success = false;
-                    log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE ROLES ", e);
+                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ROLES ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ROLES IN PARSER " + e);
 
@@ -1792,7 +1795,7 @@ namespace NotificationWorkflowService.Parser
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "SQLException on PushAlertToMcApp in Step Parser " + ex);
+                                log.LogInformation("[" + platForm + "] " + "SQLException on PushAlertToMcApp in Step Parser " + ex);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on PushAlertToMcApp in Step Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -1812,7 +1815,7 @@ namespace NotificationWorkflowService.Parser
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + exc);
+                                log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + exc);
                                 if (retries > 0)
@@ -1831,7 +1834,7 @@ namespace NotificationWorkflowService.Parser
                 catch (Exception e)
                 {
                     success = false;
-                    log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + e);
+                    log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + e);
                     throw;
@@ -1897,7 +1900,7 @@ namespace NotificationWorkflowService.Parser
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "SQLException on AddToNotificationQueue in Step Parser " + ex);
+                                log.LogInformation("[" + platForm + "] " + "SQLException on AddToNotificationQueue in Step Parser " + ex);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on AddToNotificationQueue in Step Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -1917,7 +1920,7 @@ namespace NotificationWorkflowService.Parser
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + exc);
+                                log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + exc);
                                 if (retries > 0)
@@ -1936,7 +1939,7 @@ namespace NotificationWorkflowService.Parser
                 catch (Exception e)
                 {
                     success = false;
-                    log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + e);
+                    log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + e);
                     throw;
@@ -1986,7 +1989,7 @@ namespace NotificationWorkflowService.Parser
                             }
                             catch (SqlException ex)
                             {
-                                log.Error("[" + platForm + "] " + "SQLException on insertPushNotificationQueue in Parser ", ex);
+                                log.LogError(ex, "[" + platForm + "] " + "SQLException on insertPushNotificationQueue in Parser ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on insertPushNotificationQueue in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -2004,7 +2007,7 @@ namespace NotificationWorkflowService.Parser
                             }
                             catch (Exception exc)
                             {
-                                log.Error("[" + platForm + "] " + "FAILED TO RUN INSERT_PUSH_NOTIFICATIONQUEUE ", exc);
+                                log.LogError(exc, "[" + platForm + "] " + "FAILED TO RUN INSERT_PUSH_NOTIFICATIONQUEUE ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_PUSH_NOTIFICATIONQUEUE " + exc);
                                 throw exc;
@@ -2016,7 +2019,7 @@ namespace NotificationWorkflowService.Parser
                 }
                 catch (Exception e)
                 {
-                    log.Error("[" + platForm + "] " + "FAILED TO RUN INSERT_PUSH_NOTIFICATIONQUEUE ", e);
+                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RUN INSERT_PUSH_NOTIFICATIONQUEUE ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_PUSH_NOTIFICATIONQUEUE " + e);
 
@@ -2087,7 +2090,7 @@ namespace NotificationWorkflowService.Parser
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "SQLException on insertNotificationQueueVictim in Parser " + ex);
+                                log.LogInformation("[" + platForm + "] " + "SQLException on insertNotificationQueueVictim in Parser " + ex);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on insertNotificationQueueVictim in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -2107,7 +2110,7 @@ namespace NotificationWorkflowService.Parser
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + exc);
+                                log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + exc);
                                 if (retries > 0)
@@ -2126,7 +2129,7 @@ namespace NotificationWorkflowService.Parser
                 catch (Exception e)
                 {
                     success = false;
-                    log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + e);
+                    log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + e);
                     throw;
@@ -2161,7 +2164,7 @@ namespace NotificationWorkflowService.Parser
                         cmd.Parameters.Add("@ParserID", SqlDbType.Int);
                         cmd.Parameters.Add("@CurrSystemID", SqlDbType.Int);
 
-                        cmd.Parameters["@ParserID"].Value = Convert.ToInt32(ConfigurationManager.AppSettings[platForm + "ParserID"]);
+                        cmd.Parameters["@ParserID"].Value = Convert.ToInt32(configuration[platForm + "ParserID"]);
                         cmd.Parameters["@CurrSystemID"].Value = systemID;
 
 
@@ -2174,13 +2177,13 @@ namespace NotificationWorkflowService.Parser
                                 MyConnection.Open();
                                 cmd.ExecuteNonQuery();
                                 success = true;
-                                log.Info("Successfully updated AAID : " + systemID);
+                                log.LogInformation("Successfully updated AAID : " + systemID);
                                 break;
                             }
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "SQLException on updateParserActivty in Parser ", ex);
+                                log.LogError(ex, "[" + platForm + "] " + "SQLException on updateParserActivty in Parser ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on updateParserActivty in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -2200,7 +2203,7 @@ namespace NotificationWorkflowService.Parser
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "FAILED TO RUN UPDATE_PARSER_ACTIVITY ", exc);
+                                log.LogError(exc, "[" + platForm + "] " + "FAILED TO RUN UPDATE_PARSER_ACTIVITY ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN UPDATE_PARSER_ACTIVITY " + exc);
                                 if (retries > 0)
@@ -2220,7 +2223,7 @@ namespace NotificationWorkflowService.Parser
                 catch (Exception e)
                 {
                     success = false;
-                    log.Error("[" + platForm + "] " + "FAILED TO RUN UPDATE_PARSER_ACTIVITY IN PARSER ", e);
+                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RUN UPDATE_PARSER_ACTIVITY IN PARSER ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN UPDATE_PARSER_ACTIVITY IN PARSER " + e);
                     throw;
@@ -2275,7 +2278,7 @@ namespace NotificationWorkflowService.Parser
                             }
                             catch (SqlException ex)
                             {
-                                log.Error("[" + platForm + "] " + "SQLException on CreateAlarmAudit in Parser ", ex);
+                                log.LogError(ex, "[" + platForm + "] " + "SQLException on CreateAlarmAudit in Parser ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on CreateAlarmAudit in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -2294,7 +2297,7 @@ namespace NotificationWorkflowService.Parser
                             }
                             catch (Exception exc)
                             {
-                                log.Error("[" + platForm + "] " + "FAILED TO RUN MCAPP_CREATEAUDIT IN PARSER ", exc);
+                                log.LogError(exc, "[" + platForm + "] " + "FAILED TO RUN MCAPP_CREATEAUDIT IN PARSER ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN MCAPP_CREATEAUDIT IN PARSER " + exc);
                                 if (retries > 0)
@@ -2313,7 +2316,7 @@ namespace NotificationWorkflowService.Parser
                 }
                 catch (Exception e)
                 {
-                    log.Error("[" + platForm + "] " + "FAILED TO RUN MCAPP_CREATEAUDIT IN PARSER ", e);
+                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RUN MCAPP_CREATEAUDIT IN PARSER ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN MCAPP_CREATEAUDIT IN PARSER " + e);
 
@@ -2362,7 +2365,7 @@ namespace NotificationWorkflowService.Parser
                             }
                             catch (SqlException ex)
                             {
-                                log.Error("[" + platForm + "] " + "SQLException on ActiveAlarms_InsertIntoHistory in Parser ", ex);
+                                log.LogError(ex, "[" + platForm + "] " + "SQLException on ActiveAlarms_InsertIntoHistory in Parser ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on ActiveAlarms_InsertIntoHistory in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -2381,7 +2384,7 @@ namespace NotificationWorkflowService.Parser
                             }
                             catch (Exception exc)
                             {
-                                log.Error("[" + platForm + "] " + "FAILED TO RUN AddActiveAlarmActionToActivity IN PARSER ", exc);
+                                log.LogError(exc, "[" + platForm + "] " + "FAILED TO RUN AddActiveAlarmActionToActivity IN PARSER ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN AddActiveAlarmActionToActivity IN PARSER " + exc);
                                 if (retries > 0)
@@ -2400,7 +2403,7 @@ namespace NotificationWorkflowService.Parser
                 }
                 catch (Exception e)
                 {
-                    log.Error("[" + platForm + "] " + "FAILED TO RUN AddActiveAlarmActionToActivity IN PARSER ", e);
+                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RUN AddActiveAlarmActionToActivity IN PARSER ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN AddActiveAlarmActionToActivity IN PARSER " + e);
 
@@ -2456,7 +2459,7 @@ namespace NotificationWorkflowService.Parser
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "SQLException on insertIntoAlarmNotification in Step Parser " + ex);
+                                log.LogInformation("[" + platForm + "] " + "SQLException on insertIntoAlarmNotification in Step Parser " + ex);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on insertIntoAlarmNotification in Step Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -2476,7 +2479,7 @@ namespace NotificationWorkflowService.Parser
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + exc);
+                                log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + exc);
                                 if (retries > 0)
@@ -2495,7 +2498,7 @@ namespace NotificationWorkflowService.Parser
                 catch (Exception e)
                 {
                     success = false;
-                    log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + e);
+                    log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + e);
                     throw;
@@ -2553,13 +2556,13 @@ namespace NotificationWorkflowService.Parser
                                 MyConnection.Open();
                                 cmd.ExecuteNonQuery();
                                 success = true;
-                                log.Info(String.Format("Parser::insertIntoCurrentAlarmNotification::AlarmSystemID::{0}::CurentStateNo::{1}::ExpiryTime::{2}::currentLoopNumber::{3}::processNext::{4}", AlarmSystemID, CurentStateNo, ExpiryTime, currentLoopNumber, processNext));
+                                log.LogInformation(String.Format("Parser::insertIntoCurrentAlarmNotification::AlarmSystemID::{0}::CurentStateNo::{1}::ExpiryTime::{2}::currentLoopNumber::{3}::processNext::{4}", AlarmSystemID, CurentStateNo, ExpiryTime, currentLoopNumber, processNext));
                                 break;
                             }
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "SQLException on insertIntoCurrentAlarmNotification in Step Parser " + ex);
+                                log.LogInformation("[" + platForm + "] " + "SQLException on insertIntoCurrentAlarmNotification in Step Parser " + ex);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on insertIntoCurrentAlarmNotification in Step Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -2579,7 +2582,7 @@ namespace NotificationWorkflowService.Parser
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + exc);
+                                log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + exc);
                                 if (retries > 0)
@@ -2598,7 +2601,7 @@ namespace NotificationWorkflowService.Parser
                 catch (Exception e)
                 {
                     success = false;
-                    log.Info("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + e);
+                    log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + e);
                     throw;
@@ -2627,7 +2630,7 @@ namespace NotificationWorkflowService.Parser
                 }
                 else
                 {
-                    log.Info(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: Notify to all officers in group failed");
+                    log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: Notify to all officers in group failed");
                 }
             }
         }
@@ -2674,7 +2677,7 @@ namespace NotificationWorkflowService.Parser
                             }
                             catch (SqlException ex)
                             {
-                                log.Info("[" + platForm + "] " + "SQLException on getInsertEmails in Step Parser " + ex);
+                                log.LogInformation("[" + platForm + "] " + "SQLException on getInsertEmails in Step Parser " + ex);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on getInsertEmails in Step Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -2693,7 +2696,7 @@ namespace NotificationWorkflowService.Parser
                             }
                             catch (Exception exc)
                             {
-                                log.Info("[" + platForm + "] " + "ERROR: Unable to Read Audit and History Emails in Step Parser " + exc);
+                                log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Audit and History Emails in Step Parser " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Audit and History Emails in Step Parser " + exc);
                                 if (retries > 0)
@@ -2711,7 +2714,7 @@ namespace NotificationWorkflowService.Parser
                 }
                 catch (Exception e)
                 {
-                    log.Info("[" + platForm + "] " + "ERROR: Unable to Read Audit and History Emails in Step Parser " + e);
+                    log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Audit and History Emails in Step Parser " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Audit and History Emails in Step Parser " + e);
 
@@ -2755,14 +2758,14 @@ namespace NotificationWorkflowService.Parser
                                     SystemID = (int)MyDataReader["StatusID"];
                                 }
 
-                                log.Info("[" + platForm + "] " + "Reading Last successful processed ActiveAlarms point: " + SystemID);
+                                log.LogInformation("[" + platForm + "] " + "Reading Last successful processed ActiveAlarms point: " + SystemID);
                                 Console.ForegroundColor = ConsoleColor.White;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " Reading Last successful processed ActiveAlarms point: " + SystemID);
                                 break;
                             }
                             catch (SqlException ex)
                             {
-                                log.Error("[" + platForm + "] " + "SQLException on readLastSuccessfulProcess in Parser ", ex);
+                                log.LogError(ex, "[" + platForm + "] " + "SQLException on readLastSuccessfulProcess in Parser ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readLastSuccessfulProcess in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -2781,7 +2784,7 @@ namespace NotificationWorkflowService.Parser
                             }
                             catch (Exception exc)
                             {
-                                log.Error("[" + platForm + "] " + "ERROR: Unable to Read Last successful processed ActiveAlarms point IN PARSER ", exc);
+                                log.LogError(exc, "[" + platForm + "] " + "ERROR: Unable to Read Last successful processed ActiveAlarms point IN PARSER ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Last successful processed ActiveAlarms point IN PARSER " + exc);
                                 if (retries > 0)
@@ -2800,7 +2803,7 @@ namespace NotificationWorkflowService.Parser
                 }
                 catch (Exception e)
                 {
-                    log.Error("[" + platForm + "] " + "ERROR: Unable to Read Last successful processed ActiveAlarms point IN PARSER ", e);
+                    log.LogError(e, "[" + platForm + "] " + "ERROR: Unable to Read Last successful processed ActiveAlarms point IN PARSER ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Last successful processed ActiveAlarms point IN PARSER " + e);
                     throw;
@@ -2948,7 +2951,7 @@ namespace NotificationWorkflowService.Parser
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "SQLException on readRoles in Step Parser " + ex);
+                                log.LogInformation("[" + platForm + "] " + "SQLException on readRoles in Step Parser " + ex);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readRoles in Step Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -2968,7 +2971,7 @@ namespace NotificationWorkflowService.Parser
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Info("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + exc);
+                                log.LogInformation("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + exc);
                                 if (retries > 0)
@@ -2987,7 +2990,7 @@ namespace NotificationWorkflowService.Parser
                 catch (Exception e)
                 {
                     success = false;
-                    log.Info("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + e);
+                    log.LogInformation("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + e);
                     throw;
@@ -3065,7 +3068,7 @@ namespace NotificationWorkflowService.Parser
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "SQLException on readVictims in Parser ", ex);
+                                log.LogError(ex, "[" + platForm + "] " + "SQLException on readVictims in Parser ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readVictims in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -3085,7 +3088,7 @@ namespace NotificationWorkflowService.Parser
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER ", exc);
+                                log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER " + exc);
                                 if (retries > 0)
@@ -3104,7 +3107,7 @@ namespace NotificationWorkflowService.Parser
                 catch (Exception e)
                 {
                     success = false;
-                    log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER ", e);
+                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER " + e);
 
@@ -3240,7 +3243,7 @@ namespace NotificationWorkflowService.Parser
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "SQLException on readMEZVictims in Parser ", ex);
+                                log.LogError(ex, "[" + platForm + "] " + "SQLException on readMEZVictims in Parser ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readMEZVictims in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -3260,7 +3263,7 @@ namespace NotificationWorkflowService.Parser
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE MEZ VICTIMS IN PARSER ", exc);
+                                log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE MEZ VICTIMS IN PARSER ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE MEZ VICTIMS IN PARSER " + exc);
                                 if (retries > 0)
@@ -3280,7 +3283,7 @@ namespace NotificationWorkflowService.Parser
                 catch (Exception e)
                 {
                     success = false;
-                    log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE MEZ VICTIMS IN PARSER ", e);
+                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE MEZ VICTIMS IN PARSER ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO MEZ VICTIMS IN PARSER " + e);
 
@@ -3367,7 +3370,7 @@ namespace NotificationWorkflowService.Parser
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "SQLException on readAttachedVictimZones in Parser ", ex);
+                                log.LogError(ex, "[" + platForm + "] " + "SQLException on readAttachedVictimZones in Parser ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readAttachedVictimZones in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -3387,7 +3390,7 @@ namespace NotificationWorkflowService.Parser
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "FAILED TO readAttachedVictimZonesIN PARSER ", exc);
+                                log.LogError(exc, "[" + platForm + "] " + "FAILED TO readAttachedVictimZonesIN PARSER ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO readAttachedVictimZones IN PARSER " + exc);
                                 if (retries > 0)
@@ -3407,7 +3410,7 @@ namespace NotificationWorkflowService.Parser
                 catch (Exception e)
                 {
                     success = false;
-                    log.Error("[" + platForm + "] " + "FAILED TO readAttachedVictimZones IN PARSER ", e);
+                    log.LogError(e, "[" + platForm + "] " + "FAILED TO readAttachedVictimZones IN PARSER ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO readAttachedVictimZones IN PARSER " + e);
 
@@ -3475,7 +3478,7 @@ namespace NotificationWorkflowService.Parser
                             catch (SqlException ex)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "SQLException on readProfileItemsClear in Parser ", ex);
+                                log.LogError(ex, "[" + platForm + "] " + "SQLException on readProfileItemsClear in Parser ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readProfileItemsClear in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -3495,7 +3498,7 @@ namespace NotificationWorkflowService.Parser
                             catch (Exception exc)
                             {
                                 success = false;
-                                log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE CLEARING EVENTS IN PARSER ", exc);
+                                log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE CLEARING EVENTS IN PARSER ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE CLEARING EVENTS IN PARSER " + exc);
                                 if (retries > 0)
@@ -3515,7 +3518,7 @@ namespace NotificationWorkflowService.Parser
                 catch (Exception e)
                 {
                     success = false;
-                    log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE CLEARING EVENTS IN PARSER ", e);
+                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE CLEARING EVENTS IN PARSER ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE CLEARING EVENTS IN PARSER " + e);
 
@@ -3577,7 +3580,7 @@ namespace NotificationWorkflowService.Parser
                             }
                             catch (Exception exc)
                             {
-                                log.Error("ReadCurrentActiveAlarmPoint", exc);
+                                log.LogError(exc, "ReadCurrentActiveAlarmPoint");
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -3594,7 +3597,7 @@ namespace NotificationWorkflowService.Parser
                 }
                 catch (Exception ex)
                 {
-                    log.Error("ReadCurrentActiveAlarmPoint", ex);
+                    log.LogError(ex, "ReadCurrentActiveAlarmPoint");
                     throw;
                 }
             }
@@ -3637,13 +3640,13 @@ namespace NotificationWorkflowService.Parser
 
                                 Console.ForegroundColor = ConsoleColor.Green;
                                 Console.WriteLine("[" + platForm + "] " + "Clearing Alerts For - " + oid);
-                                log.Info("[" + platForm + "] " + "Clearing Alerts For - " + oid);
+                                log.LogInformation("[" + platForm + "] " + "Clearing Alerts For - " + oid);
 
                                 break;
                             }
                             catch (SqlException ex)
                             {
-                                log.Error("[" + platForm + "] " + "SQLException on ClearMcAppAlarm in Parser ", ex);
+                                log.LogError(ex, "[" + platForm + "] " + "SQLException on ClearMcAppAlarm in Parser ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on ClearMcAppAlarm in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -3662,7 +3665,7 @@ namespace NotificationWorkflowService.Parser
                             }
                             catch (Exception exc)
                             {
-                                log.Error("[" + platForm + "] " + "FAILED TO RUN MCAPP_CLEAR_ALARM IN PARSER ", exc);
+                                log.LogError(exc, "[" + platForm + "] " + "FAILED TO RUN MCAPP_CLEAR_ALARM IN PARSER ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN MCAPP_CLEAR_ALARM IN PARSER " + exc);
                                 if (retries > 0)
@@ -3681,7 +3684,7 @@ namespace NotificationWorkflowService.Parser
                 }
                 catch (Exception e)
                 {
-                    log.Error("[" + platForm + "] " + "FAILED TO RUN MCAPP_CLEAR_ALARM IN PARSER ", e);
+                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RUN MCAPP_CLEAR_ALARM IN PARSER ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN MCAPP_CLEAR_ALARM IN PARSER " + e);
 
@@ -3730,7 +3733,7 @@ namespace NotificationWorkflowService.Parser
                             }
                             catch (SqlException ex)
                             {
-                                log.Info("[" + platForm + "] " + "SQLException on getClientEmail in Parser " + ex);
+                                log.LogInformation("[" + platForm + "] " + "SQLException on getClientEmail in Parser " + ex);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on getClientEmail in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -3749,7 +3752,7 @@ namespace NotificationWorkflowService.Parser
                             }
                             catch (Exception exc)
                             {
-                                log.Info("[" + platForm + "] " + "ERROR: Unable to Read Client Email IN PARSER " + exc);
+                                log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Client Email IN PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Email IN PARSER " + exc);
                                 if (retries > 0)
@@ -3767,7 +3770,7 @@ namespace NotificationWorkflowService.Parser
                 }
                 catch (Exception e)
                 {
-                    log.Info("[" + platForm + "] " + "ERROR: Unable to Read Client Email IN PARSER " + e);
+                    log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Client Email IN PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Email IN PARSER " + e);
                     throw;
@@ -3818,7 +3821,7 @@ namespace NotificationWorkflowService.Parser
                             }
                             catch (SqlException ex)
                             {
-                                log.Info("[" + platForm + "] " + "SQLException on getClientText in Parser " + ex);
+                                log.LogInformation("[" + platForm + "] " + "SQLException on getClientText in Parser " + ex);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on getClientText in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
@@ -3837,7 +3840,7 @@ namespace NotificationWorkflowService.Parser
                             }
                             catch (Exception exc)
                             {
-                                log.Info("[" + platForm + "] " + "ERROR: Unable to Read Client Text IN PARSER " + exc);
+                                log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Client Text IN PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Text IN PARSER " + exc);
                                 if (retries > 0)
@@ -3855,7 +3858,7 @@ namespace NotificationWorkflowService.Parser
                 }
                 catch (Exception e)
                 {
-                    log.Info("[" + platForm + "] " + "ERROR: Unable to Read Client Text IN PARSER " + e);
+                    log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Client Text IN PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Text IN PARSER " + e);
                     throw;
@@ -3870,11 +3873,11 @@ namespace NotificationWorkflowService.Parser
         /// </summary>
         /// <param name="pointsBehind">The pointsBehind<see cref="int"/>.</param>
         /// <returns>The <see cref="int"/>.</returns>
-        protected static int returnWaitTime(int pointsBehind)
+        protected int returnWaitTime(int pointsBehind)
         {
             int toReturn;
 
-            int numberOfProcessIntervals = pointsBehind / Convert.ToInt32(ConfigurationManager.AppSettings["NumberOfProcessPoints"]);
+            int numberOfProcessIntervals = pointsBehind / Convert.ToInt32(configuration["NumberOfProcessPoints"]);
 
             int sleepTime = Int32.MaxValue;
             if (numberOfProcessIntervals != 0)

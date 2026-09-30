@@ -1,6 +1,7 @@
 ﻿namespace ActiveAlarmsParser
 {
-    using log4net;
+    using NotificationWorkflowService.Parser;
+    using NotificationWorkflowService.Entity;
     using System;
     using System.Collections;
     using System.Collections.Generic;
@@ -11,8 +12,7 @@
     using System.Linq;
     using System.Text;
     using System.Threading;
-    using static global::ActiveAlarmsParser.NotificationService.NotificationServiceData;
-    using static System.Runtime.InteropServices.JavaScript.JSType;
+    //using static System.Runtime.InteropServices.JavaScript.JSType;
 
     /// <summary>
     /// Defines the <see cref="Parser" />.
@@ -33,7 +33,7 @@
         /// <summary>
         /// Defines the log.
         /// </summary>
-        private static readonly ILog log = LogManager.GetLogger(typeof(Parser));
+        private static readonly Logger<WorkFlowInitiator> log;
 
         /// <summary>
         /// Defines the activeAlarms.
@@ -221,14 +221,16 @@
         /// 
         private String Platform = ConfigurationManager.AppSettings["Platform"];
 
+        private readonly IConfiguration configuration;
+
         //private readonly String READ_PUSH_NOTIFICATION_SETTINGS = "ActiveAlarms_GetPushNotificationSettings";
         /// <summary>
         /// Initializes a new instance of the <see cref="Parser"/> class.
         /// </summary>
         /// <param name="connection">The connection<see cref="String"/>.</param>
-        public Parser(String connection)
+        public Parser(ILogger<WorkFlowInitiator> logger, IConfiguration configuration)
         {
-            setUpConnnectionStrings(connection);
+            setUpConnnectionStrings();
         }
 
         /// <summary>
@@ -295,9 +297,10 @@
         /// Reads the connection Strings in the App.config file.
         /// </summary>
         /// <param name="connection">The connection<see cref="String"/>.</param>
-        private void setUpConnnectionStrings(String connection)
+        private void setUpConnnectionStrings()
         {
-            AlarmsDatabase = connection;
+            AlarmsDatabase = configuration.GetConnectionString("connstr")
+                ?? throw new InvalidOperationException("Connection string 'connstr' is not configured.");
         }
 
         /// <summary>
