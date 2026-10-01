@@ -281,10 +281,10 @@ namespace ActiveAlarmsParser.Service.NotificationService
                         }
                         catch (Exception rollbackException)
                         {
-                            logger.LogError(rollbackException, "Rollback failed in DataLayer: Trial:{Trial} SP:{Statement}", currentTry, Stmt);
+                            NotificationDiagnostics.Failure(logger, "SettingsRollback", rollbackException);
                         }
                     }
-                    logger.LogError(e, "Error in DataLayer: Trial:{Trial} SP:{Statement}", currentTry, Stmt);
+                    NotificationDiagnostics.Failure(logger, "SettingsQuery", e);
                     if (currentTry == maxTries - 1)
                     {
                         throw;

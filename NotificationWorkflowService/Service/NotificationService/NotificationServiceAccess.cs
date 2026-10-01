@@ -1,5 +1,6 @@
 ﻿
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using System;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -9,11 +10,6 @@ namespace ActiveAlarmsParser.Service.NotificationService
 {
     public static class NotificationServiceAccess
     {
-        /// <summary>
-        /// Defines the MT_SERVICE_SESSION_CACHE_TIME.
-        /// </summary>
-        private static int NOTIFICATION_SERVICE_SESSION_CACHE_TIME = 57;
-
         /// <summary>
         /// Defines the baseURL.
         /// </summary>
@@ -29,25 +25,11 @@ namespace ActiveAlarmsParser.Service.NotificationService
         /// </summary>
         private static string notificationServiceAccess = string.Empty;
 
-        /// <summary>
-        /// Defines the sessionToken.
-        /// </summary>
-        private static string sessionToken = string.Empty;
-
-        /// <summary>
-        /// Defines the sessionExpiryTime.
-        /// </summary>
-        private static DateTime sessionExpiryTime = DateTime.MinValue;
-
-        /// <summary>
-        /// Defines the log.
-        /// </summary>
-        
-
         private static ILogger logger = NullLogger.Instance;
         private static bool initialized;
         private static IHttpClientFactory? httpClientFactory;
-        private static readonly SemaphoreSlim tokenGate = new(1, 1);
+        private static readonly object initializationGate = new();
+        private static NotificationTokenCache tokenCache = new(TimeSpan.FromMinutes(57));
 
         /// <summary>
         /// Initializes configuration for the <see cref="NotificationServiceAccess"/> class.
@@ -57,10 +39,15 @@ namespace ActiveAlarmsParser.Service.NotificationService
 
         public static void Initialize(IConfiguration configuration, ILogger logger, IHttpClientFactory httpClientFactory)
         {
-            if (initialized)
+            lock (initializationGate)
             {
-                return;
+                InitializeCore(configuration, logger, httpClientFactory);
             }
+        }
+
+        private static void InitializeCore(IConfiguration configuration, ILogger logger, IHttpClientFactory httpClientFactory)
+        {
+            if (Volatile.Read(ref initialized)) return;
 
             ArgumentNullException.ThrowIfNull(configuration);
             ArgumentNullException.ThrowIfNull(logger);
@@ -95,11 +82,11 @@ namespace ActiveAlarmsParser.Service.NotificationService
             NotificationServiceAccess.logger = logger;
             NotificationHttp.Endpoint(authApi, "accounts/authenticate2");
             NotificationServiceAccess.httpClientFactory = httpClientFactory;
-            NOTIFICATION_SERVICE_SESSION_CACHE_TIME = cacheTime;
+            tokenCache = new NotificationTokenCache(TimeSpan.FromMinutes(cacheTime));
             notificationServiceUsername = username;
             notificationServiceAccess = access;
             baseURL = authApi;
-            initialized = true;
+            Volatile.Write(ref initialized, true);
         }
 
         /// <summary>
@@ -111,23 +98,12 @@ namespace ActiveAlarmsParser.Service.NotificationService
 
         public static async Task<string> GetAuthorizationTokenAsync(CancellationToken cancellationToken = default)
         {
-            if (!initialized)
+            if (!Volatile.Read(ref initialized))
             {
                 throw new InvalidOperationException("NotificationServiceAccess.Initialize must be called before requesting an authorization token.");
             }
 
-            await tokenGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
-            {
-                string token = GetTokenFromCache();
-                return string.IsNullOrEmpty(token)
-                    ? await AuthenticateServiceAsync(cancellationToken).ConfigureAwait(false)
-                    : token;
-            }
-            finally
-            {
-                tokenGate.Release();
-            }
+            return await tokenCache.GetAsync(AuthenticateServiceAsync, cancellationToken).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -140,11 +116,7 @@ namespace ActiveAlarmsParser.Service.NotificationService
             {
                 string response = await NotificationHttp.SendAsync(httpClientFactory!, NotificationHttp.AuthenticationClient,
                     NotificationHttp.Endpoint(baseURL, "accounts/authenticate2"), GetAuthBody(), null, cancellationToken).ConfigureAwait(false);
-                var authentication = JsonConvert.DeserializeObject<AuthServiceResponse>(response)
-                    ?? throw new JsonSerializationException("Authentication response deserialized to null.");
-                if (string.IsNullOrWhiteSpace(authentication.jwt))
-                    throw new JsonSerializationException("Authentication response did not contain a token.");
-                SaveTokenForFutureAccess(authentication.jwt);
+                var authentication = AuthServiceResponse.ParseResponse(response);
                 return authentication.jwt;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -153,56 +125,14 @@ namespace ActiveAlarmsParser.Service.NotificationService
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "MTService Access : AuthenticateService");
+                NotificationDiagnostics.Failure(logger, "Authentication", ex);
             }
 
             return string.Empty;
         }
 
-        internal static async Task InvalidateTokenAsync(string rejectedToken, CancellationToken cancellationToken)
-        {
-            await tokenGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
-            {
-                // A stale 401 must not invalidate a newer token refreshed by another caller.
-                if (sessionToken == rejectedToken)
-                {
-                    sessionToken = string.Empty;
-                    sessionExpiryTime = DateTime.MinValue;
-                }
-            }
-            finally
-            {
-                tokenGate.Release();
-            }
-        }
-
-        /// <summary>
-        /// The SaveTokenForFutureAccess.
-        /// </summary>
-        /// <param name="token">The token<see cref="string"/>.</param>
-        private static void SaveTokenForFutureAccess(string token)
-        {
-            if (!string.IsNullOrEmpty(token))
-            {
-                sessionToken = token;
-                sessionExpiryTime = DateTime.UtcNow.AddMinutes(NOTIFICATION_SERVICE_SESSION_CACHE_TIME);
-            }
-        }
-
-        /// <summary>
-        /// The GetTokenFromCache.
-        /// </summary>
-        /// <returns>The <see cref="string"/>.</returns>
-        private static string GetTokenFromCache()
-        {
-            if (DateTime.UtcNow > sessionExpiryTime)
-            {
-                sessionToken = string.Empty;
-            }
-
-            return sessionToken;
-        }
+        internal static Task InvalidateTokenAsync(string rejectedToken, CancellationToken cancellationToken)
+            => tokenCache.InvalidateAsync(rejectedToken, cancellationToken);
 
         /// <summary>
         /// The GetAuthBody.
@@ -231,5 +161,25 @@ namespace ActiveAlarmsParser.Service.NotificationService
         /// Gets or sets the jwt.
         /// </summary>
         public string jwt { get; set; } = string.Empty;
+
+        internal static AuthServiceResponse ParseResponse(string json)
+        {
+            const string invalid = "Authentication response must confirm success and contain a nonempty token.";
+            try
+            {
+                if (Newtonsoft.Json.Linq.JToken.Parse(json, new Newtonsoft.Json.Linq.JsonLoadSettings
+                {
+                    DuplicatePropertyNameHandling = Newtonsoft.Json.Linq.DuplicatePropertyNameHandling.Error
+                }) is not Newtonsoft.Json.Linq.JObject response ||
+                    response["isSuccessful"]?.Type != Newtonsoft.Json.Linq.JTokenType.Boolean ||
+                    response["isSuccessful"]!.Value<bool>() != true ||
+                    response["jwt"]?.Type != Newtonsoft.Json.Linq.JTokenType.String ||
+                    string.IsNullOrWhiteSpace(response["jwt"]!.Value<string>()))
+                    throw new JsonSerializationException(invalid);
+                return new AuthServiceResponse { isSuccessful = true, jwt = response["jwt"]!.Value<string>()! };
+            }
+            catch (JsonException) { throw new JsonSerializationException(invalid); }
+            catch (ArgumentException) { throw new JsonSerializationException(invalid); }
+        }
     }
 }

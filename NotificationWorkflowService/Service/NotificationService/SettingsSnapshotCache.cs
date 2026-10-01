@@ -54,7 +54,8 @@ internal sealed class SettingsSnapshotCache<T> where T : class
             {
                 lastFailure = clock.GetTimestamp();
                 failed = true;
-                logger.LogError(exception, "Settings cache {CacheName} refresh failed; retaining previous snapshot and retrying after {RetrySeconds} seconds",
+                NotificationDiagnostics.Failure(logger, "SettingsRefresh", exception);
+                logger.LogWarning("Settings cache {CacheName} retains previous snapshot; retrying after {RetrySeconds} seconds",
                     name, FailureRetryInterval.TotalSeconds);
             }
             return snapshot;

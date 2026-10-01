@@ -9,9 +9,9 @@ namespace ActiveAlarmsParser.Service.NotificationService
 {
     public class VictimAppAlarmText
     {
-        public string AlarmID { get; set; }
-        public string AlarmName { get; set; }
-        public string Text { get; set; }
+        public string? AlarmID { get; set; }
+        public string? AlarmName { get; set; }
+        public string? Text { get; set; }
     }
 
     public class NotificationServiceData
@@ -27,6 +27,23 @@ namespace ActiveAlarmsParser.Service.NotificationService
 
             public void BulkAdd(ArrayList list)
             {
+                ArgumentNullException.ThrowIfNull(list);
+
+                // Validate the entire batch before mutation so an invalid later item
+                // cannot leave a partially queued batch. Identity strings are required
+                // at runtime; DTO defaults remain null to preserve JSON serialization.
+                foreach (object? item in list)
+                {
+                    if (item is not Notification notification ||
+                        string.IsNullOrWhiteSpace(notification.oid) ||
+                        string.IsNullOrWhiteSpace(notification.victimid) ||
+                        string.IsNullOrWhiteSpace(notification.type) ||
+                        string.IsNullOrWhiteSpace(notification.activityid))
+                    {
+                        throw new ArgumentException("Every notification must contain a complete identity.", nameof(list));
+                    }
+                }
+
                 foreach (Notification i in list)
                 {
                     string key = i.oid + "#" + i.victimid + "#" + i.type + "#" + i.activityid;
@@ -138,28 +155,30 @@ namespace ActiveAlarmsParser.Service.NotificationService
         }
         public class Notification
         {
-            public string oid { get; set; }
-            public string victimid { get; set; }
-            public string type { get; set; }
-            public string remindertype { get; set; }
-            public string subtype { get; set; }
-            public string messageto { get; set; }
-            public string messagetoname { get; set; }
-            public string messagedescription { get; set; }
-            public string messagetitle { get; set; }
-            public string messagesubtitle { get; set; }
+            // Required identities are validated by BulkAdd, not by caller-facing
+            // required modifiers or empty-string defaults that change the wire data.
+            public string oid { get; set; } = null!;
+            public string victimid { get; set; } = null!;
+            public string type { get; set; } = null!;
+            public string? remindertype { get; set; }
+            public string? subtype { get; set; }
+            public string? messageto { get; set; }
+            public string? messagetoname { get; set; }
+            public string? messagedescription { get; set; }
+            public string? messagetitle { get; set; }
+            public string? messagesubtitle { get; set; }
             public bool delayed { get; set; }
-            public string deliverytime { get; set; }
-            public string additionalinfo { get; set; }
-            public string source { get; set; }
-            public string activityid { get; set; }
-            public string eventdatetime { get; set; }
-            public string pogroup { get; set; }
+            public string? deliverytime { get; set; }
+            public string? additionalinfo { get; set; }
+            public string? source { get; set; }
+            public string activityid { get; set; } = null!;
+            public string? eventdatetime { get; set; }
+            public string? pogroup { get; set; }
             public bool feedbackrequired { get; set; }
             public bool seenbyparticipant { get; set; }
             public bool victimgenerated { get; set; }
-            public string timezone { get; set; }
-            public string eventdatetimelocal { get; set; }
+            public string? timezone { get; set; }
+            public string? eventdatetimelocal { get; set; }
 
             // ignored
             [JsonIgnore]
@@ -172,50 +191,143 @@ namespace ActiveAlarmsParser.Service.NotificationService
         }
         public class AccountPushNotificationSetting
         {
-            public string UserName { get; set; }
-            public string EventCode { get; set; }
-            public string EventType { get; set; }
-            public string FieldName { get; set; }
-            public string NotificationSubType { get; set; }
-            public string ReminderType { get; set; }
-            public string PushNotificationToken { get; set; }
-            public string UserFullname { get; set; }
-            public string AlternativeText { get; set; }
+            // Mapping validates these settings keys at runtime.
+            public string UserName { get; set; } = null!;
+            public string EventCode { get; set; } = null!;
+            public string? EventType { get; set; }
+            public string? FieldName { get; set; }
+            public string? NotificationSubType { get; set; }
+            public string? ReminderType { get; set; }
+            public string? PushNotificationToken { get; set; }
+            public string? UserFullname { get; set; }
+            public string? AlternativeText { get; set; }
         }
 
         public class ReminderSetting
         {
-            public string EventName { get; set; }
-            public string NotificationSubType { get; set; }
-            public string ReminderType { get; set; }
-            public string AlternativeText { get; set; }
-            public string EventNotificationType { get; set; }
+            public string? EventName { get; set; }
+            public string? NotificationSubType { get; set; }
+            public string? ReminderType { get; set; }
+            public string? AlternativeText { get; set; }
+            public string? EventNotificationType { get; set; }
         }
 
         public class VictimSetting
         {
-            public string OID { get; set; }
-            public string victimproximity { get; set; }
-            public string offbattery { get; set; }
-            public string offtamper { get; set; }
-            public string offcellgpstatus { get; set; }
+            // OID is not currently populated by the settings mapping.
+            public string? OID { get; set; }
+            public string? victimproximity { get; set; }
+            public string? offbattery { get; set; }
+            public string? offtamper { get; set; }
+            public string? offcellgpstatus { get; set; }
         }
 
         public class NotificationServiceResponse
         {
-            public string code { get; set; }
-            public string type { get; set; }
+            private const string InvalidResponseMessage = "The notification response is invalid.";
+
+            public string? code { get; set; }
+            public string? type { get; set; }
             public List<NotificationServiceDataResponse> data { get; set; }
 
             [JsonExtensionData]
             private IDictionary<string, JToken> _additionalData;
 
+            internal static NotificationServiceResponse ParseResponse(string json)
+            {
+                try
+                {
+                    if (JToken.Parse(json, new JsonLoadSettings
+                    {
+                        DuplicatePropertyNameHandling = DuplicatePropertyNameHandling.Error
+                    }) is not JObject envelope)
+                    {
+                        throw new JsonSerializationException(InvalidResponseMessage);
+                    }
+
+                    return envelope.ToObject<NotificationServiceResponse>()
+                        ?? throw new JsonSerializationException(InvalidResponseMessage);
+                }
+                catch (JsonException)
+                {
+                    // Never retain parser messages or inner exceptions containing payload data.
+                    throw new JsonSerializationException(InvalidResponseMessage);
+                }
+                catch (ArgumentException)
+                {
+                    throw new JsonSerializationException(InvalidResponseMessage);
+                }
+                catch (System.Reflection.TargetInvocationException)
+                {
+                    // Newtonsoft invokes deserialization callbacks through reflection.
+                    throw new JsonSerializationException(InvalidResponseMessage);
+                }
+            }
+
             [OnDeserialized]
             private void OnDeserialized(StreamingContext context)
             {
-                var objectString = _additionalData["object"].ToString();
-                data = JsonConvert.DeserializeObject<List<NotificationServiceDataResponse>>(objectString)
-                    ?? throw new JsonSerializationException("The notification response 'object' must contain a data array.");
+                try
+                {
+                    if (!_additionalData.TryGetValue("object", out JToken? objectToken) || objectToken == null)
+                    {
+                        throw new JsonSerializationException(InvalidResponseMessage);
+                    }
+
+                    // Support both the array contract and the legacy JSON-encoded array
+                    // without coercing scalar values into acknowledgement fields.
+                    if (objectToken.Type == JTokenType.String)
+                    {
+                        objectToken = JToken.Parse(objectToken.Value<string>()!, new JsonLoadSettings
+                        {
+                            DuplicatePropertyNameHandling = DuplicatePropertyNameHandling.Error
+                        });
+                    }
+
+                    if (objectToken is not JArray acknowledgements)
+                    {
+                        throw new JsonSerializationException(InvalidResponseMessage);
+                    }
+
+                    var validated = new List<NotificationServiceDataResponse>();
+                    foreach (JToken item in acknowledgements)
+                    {
+                        if (item is not JObject acknowledgement ||
+                            !acknowledgement.TryGetValue("isSuccessful", out JToken? success) ||
+                            success.Type != JTokenType.Boolean)
+                        {
+                            throw new JsonSerializationException(InvalidResponseMessage);
+                        }
+
+                        validated.Add(new NotificationServiceDataResponse
+                        {
+                            isSuccessful = success.Value<bool>(),
+                            oid = ReadIdentity(acknowledgement, "oid"),
+                            victimid = ReadIdentity(acknowledgement, "victimid"),
+                            type = ReadIdentity(acknowledgement, "type"),
+                            activityid = ReadIdentity(acknowledgement, "activityid")
+                        });
+                    }
+
+                    // Keep the public data property and extension-data wire mapping intact.
+                    data = validated;
+                }
+                catch (JsonException)
+                {
+                    throw new JsonSerializationException(InvalidResponseMessage);
+                }
+            }
+
+            private static string ReadIdentity(JObject acknowledgement, string name)
+            {
+                if (!acknowledgement.TryGetValue(name, out JToken? token) ||
+                    token.Type != JTokenType.String ||
+                    string.IsNullOrWhiteSpace(token.Value<string>()))
+                {
+                    throw new JsonSerializationException(InvalidResponseMessage);
+                }
+
+                return token.Value<string>()!;
             }
 
             public NotificationServiceResponse()
@@ -229,10 +341,11 @@ namespace ActiveAlarmsParser.Service.NotificationService
         public class NotificationServiceDataResponse
         {
             public bool isSuccessful { get; set; }
-            public string victimid { get; set; }
-            public string type { get; set; }
-            public string activityid { get; set; }
-            public string oid { get; set; }
+            // Response parsing validates all four identities before mapping tokens.
+            public string victimid { get; set; } = null!;
+            public string type { get; set; } = null!;
+            public string activityid { get; set; } = null!;
+            public string oid { get; set; } = null!;
         }
     }
 }

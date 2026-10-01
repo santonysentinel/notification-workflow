@@ -92,14 +92,14 @@ namespace ActiveAlarmsParser.Service.NotificationService
             }
             catch (Exception e)
             {
-                logger.LogError(e, "Invalid notification acknowledgement; submitted notifications remain pending");
+                NotificationDiagnostics.Failure(logger, "AcknowledgementValidation", e);
                 return false;
             }
 
             // Confirmed deliveries have already been removed. History failures must not resend them.
             foreach (Notification notification in delivered)
             {
-                logger.LogInformation("Notification {ActivityId} of type {NotificationType} was delivered", notification.activityid, notification.type);
+                logger.LogInformation("Notification delivery confirmed");
                 try
                 {
                     if (notification.type == "push" || notification.type == "reminder")
@@ -116,7 +116,7 @@ namespace ActiveAlarmsParser.Service.NotificationService
                 }
                 catch (Exception e)
                 {
-                    logger.LogError(e, "Failed to record history for delivered notification {ActivityId}; it will not be resent", notification.activityid);
+                    NotificationDiagnostics.Failure(logger, "DeliveredNotificationHistory", e);
                 }
             }
 
@@ -153,8 +153,7 @@ namespace ActiveAlarmsParser.Service.NotificationService
                     deliveryStarted = true;
                     string response = await NotificationHttp.SendAsync(httpClientFactory, NotificationHttp.NotificationClient,
                         endpoint, json, bearerToken, token).ConfigureAwait(false);
-                    var acknowledgement = JsonConvert.DeserializeObject<NotificationServiceResponse>(response)
-                        ?? throw new JsonSerializationException("The notification service returned a null response.");
+                    var acknowledgement = NotificationServiceResponse.ParseResponse(response);
                     bool success = HandlePostNotificationResponse(acknowledgement, submitted);
                     // Unknown/missing acknowledgements or application rejections need review,
                     // not blind retries (even if transport idempotency has been confirmed).
@@ -181,7 +180,7 @@ namespace ActiveAlarmsParser.Service.NotificationService
                 }
                 if (deliveryStarted && !throttled && !(idempotencyConfirmed && NotificationDeliveryPolicy.CanRetryWithIdempotency(ex)))
                     RequiresDeliveryReview = true;
-                logger.LogError(ex, "Notification HTTP request failed; unacknowledged notifications remain pending");
+                NotificationDiagnostics.Failure(logger, "Delivery", ex);
                 return false;
             }
         }
@@ -220,7 +219,7 @@ namespace ActiveAlarmsParser.Service.NotificationService
                 // may follow a committed insert, so don't replay those without idempotency.
                 catch (SqlException exception) when (exception.Number == 1205 && attempt < maxAttempts)
                 {
-                    logger.LogWarning(exception, "History insert deadlocked on attempt {Attempt} of {MaxAttempts}; retrying", attempt, maxAttempts);
+                    logger.LogWarning("History insert deadlocked (SQL 1205) on attempt {Attempt} of {MaxAttempts}; retrying", attempt, maxAttempts);
                     delay(TimeSpan.FromSeconds(attempt * 2));
                 }
             }
