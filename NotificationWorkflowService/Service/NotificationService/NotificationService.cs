@@ -180,83 +180,40 @@ namespace ActiveAlarmsParser.Service.NotificationService
 
         private void AddActiveAlarmActionToActivity(string historyID, string victimID, String note, int type)
         {
-            //Create a connection to the SQL Server;
-            string ConnectionString = AlarmsDatabase;
+            ExecuteHistoryWithRetry(() =>
+            {
+                // Each attempt owns its connection and command, including failed opens/executions.
+                using var connection = new SqlConnection(AlarmsDatabase);
+                using var command = new SqlCommand("ActiveAlarms_InsertIntoHistory", connection)
+                {
+                    CommandType = CommandType.StoredProcedure,
+                    CommandTimeout = 30
+                };
+                command.Parameters.Add("@HistoryID", SqlDbType.Int).Value = historyID;
+                command.Parameters.Add("@emails", SqlDbType.VarChar, 1024).Value = note;
+                command.Parameters.Add("@type", SqlDbType.Int).Value = type;
+                command.Parameters.Add("@victimid", SqlDbType.VarChar, 30).Value = victimID;
+                connection.Open();
+                command.ExecuteNonQuery();
+            }, delay => Thread.Sleep(delay), logger);
+        }
 
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+        internal static void ExecuteHistoryWithRetry(Action execute, Action<TimeSpan> delay, ILogger logger)
+        {
+            const int maxAttempts = 3;
+            for (int attempt = 1; attempt <= maxAttempts; attempt++)
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
-                    {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = "ActiveAlarms_InsertIntoHistory";
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
-
-                        cmd.Parameters.Add("@HistoryID", SqlDbType.Int);
-                        cmd.Parameters.Add("@emails", SqlDbType.VarChar, 1024);
-                        cmd.Parameters.Add("@type", SqlDbType.Int);
-                        cmd.Parameters.Add("@victimid", SqlDbType.VarChar, 30);
-
-                        cmd.Parameters["@HistoryID"].Value = historyID;
-                        cmd.Parameters["@emails"].Value = note;
-                        cmd.Parameters["@type"].Value = type;
-                        cmd.Parameters["@victimid"].Value = victimID;
-
-                        int retries = 3;
-                        while (retries > 0)
-                        {
-                            try
-                            {
-                                MyConnection.Open();
-                                cmd.ExecuteNonQuery();
-                                break;
-                            }
-                            catch (SqlException ex)
-                            {
-                                logger.LogError(ex, "SQLException on ActiveAlarms_InsertIntoHistory in Parser ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on ActiveAlarms_InsertIntoHistory in Parser " + ex);
-                                if (ex.ErrorCode.Equals(1205) ||
-                                   ex.Message.ToLower().Contains("deadlock"))
-                                {
-                                    if (retries > 0)
-                                    {
-                                        retries--;
-                                        Thread.Sleep(2000);
-                                    }
-                                    else
-                                    {
-                                        throw;
-                                    }
-                                }
-                            }
-                            catch (Exception exc)
-                            {
-                                logger.LogError(exc, "FAILED TO RUN AddActiveAlarmActionToActivity IN PARSER ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN AddActiveAlarmActionToActivity IN PARSER " + exc);
-                                if (retries > 0)
-                                {
-                                    retries--;
-                                    Thread.Sleep(2000);
-                                }
-                                else
-                                {
-                                    throw;
-                                }
-                            }
-
-                        }
-                    }
+                    execute();
+                    return;
                 }
-                catch (Exception e)
+                // A deadlock victim's transaction is rolled back. Timeouts/connection loss
+                // may follow a committed insert, so don't replay those without idempotency.
+                catch (SqlException exception) when (exception.Number == 1205 && attempt < maxAttempts)
                 {
-                    logger.LogError(e, "FAILED TO RUN AddActiveAlarmActionToActivity IN PARSER ");
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine( DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN AddActiveAlarmActionToActivity IN PARSER " + e);
-
+                    logger.LogWarning(exception, "History insert deadlocked on attempt {Attempt} of {MaxAttempts}; retrying", attempt, maxAttempts);
+                    delay(TimeSpan.FromSeconds(attempt * 2));
                 }
             }
         }
