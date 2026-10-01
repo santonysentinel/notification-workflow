@@ -9,6 +9,13 @@ namespace NotificationWorkflowService
 {
     public class Worker(ILogger<Worker> logger) : BackgroundService
     {
+        private readonly ILogger<Worker> _logger;
+        
+        public Worker(ILogger<Worker> logger)
+        {
+            _logger = logger;
+        }
+
         /// <summary>
         /// The StartAsync.
         /// </summary>
@@ -16,7 +23,6 @@ namespace NotificationWorkflowService
         /// <returns>The <see cref="Task"/>.</returns>
         public override Task StartAsync(CancellationToken cancellationToken)
         {
-            _sourceDataService.ReadStreamingData();
             return base.StartAsync(cancellationToken);
         }
 

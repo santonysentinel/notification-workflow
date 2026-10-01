@@ -1,18 +1,21 @@
 ﻿namespace ActiveAlarmsParser
 {
-    using NotificationWorkflowService.Parser;
+    using ActiveAlarmsParser.Service.NotificationService;
+    using NotificationSender = ActiveAlarmsParser.Service.NotificationService.NotificationService;
+    using Microsoft.Data.SqlClient;
+    using Microsoft.Extensions.Configuration;
+    using Microsoft.Extensions.Logging;
     using NotificationWorkflowService.Entity;
+    using NotificationWorkflowService.Parser;
     using System;
     using System.Collections;
     using System.Collections.Generic;
-    using Microsoft.Extensions.Configuration;
-    using Microsoft.Extensions.Logging;
     using System.Data;
-    using Microsoft.Data.SqlClient;
     using System.Globalization;
     using System.Linq;
     using System.Text;
     using System.Threading;
+
     //using static System.Runtime.InteropServices.JavaScript.JSType;
 
     /// <summary>
@@ -223,6 +226,7 @@
         private readonly String Platform;
 
         private readonly IConfiguration configuration;
+        private readonly NotificationSender notificationService;
 
         //private readonly String READ_PUSH_NOTIFICATION_SETTINGS = "ActiveAlarms_GetPushNotificationSettings";
         /// <summary>
@@ -230,10 +234,11 @@
         /// </summary>
         /// <param name="logger">The logger.</param>
         /// <param name="configuration">The application configuration.</param>
-        public WorkFlowInitiator(ILogger<WorkFlowInitiator> logger, IConfiguration configuration)
+        public WorkFlowInitiator(ILogger<WorkFlowInitiator> logger, IConfiguration configuration, NotificationSender notificationService)
         {
             this.log = logger;
             this.configuration = configuration;
+            this.notificationService = notificationService;
             Platform = configuration["Platform"] ?? "";
             setUpConnnectionStrings();
         }
@@ -3969,16 +3974,16 @@
                             continue;
                         }
                     }
-                    var reminder = NotificationService.NotificationServiceSetting.GetAppReminderSetting(a.AlarmID);
-                    var setting = NotificationService.NotificationServiceSetting.GetNotificationServiceSetting(victimID, a.AlarmID);
+                    var reminder = NotificationServiceSetting.GetAppReminderSetting(a.AlarmID);
+                    var setting = NotificationServiceSetting.GetNotificationServiceSetting(victimID, a.AlarmID);
 
-                    bool reminderCheck = NotificationService.NotificationServiceSetting.CheckVictimReminderSetting(victimID, reminder);
+                    bool reminderCheck = NotificationServiceSetting.CheckVictimReminderSetting(victimID, reminder);
 
                     if (reminder != null && reminderCheck == true)
                     {
                         string alternativeText = replaceAlarmsText(a, reminder.AlternativeText);
 
-                        Notification reminderNotification = new Notification()
+                        NotificationServiceData.Notification reminderNotification = new NotificationServiceData.Notification()
                         {
                             oid = a.ClientID,
                             victimid = victimID,
@@ -4008,7 +4013,7 @@
                         //Push Notification
                         if (setting != null)
                         {
-                            Notification notif = new Notification()
+                            NotificationServiceData.Notification notif = new NotificationServiceData.Notification()
                             {
                                 oid = a.ClientID,
                                 victimid = victimID,
@@ -4040,7 +4045,7 @@
                 }
 
                 //Push Notification to the cloud
-                NotificationService.NotificationService.PushNotification(notifications);
+                notificationService.PushNotification(notifications);
             }
         }
 

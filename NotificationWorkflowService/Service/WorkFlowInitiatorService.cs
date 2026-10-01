@@ -29,12 +29,14 @@ namespace NotificationWorkflowService.Service
 
         private readonly IConfiguration configuration;
         private readonly ILoggerFactory loggerFactory;
+        private readonly WorkFlowCommon parser;
 
-        public WorkFlowInitiatorService(ILogger<WorkFlowInitiatorService> logger, IConfiguration configuration, ILoggerFactory loggerFactory)
+        public WorkFlowInitiatorService(ILogger<WorkFlowInitiatorService> logger, IConfiguration configuration, ILoggerFactory loggerFactory, WorkFlowCommon parser)
         {
             this.log = logger;
             this.configuration = configuration;
             this.loggerFactory = loggerFactory;
+            this.parser = parser;
         }
 
 
@@ -45,7 +47,7 @@ namespace NotificationWorkflowService.Service
         void startParse(string platform)
         {
             DateTime lastParserResetTime = DateTime.UtcNow;
-            WorkFlowCommon p = new WorkFlowCommon(loggerFactory.CreateLogger<WorkFlowCommon>(), configuration);
+            WorkFlowCommon p = parser;
 
             while (!p.setUpParser(platform))
             {

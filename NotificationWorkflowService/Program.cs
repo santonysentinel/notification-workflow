@@ -1,4 +1,7 @@
 using NotificationWorkflowService;
+using NotificationWorkflowService.Parser;
+using NotificationWorkflowService.Service;
+using NotificationSender = ActiveAlarmsParser.Service.NotificationService.NotificationService;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -54,6 +57,10 @@ namespace ActiveAlarmsParser
             .ConfigureServices((hostContext, services) =>
             {
                 services.AddHostedService<Worker>();
+                services.AddTransient<NotificationSender>();
+                services.AddTransient<WorkFlowCommon>();
+                services.AddTransient<WorkFlowInitiator>();
+                services.AddTransient<WorkFlowInitiatorService>();
                
                 //services.AddSingleton<IDataRouter, DataRouter>();
                 
