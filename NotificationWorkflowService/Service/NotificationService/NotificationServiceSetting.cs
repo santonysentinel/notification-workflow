@@ -1,420 +1,301 @@
-﻿using Newtonsoft.Json;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.Data;
+using System.Threading;
 using Microsoft.Data.SqlClient;
-using System.IO;
-using System.Linq;
-using System.Text;
-using static ActiveAlarmsParser.Service.NotificationService.NotificationServiceData;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using static ActiveAlarmsParser.Service.NotificationService.NotificationServiceData;
 
 namespace ActiveAlarmsParser.Service.NotificationService
 {
     public static class NotificationServiceSetting
     {
-
-        /// <summary>
-        /// Defines the log.
-        /// </summary>
-        
-
-        private static DateTime cacheExpiryTime1 = DateTime.MinValue;
-        private static DateTime cacheExpiryTime2 = DateTime.MinValue;
-        private static DateTime cacheExpiryTime3 = DateTime.MinValue;
-
-        private static String ClientDatabase = string.Empty;
-
-        private static String READ_ACCOUNT_PUSH_NOTIFICATION_SETTINGS = "ActiveAlarms_ReadAccountPushNotificationSettings";
-        private static String READ_ACCOUNT_NOTIFICATION_TYPES = "ActiveAlarms_ReadAccountPushNotificationTypes";
-        private static String READ_VICTIM_NOTIFICATION_SETTINGS = "ActiveAlarms_ReadVictimNotificationSettings";
-
-        static Dictionary<string, Dictionary<string, AccountPushNotificationSetting>> AccountPushNotificationSettings = new Dictionary<string, Dictionary<string, AccountPushNotificationSetting>>();
-
-        static Dictionary<string, ReminderSetting> AppReminderDictionary = new Dictionary<string, ReminderSetting>();
-        static Dictionary<string, VictimSetting> VictimSettingDictionary = new Dictionary<string, VictimSetting>();
-
+        private static readonly object initializationLock = new object();
+        private static string ClientDatabase = string.Empty;
+        private const string READ_ACCOUNT_PUSH_NOTIFICATION_SETTINGS = "ActiveAlarms_ReadAccountPushNotificationSettings";
+        private const string READ_ACCOUNT_NOTIFICATION_TYPES = "ActiveAlarms_ReadAccountPushNotificationTypes";
+        private const string READ_VICTIM_NOTIFICATION_SETTINGS = "ActiveAlarms_ReadVictimNotificationSettings";
+        private static SettingsSnapshotCache<Dictionary<string, Dictionary<string, AccountPushNotificationSetting>>>? accountSettingsCache;
+        private static SettingsSnapshotCache<Dictionary<string, ReminderSetting>>? reminderSettingsCache;
+        private static SettingsSnapshotCache<Dictionary<string, VictimSetting>>? victimSettingsCache;
         private static ILogger logger = NullLogger.Instance;
         private static bool initialized;
 
         public static void Initialize(IConfiguration configuration, ILogger logger)
         {
-            if (initialized)
+            if (Volatile.Read(ref initialized))
             {
                 return;
             }
 
-            ArgumentNullException.ThrowIfNull(configuration);
-            ArgumentNullException.ThrowIfNull(logger);
-
-            string? clientDatabase = configuration["ClientDatabase"];
-            if (string.IsNullOrWhiteSpace(clientDatabase))
+            lock (initializationLock)
             {
-                clientDatabase = configuration.GetConnectionString("ClientDatabase");
-            }
+                if (Volatile.Read(ref initialized))
+                {
+                    return;
+                }
 
-            if (string.IsNullOrWhiteSpace(clientDatabase))
-            {
-                throw new InvalidOperationException("ClientDatabase configuration is required to initialize NotificationServiceSetting.");
-            }
+                ArgumentNullException.ThrowIfNull(configuration);
+                ArgumentNullException.ThrowIfNull(logger);
+                string? clientDatabase = configuration["ClientDatabase"];
+                if (string.IsNullOrWhiteSpace(clientDatabase))
+                {
+                    clientDatabase = configuration.GetConnectionString("ClientDatabase");
+                }
+                if (string.IsNullOrWhiteSpace(clientDatabase))
+                {
+                    throw new InvalidOperationException("ClientDatabase configuration is required to initialize NotificationServiceSetting.");
+                }
 
-            NotificationServiceSetting.logger = logger;
-            ClientDatabase = clientDatabase;
-            initialized = true;
-            readAccountPushNotificationTypes();
-            readAccountPushNotificationSettings();
-            readVictimNotificationSettings();
+                NotificationServiceSetting.logger = logger;
+                ClientDatabase = clientDatabase;
+                accountSettingsCache = new SettingsSnapshotCache<Dictionary<string, Dictionary<string, AccountPushNotificationSetting>>>(
+                    readAccountPushNotificationSettings,
+                    new Dictionary<string, Dictionary<string, AccountPushNotificationSetting>>(),
+                    logger, "readAccountPushNotificationSettings");
+                reminderSettingsCache = new SettingsSnapshotCache<Dictionary<string, ReminderSetting>>(
+                    readAccountPushNotificationTypes, new Dictionary<string, ReminderSetting>(),
+                    logger, "readAccountPushNotificationTypes");
+                victimSettingsCache = new SettingsSnapshotCache<Dictionary<string, VictimSetting>>(
+                    readVictimNotificationSettings, new Dictionary<string, VictimSetting>(),
+                    logger, "readVictimNotificationSettings");
+                reminderSettingsCache.GetSnapshot();
+                accountSettingsCache.GetSnapshot();
+                victimSettingsCache.GetSnapshot();
+                Volatile.Write(ref initialized, true);
+            }
         }
 
         private static void EnsureInitialized()
         {
-            if (!initialized)
+            if (Volatile.Read(ref initialized))
             {
-                throw new InvalidOperationException("NotificationServiceSetting.Initialize must be called before using notification settings.");
+                return;
+            }
+            lock (initializationLock)
+            {
+                if (!Volatile.Read(ref initialized))
+                {
+                    throw new InvalidOperationException("NotificationServiceSetting.Initialize must be called before using notification settings.");
+                }
             }
         }
 
         public static AccountPushNotificationSetting? GetNotificationServiceSetting(String VictimID, String EventCode)
         {
             EnsureInitialized();
-
-            if (DateTime.Now > cacheExpiryTime1)
-            {
-                readAccountPushNotificationSettings();
-                cacheExpiryTime1 = DateTime.Now.AddMinutes(5);
-            }
-
-            if (AccountPushNotificationSettings.ContainsKey(VictimID))
-            {
-                if (AccountPushNotificationSettings[VictimID].ContainsKey(EventCode))
-                {
-                    return AccountPushNotificationSettings[VictimID][EventCode];
-                }
-                else
-                {
-                    return null;
-                }
-            }
-            else
-            {
-                return null;
-            }
-
+            var snapshot = accountSettingsCache!.GetSnapshot();
+            return snapshot.TryGetValue(VictimID, out var settings) && settings.TryGetValue(EventCode, out var setting)
+                ? setting : null;
         }
 
         public static ReminderSetting? GetAppReminderSetting(String EventCode)
         {
             EnsureInitialized();
-
-            if (DateTime.Now > cacheExpiryTime2)
-            {
-                readAccountPushNotificationTypes();
-                cacheExpiryTime2 = DateTime.Now.AddMinutes(5);
-            }
-
-            if (AppReminderDictionary.ContainsKey(EventCode))
-            {
-                return AppReminderDictionary[EventCode];
-            }
-            else
-            {
-                return null;
-            }
-
+            var snapshot = reminderSettingsCache!.GetSnapshot();
+            return snapshot.TryGetValue(EventCode, out var setting) ? setting : null;
         }
 
         public static bool CheckVictimReminderSetting(String OID, ReminderSetting? reminder)
         {
             EnsureInitialized();
-            bool result = false;
-
-            if (DateTime.Now > cacheExpiryTime3)
+            var snapshot = victimSettingsCache!.GetSnapshot();
+            if (reminder == null || !snapshot.TryGetValue(OID, out var setting))
             {
-                readVictimNotificationSettings();
-                cacheExpiryTime3 = DateTime.Now.AddMinutes(5);
+                return false;
             }
-
-            if(reminder == null)
+            return reminder.EventNotificationType switch
             {
-                return result;
-            }
-
-            if (VictimSettingDictionary.ContainsKey(OID))
-            {
-                var setting =  VictimSettingDictionary[OID];
-
-                if(reminder.EventNotificationType == "offtamper")
-                {
-                    if(setting.offtamper == "True")
-                    {
-                        result = true;
-                    }
-                } 
-                else if (reminder.EventNotificationType == "offbattery")
-                {
-                    if (setting.offbattery == "True")
-                    {
-                        result = true;
-                    }
-                }
-                else if (reminder.EventNotificationType == "victimproximity")
-                {
-                    if (setting.victimproximity == "True")
-                    {
-                        result = true;
-                    }
-                }
-                else if (reminder.EventNotificationType == "offcellgpstatus")
-                {
-                    if (setting.offcellgpstatus == "True")
-                    {
-                        result = true;
-                    }
-                }
-            }
-
-            return result;
+                "offtamper" => setting.offtamper == "True",
+                "offbattery" => setting.offbattery == "True",
+                "victimproximity" => setting.victimproximity == "True",
+                "offcellgpstatus" => setting.offcellgpstatus == "True",
+                _ => false
+            };
         }
 
-        private static void readAccountPushNotificationSettings()
+        private static Dictionary<string, Dictionary<string, AccountPushNotificationSetting>> readAccountPushNotificationSettings()
         {
-            try
-            {
-                string connectionString = ClientDatabase;
-                NameValueCollection nvm = new NameValueCollection();
-                nvm.Add("session", "");
-                DataTable dt = GetDataTable(connectionString, true, nvm, READ_ACCOUNT_PUSH_NOTIFICATION_SETTINGS);
-                if (dt != null && dt.Rows.Count > 0)
-                {
-                    AccountPushNotificationSettings.Clear();
-                    for (int i = 0; i < dt.Rows.Count; i++)
-                    {
-                        String UserName = dt.Rows[i]["UserName"].ToString();
-                        String EventCode = dt.Rows[i]["EventCode"].ToString();
-                        String EventType = dt.Rows[i]["EventType"].ToString();
-                        String FieldName = dt.Rows[i]["FieldName"].ToString();
-                        String PushNotificationToken = dt.Rows[i]["PushNotificationToken"].ToString();
-                        String UserFullname = dt.Rows[i]["UserFullname"].ToString();
-                        String NotificationSubType = dt.Rows[i]["NotificationSubType"].ToString();
-                        String ReminderType = dt.Rows[i]["ReminderType"].ToString();
-                        String ReminderEnable = dt.Rows[i]["ReminderEnable"].ToString();
-                        String AlternativeText = dt.Rows[i]["AlternativeText"].ToString();
- 
-                        //if(UserName == "ID901983")
-                        //{
-                        //    Console.WriteLine("ID901983");
-                        //}
-
-                        if (!AccountPushNotificationSettings.ContainsKey(UserName))
-                        {
-                            AccountPushNotificationSettings.Add(UserName, new Dictionary<string, AccountPushNotificationSetting>());
-                            AccountPushNotificationSettings[UserName].Add(EventCode, new AccountPushNotificationSetting()
-                            {
-                                UserName = UserName,
-                                EventCode = EventCode,
-                                EventType = EventType,
-                                FieldName = FieldName,
-                                PushNotificationToken = PushNotificationToken,
-                                UserFullname = UserFullname,
-                                NotificationSubType = NotificationSubType,
-                                ReminderType = ReminderType,
-                                AlternativeText = AlternativeText
-                            });
-                        }
-                        else
-                        {
-                            if (!AccountPushNotificationSettings[UserName].ContainsKey(EventCode))
-                            {
-                                AccountPushNotificationSettings[UserName].Add(EventCode, new AccountPushNotificationSetting()
-                                {
-                                    UserName = UserName,
-                                    EventCode = EventCode,
-                                    EventType = EventType,
-                                    FieldName = FieldName,
-                                    PushNotificationToken = PushNotificationToken,
-                                    UserFullname = UserFullname,
-                                    NotificationSubType = NotificationSubType,
-                                    ReminderType = ReminderType,
-                                    AlternativeText = AlternativeText
-                                });
-                            }
-                        }
-                        
-                    }
-                }
-            }
-            catch (Exception e)
-            {
-                logger.LogError(e, "readAccountPushNotificationSettings");
-            }
+            NameValueCollection parameters = new NameValueCollection();
+            parameters.Add("session", "");
+            using DataTable table = GetDataTable(ClientDatabase, true, parameters, READ_ACCOUNT_PUSH_NOTIFICATION_SETTINGS);
+            return BuildAccountSettings(table);
         }
 
-        private static void readAccountPushNotificationTypes()
+        private static Dictionary<string, ReminderSetting> readAccountPushNotificationTypes()
         {
-            try
-            {
-                string connectionString = ClientDatabase;
-                NameValueCollection nvm = new NameValueCollection();
-                nvm.Add("session", "");
-                DataTable dt = GetDataTable(connectionString, true, nvm, READ_ACCOUNT_NOTIFICATION_TYPES);
-                if (dt != null && dt.Rows.Count > 0)
-                {
-                    AppReminderDictionary.Clear();
-                    for (int i = 0; i < dt.Rows.Count; i++)
-                    {
-                        String EventCode = dt.Rows[i]["EventCode"].ToString();
-                        String EventName = dt.Rows[i]["EventName"].ToString();
-                        String ReminderType = dt.Rows[i]["ReminderType"].ToString();
-                        String NotificationSubType = dt.Rows[i]["NotificationSubType"].ToString();
-                        String AlternativeText = dt.Rows[i]["AlternativeText"].ToString();
-                        String EventNotificationType = dt.Rows[i]["EventNotificationType"].ToString();
-
-                        if (!AppReminderDictionary.ContainsKey(EventCode))
-                        {
-                            AppReminderDictionary.Add(EventCode, new ReminderSetting { 
-                                            AlternativeText = AlternativeText,
-                                            EventName = EventName,
-                                            NotificationSubType = NotificationSubType,
-                                            ReminderType = ReminderType,
-                                            EventNotificationType = EventNotificationType
-                            });
-                        }
-                    }
-                }
-            }
-            catch (Exception e)
-            {
-                logger.LogError(e, "readAccountPushNotificationTypes");
-            }
+            NameValueCollection parameters = new NameValueCollection();
+            parameters.Add("session", "");
+            using DataTable table = GetDataTable(ClientDatabase, true, parameters, READ_ACCOUNT_NOTIFICATION_TYPES);
+            return BuildReminderSettings(table);
         }
 
-        private static void readVictimNotificationSettings()
+        private static Dictionary<string, VictimSetting> readVictimNotificationSettings()
         {
-            try
-            {
-                string connectionString = ClientDatabase;
-                NameValueCollection nvm = new NameValueCollection();
-                nvm.Add("session", "");
-                DataTable dt = GetDataTable(connectionString, true, nvm, READ_VICTIM_NOTIFICATION_SETTINGS);
-                if (dt != null && dt.Rows.Count > 0)
-                {
-                    VictimSettingDictionary.Clear();
-                    for (int i = 0; i < dt.Rows.Count; i++)
-                    {
-                        String OID = dt.Rows[i]["OID"].ToString();
-                        String victimproximity = dt.Rows[i]["victimproximity"].ToString();
-                        String offbattery = dt.Rows[i]["offbattery"].ToString();
-                        String offtamper = dt.Rows[i]["offtamper"].ToString();
-                        String offcellgpstatus = dt.Rows[i]["offcellgpstatus"].ToString();
+            NameValueCollection parameters = new NameValueCollection();
+            parameters.Add("session", "");
+            using DataTable table = GetDataTable(ClientDatabase, true, parameters, READ_VICTIM_NOTIFICATION_SETTINGS);
+            return BuildVictimSettings(table);
+        }
 
-                        if (!VictimSettingDictionary.ContainsKey(OID))
-                        {
-                            VictimSettingDictionary.Add(OID, new VictimSetting
-                            {
-                                victimproximity = victimproximity,
-                                offbattery = offbattery,
-                                offtamper = offtamper,
-                                offcellgpstatus = offcellgpstatus
-                            });
-                        }
-                    }
+        internal static Dictionary<string, Dictionary<string, AccountPushNotificationSetting>> BuildAccountSettings(DataTable table)
+        {
+            var snapshot = new Dictionary<string, Dictionary<string, AccountPushNotificationSetting>>();
+            foreach (DataRow row in table.Rows)
+            {
+                string userName = row["UserName"].ToString()!;
+                string eventCode = row["EventCode"].ToString()!;
+                string eventType = row["EventType"].ToString()!;
+                string fieldName = row["FieldName"].ToString()!;
+                string pushNotificationToken = row["PushNotificationToken"].ToString()!;
+                string userFullname = row["UserFullname"].ToString()!;
+                string notificationSubType = row["NotificationSubType"].ToString()!;
+                string reminderType = row["ReminderType"].ToString()!;
+                // Preserve the existing column read without changing ReminderEnable behavior.
+                _ = row["ReminderEnable"].ToString();
+                string alternativeText = row["AlternativeText"].ToString()!;
+                if (!snapshot.TryGetValue(userName, out var settings))
+                {
+                    settings = new Dictionary<string, AccountPushNotificationSetting>();
+                    snapshot.Add(userName, settings);
+                }
+                if (!settings.ContainsKey(eventCode))
+                {
+                    settings.Add(eventCode, new AccountPushNotificationSetting
+                    {
+                        UserName = userName,
+                        EventCode = eventCode,
+                        EventType = eventType,
+                        FieldName = fieldName,
+                        PushNotificationToken = pushNotificationToken,
+                        UserFullname = userFullname,
+                        NotificationSubType = notificationSubType,
+                        ReminderType = reminderType,
+                        AlternativeText = alternativeText
+                    });
                 }
             }
-            catch (Exception e)
+            return snapshot;
+        }
+
+        internal static Dictionary<string, ReminderSetting> BuildReminderSettings(DataTable table)
+        {
+            var snapshot = new Dictionary<string, ReminderSetting>();
+            foreach (DataRow row in table.Rows)
             {
-                logger.LogError(e, "readVictimNotificationSettings");
+                string eventCode = row["EventCode"].ToString()!;
+                string eventName = row["EventName"].ToString()!;
+                string reminderType = row["ReminderType"].ToString()!;
+                string notificationSubType = row["NotificationSubType"].ToString()!;
+                string alternativeText = row["AlternativeText"].ToString()!;
+                string eventNotificationType = row["EventNotificationType"].ToString()!;
+                if (!snapshot.ContainsKey(eventCode))
+                {
+                    snapshot.Add(eventCode, new ReminderSetting
+                    {
+                        AlternativeText = alternativeText,
+                        EventName = eventName,
+                        NotificationSubType = notificationSubType,
+                        ReminderType = reminderType,
+                        EventNotificationType = eventNotificationType
+                    });
+                }
             }
+            return snapshot;
+        }
+
+        internal static Dictionary<string, VictimSetting> BuildVictimSettings(DataTable table)
+        {
+            var snapshot = new Dictionary<string, VictimSetting>();
+            foreach (DataRow row in table.Rows)
+            {
+                string oid = row["OID"].ToString()!;
+                string victimproximity = row["victimproximity"].ToString()!;
+                string offbattery = row["offbattery"].ToString()!;
+                string offtamper = row["offtamper"].ToString()!;
+                string offcellgpstatus = row["offcellgpstatus"].ToString()!;
+                if (!snapshot.ContainsKey(oid))
+                {
+                    snapshot.Add(oid, new VictimSetting
+                    {
+                        victimproximity = victimproximity,
+                        offbattery = offbattery,
+                        offtamper = offtamper,
+                        offcellgpstatus = offcellgpstatus
+                    });
+                }
+            }
+            return snapshot;
         }
 
         private static DataTable GetDataTable(String connection, bool isProc, NameValueCollection InputParams, String Stmt)
         {
-            bool Success = false;
-            DataTable dt = new DataTable();
-
-            int maxTries = 3;
-            int currentTry = 0;
-
-            do
+            const int maxTries = 3;
+            for (int currentTry = 0; currentTry < maxTries; currentTry++)
             {
-                using (SqlConnection conn = new SqlConnection(connection))
+                DataTable table = new DataTable();
+                using SqlConnection conn = new SqlConnection(connection);
+                SqlTransaction? tran = null;
+                try
                 {
-                    SqlTransaction? tran = null;
-
-                    try
+                    conn.Open();
+                    tran = conn.BeginTransaction();
+                    using SqlCommand cmd = new SqlCommand(Stmt, conn, tran);
+                    cmd.CommandTimeout = 600;
+                    cmd.CommandType = isProc ? CommandType.StoredProcedure : CommandType.Text;
+                    if (isProc)
                     {
-                        conn.Open();
-                        tran = conn.BeginTransaction();
-                        using (SqlCommand cmd = new SqlCommand(Stmt, conn, tran))
+                        SqlCommandBuilder.DeriveParameters(cmd);
+                        foreach (SqlParameter p in cmd.Parameters)
                         {
-                            cmd.CommandTimeout = 600;
-                            if (isProc)
+                            if (p.Direction == ParameterDirection.Input)
                             {
-
-                                cmd.CommandType = CommandType.StoredProcedure;
+                                if (InputParams[p.ParameterName.ToLower().Substring(1)] != null)
+                                {
+                                    p.Value = InputParams[p.ParameterName.ToLower().Substring(1)];
+                                }
+                                p.DbType = DbType.AnsiString;
                             }
                             else
                             {
-                                cmd.CommandType = CommandType.Text;
+                                p.Value = DBNull.Value;
                             }
-
-                            if (isProc)
-                            {
-                                SqlCommandBuilder.DeriveParameters(cmd);
-                                foreach (SqlParameter p in cmd.Parameters)
-                                {
-                                    if (p.Direction == ParameterDirection.Input)
-                                    {
-
-                                        if (InputParams[p.ParameterName.ToLower().Substring(1)] != null)
-                                        {
-                                            p.Value = InputParams[p.ParameterName.ToLower().Substring(1)];
-                                        }
-                                        p.DbType = DbType.AnsiString;
-                                    }
-                                    else p.Value = DBNull.Value;
-
-                                }
-                            }
-                            SqlDataAdapter da = new SqlDataAdapter(cmd);
-                            da.Fill(dt);
-                            Success = true;
-
                         }
-                        tran.Commit();
                     }
-                    catch (Exception e)
+                    using SqlDataAdapter adapter = new SqlDataAdapter(cmd);
+                    adapter.Fill(table);
+                    tran.Commit();
+                    return table;
+                }
+                catch (Exception e)
+                {
+                    table.Dispose();
+                    if (tran != null)
                     {
-                        if (tran != null)
+                        try
                         {
                             tran.Rollback();
                         }
-                        //logger.Error("Error in DataLayer: Trial:" + currentTry + " SP:" + Stmt, e);
-                        logger.LogError(e, "Error in DataLayer: Trial:{Trial} SP:{Statement}", currentTry, Stmt);
-
-                        /**********************************************
-                        * Throw exception only after the third try
-                        * For third try, currentTry = 2
-                        * ********************************************/
-                        if (currentTry == 2)
+                        catch (Exception rollbackException)
                         {
-                            throw;
+                            logger.LogError(rollbackException, "Rollback failed in DataLayer: Trial:{Trial} SP:{Statement}", currentTry, Stmt);
                         }
                     }
-                    finally
+                    logger.LogError(e, "Error in DataLayer: Trial:{Trial} SP:{Statement}", currentTry, Stmt);
+                    if (currentTry == maxTries - 1)
                     {
-                        if (conn != null)
-                        {
-                            conn.Close();
-                        }
+                        throw;
                     }
                 }
-            } while (++currentTry <= maxTries && !Success);
-
-            return dt;
-
+                finally
+                {
+                    tran?.Dispose();
+                }
+            }
+            throw new InvalidOperationException("SQL retry attempts exhausted.");
         }
     }
 }
