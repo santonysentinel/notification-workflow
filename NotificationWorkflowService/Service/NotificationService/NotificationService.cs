@@ -26,6 +26,17 @@ namespace ActiveAlarmsParser.Service.NotificationService
         private NotificationArray notifications = new NotificationArray();
         private string AlarmsDatabase;
         private readonly IHttpClientFactory httpClientFactory;
+        private readonly bool idempotencyConfirmed;
+        private DateTimeOffset retryNotBefore;
+
+        /// <summary>Pending delivery is paused after a permanent or ambiguous failure.</summary>
+        public bool RequiresDeliveryReview { get; private set; }
+
+        /// <summary>
+        /// Explicitly allow pending delivery after checking the remote outcome/correcting a rejection.
+        /// This can duplicate notifications if the remote outcome has not been reconciled.
+        /// </summary>
+        public void ResumePendingDeliveryAfterReview() => RequiresDeliveryReview = false;
 
         private readonly IConfiguration configuration;
         public NotificationService(ILogger<NotificationService> logger, IConfiguration configuration)
@@ -39,6 +50,7 @@ namespace ActiveAlarmsParser.Service.NotificationService
             this.httpClientFactory = httpClientFactory;
             this.logger = logger;
             this.configuration = configuration;
+            idempotencyConfirmed = configuration.GetValue<bool>("NotificationDelivery:IdempotencyConfirmed");
             AlarmsDatabase = configuration["ClientDatabase"] ?? configuration.GetConnectionString("ClientDatabase")
                 ?? throw new InvalidOperationException("ClientDatabase is not configured.");
             baseURL = configuration["Notifications_Service_API_URL"]
@@ -61,19 +73,11 @@ namespace ActiveAlarmsParser.Service.NotificationService
 
             if(notifications.Count() > 0)
             {
-                bool success = await PostNotificationAsync(cancellationToken).ConfigureAwait(false);
-                for (int i = 0; i < 5; i++)
-                {
-                    if (success)
-                    {
-                        break;
-                    }
-                    success = await PostNotificationAsync(cancellationToken).ConfigureAwait(false);
-                }
+                await PostNotificationAsync(cancellationToken).ConfigureAwait(false);
 
                 if (notifications.Count() > 0)
                 {
-                    logger.LogWarning("Notification delivery attempts exhausted; retaining {PendingCount} unacknowledged notifications for the next call", notifications.Count());
+                    logger.LogWarning("Retaining {PendingCount} unacknowledged notifications; delivery review required: {RequiresReview}", notifications.Count(), RequiresDeliveryReview);
                 }
             }
         }
@@ -125,6 +129,8 @@ namespace ActiveAlarmsParser.Service.NotificationService
         public async Task<bool> PostNotificationAsync(CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (RequiresDeliveryReview || DateTimeOffset.UtcNow < retryNotBefore) return false;
+            bool deliveryStarted = false;
             try
             {
                 var endpoint = NotificationHttp.Endpoint(baseURL, "notification");
@@ -134,25 +140,47 @@ namespace ActiveAlarmsParser.Service.NotificationService
                 {
                     return true;
                 }
-                string bearerToken = await NotificationServiceAccess.GetAuthorizationTokenAsync(cancellationToken).ConfigureAwait(false);
-                if (string.IsNullOrWhiteSpace(bearerToken))
+                string bearerToken = string.Empty;
+                string json = JsonConvert.SerializeObject(submitted.Values);
+                return await NotificationDeliveryPolicy.ExecuteAsync(async token =>
                 {
-                    logger.LogWarning("Notification posting skipped because authentication did not provide a token");
-                    return false;
-                }
-                string response = await NotificationHttp.SendAsync(httpClientFactory, NotificationHttp.NotificationClient,
-                    endpoint, JsonConvert.SerializeObject(submitted.Values), bearerToken, cancellationToken).ConfigureAwait(false);
-                var acknowledgement = JsonConvert.DeserializeObject<NotificationServiceResponse>(response)
-                    ?? throw new JsonSerializationException("The notification service returned a null response.");
-                cancellationToken.ThrowIfCancellationRequested();
-                return HandlePostNotificationResponse(acknowledgement, submitted);
+                    bearerToken = await NotificationServiceAccess.GetAuthorizationTokenAsync(token).ConfigureAwait(false);
+                    if (string.IsNullOrWhiteSpace(bearerToken))
+                    {
+                        logger.LogWarning("Notification posting skipped because authentication did not provide a token");
+                        return false;
+                    }
+                    deliveryStarted = true;
+                    string response = await NotificationHttp.SendAsync(httpClientFactory, NotificationHttp.NotificationClient,
+                        endpoint, json, bearerToken, token).ConfigureAwait(false);
+                    var acknowledgement = JsonConvert.DeserializeObject<NotificationServiceResponse>(response)
+                        ?? throw new JsonSerializationException("The notification service returned a null response.");
+                    bool success = HandlePostNotificationResponse(acknowledgement, submitted);
+                    // Unknown/missing acknowledgements or application rejections need review,
+                    // not blind retries (even if transport idempotency has been confirmed).
+                    if (!success) RequiresDeliveryReview = true;
+                    return success;
+                }, token => NotificationServiceAccess.InvalidateTokenAsync(bearerToken, token),
+                    idempotencyConfirmed, logger, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
+                if (deliveryStarted && !idempotencyConfirmed) RequiresDeliveryReview = true;
                 throw;
             }
             catch (Exception ex)
             {
+                bool throttled = ex is HttpRequestException { StatusCode: System.Net.HttpStatusCode.TooManyRequests };
+                if (throttled || (idempotencyConfirmed && NotificationDeliveryPolicy.CanRetryWithIdempotency(ex)))
+                {
+                    TimeSpan cooldown = NotificationDeliveryPolicy.Backoff(NotificationDeliveryPolicy.MaxAttempts, Random.Shared.NextDouble());
+                    if (ex is NotificationHttpException { RetryAfter: { } retryAfter } && retryAfter > cooldown)
+                        cooldown = retryAfter;
+                    var now = DateTimeOffset.UtcNow;
+                    retryNotBefore = cooldown > DateTimeOffset.MaxValue - now ? DateTimeOffset.MaxValue : now + cooldown;
+                }
+                if (deliveryStarted && !throttled && !(idempotencyConfirmed && NotificationDeliveryPolicy.CanRetryWithIdempotency(ex)))
+                    RequiresDeliveryReview = true;
                 logger.LogError(ex, "Notification HTTP request failed; unacknowledged notifications remain pending");
                 return false;
             }

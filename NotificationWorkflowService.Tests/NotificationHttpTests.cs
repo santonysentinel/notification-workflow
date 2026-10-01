@@ -46,7 +46,7 @@ public class NotificationHttpTests
         if (accepted) Assert.Equal("response", await operation);
         else
         {
-            var failure = await Assert.ThrowsAsync<HttpRequestException>(() => operation);
+            var failure = await Assert.ThrowsAnyAsync<HttpRequestException>(() => operation);
             Assert.Equal((HttpStatusCode)status, failure.StatusCode);
         }
         Assert.Equal(name, factory.ClientName);
@@ -85,6 +85,16 @@ public class NotificationHttpTests
         Assert.Equal("test-token", await NotificationServiceAccess.GetAuthorizationTokenAsync());
         Assert.Equal("test-token", NotificationServiceAccess.GetAuthorizationToken());
         Assert.Equal(1, factory.Calls);
+        await NotificationServiceAccess.InvalidateTokenAsync("stale-token", default);
+        Assert.Equal("test-token", await NotificationServiceAccess.GetAuthorizationTokenAsync());
+        Assert.Equal(1, factory.Calls);
+        await NotificationServiceAccess.InvalidateTokenAsync("test-token", default);
+        Assert.Equal("test-token", await NotificationServiceAccess.GetAuthorizationTokenAsync());
+        Assert.Equal(2, factory.Calls);
+
+        // Run service-level cases in this test to share the isolated static authentication
+        // configuration without racing another fixture's initialization.
+        await VerifyServiceDeliveryPolicy(factory);
     }
 
     [Fact]
@@ -136,6 +146,94 @@ public class NotificationHttpTests
         using var auth = factory.CreateClient(NotificationHttp.AuthenticationClient);
         Assert.Equal(TimeSpan.FromSeconds(30), delivery.Timeout);
         Assert.Equal(TimeSpan.FromSeconds(30), auth.Timeout);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TransportCapturesRetryAfterBeforeDisposingResponse(bool dateFormat)
+    {
+        var factory = new FakeFactory((_, _) =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+            response.Headers.RetryAfter = dateFormat
+                ? new System.Net.Http.Headers.RetryConditionHeaderValue(DateTimeOffset.UtcNow.AddSeconds(20))
+                : new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(20));
+            return Task.FromResult(response);
+        });
+        var failure = await Assert.ThrowsAsync<NotificationHttpException>(() => NotificationHttp.SendAsync(factory,
+            NotificationHttp.NotificationClient, new Uri("https://example.test/notification"), "{}", "token", default));
+        Assert.InRange(failure.RetryAfter!.Value.TotalSeconds, 18, 20);
+    }
+
+    private static async Task VerifyServiceDeliveryPolicy(FakeFactory authentication)
+    {
+        var permanent = new FakeFactory((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadRequest)));
+        var rejected = IsolatedSender(permanent);
+        await rejected.PushNotificationAsync(Batch());
+        Assert.True(rejected.RequiresDeliveryReview);
+        await rejected.PushNotificationAsync(Batch());
+        Assert.Equal(1, permanent.Calls); // Neither the outer call nor a later batch multiplies attempts.
+        rejected.ResumePendingDeliveryAfterReview();
+        await rejected.PushNotificationAsync(new System.Collections.ArrayList());
+        Assert.Equal(2, permanent.Calls);
+
+        var timeout = new FakeFactory((_, _) => throw new TaskCanceledException("Ambiguous POST timeout"));
+        var uncertain = IsolatedSender(timeout);
+        await uncertain.PushNotificationAsync(Batch());
+        Assert.True(uncertain.RequiresDeliveryReview);
+        await uncertain.PushNotificationAsync(Batch());
+        Assert.Equal(1, timeout.Calls);
+
+        var throttled = new FakeFactory((_, _) =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+            response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromMinutes(5));
+            return Task.FromResult(response);
+        });
+        var deferred = IsolatedSender(throttled);
+        await deferred.PushNotificationAsync(Batch());
+        Assert.False(deferred.RequiresDeliveryReview);
+        await deferred.PushNotificationAsync(Batch());
+        Assert.Equal(1, throttled.Calls); // Retry-After also applies to subsequent calls.
+
+        int posts = 0;
+        int previousAuthentications = authentication.Calls;
+        var recovering = new FakeFactory((request, _) =>
+        {
+            Assert.Equal("test-token", request.Headers.Authorization!.Parameter);
+            return Task.FromResult(++posts == 1
+                ? new HttpResponseMessage(HttpStatusCode.Unauthorized)
+                : new HttpResponseMessage(HttpStatusCode.Created)
+                {
+                    Content = new StringContent("{\"object\":[{\"oid\":\"o\",\"victimid\":\"v\",\"type\":\"test\",\"activityid\":\"1\",\"isSuccessful\":true}]}")
+                });
+        });
+        var refreshed = IsolatedSender(recovering);
+        await refreshed.PushNotificationAsync(Batch());
+        Assert.Equal(2, recovering.Calls);
+        Assert.Equal(previousAuthentications + 1, authentication.Calls);
+        Assert.False(refreshed.RequiresDeliveryReview);
+        Assert.True(await refreshed.PostNotificationAsync()); // Queue was acknowledged; no HTTP call.
+        Assert.Equal(2, recovering.Calls);
+
+        static System.Collections.ArrayList Batch() => new()
+        {
+            new NotificationServiceData.Notification { oid = "o", victimid = "v", type = "test", activityid = "1" }
+        };
+    }
+
+    private static NotificationService IsolatedSender(IHttpClientFactory factory)
+    {
+        // Bypass live settings SQL initialization; all HTTP is handled by fake transports.
+        var sender = (NotificationService)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(NotificationService));
+        void Set(string name, object value) => typeof(NotificationService).GetField(name,
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.SetValue(sender, value);
+        Set("httpClientFactory", factory);
+        Set("logger", NullLogger<NotificationService>.Instance);
+        Set("baseURL", "https://example.test/api");
+        Set("notifications", new NotificationServiceData.NotificationArray());
+        return sender;
     }
 
     private sealed class FakeFactory(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : IHttpClientFactory

@@ -159,6 +159,24 @@ namespace ActiveAlarmsParser.Service.NotificationService
             return string.Empty;
         }
 
+        internal static async Task InvalidateTokenAsync(string rejectedToken, CancellationToken cancellationToken)
+        {
+            await tokenGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                // A stale 401 must not invalidate a newer token refreshed by another caller.
+                if (sessionToken == rejectedToken)
+                {
+                    sessionToken = string.Empty;
+                    sessionExpiryTime = DateTime.MinValue;
+                }
+            }
+            finally
+            {
+                tokenGate.Release();
+            }
+        }
+
         /// <summary>
         /// The SaveTokenForFutureAccess.
         /// </summary>

@@ -57,7 +57,12 @@ internal static class NotificationHttp
             (clientName == AuthenticationClient && response.StatusCode == HttpStatusCode.OK);
         if (!accepted)
         {
-            throw new HttpRequestException("The API returned an unexpected status code.", null, response.StatusCode);
+            var retryAfter = response.Headers.RetryAfter;
+            TimeSpan? wait = retryAfter?.Delta;
+            if (wait == null && retryAfter?.Date is { } date)
+                wait = date - DateTimeOffset.UtcNow;
+            if (wait < TimeSpan.Zero) wait = TimeSpan.Zero;
+            throw new NotificationHttpException(response.StatusCode, wait);
         }
         return await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
     }
