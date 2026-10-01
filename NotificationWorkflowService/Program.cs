@@ -70,6 +70,7 @@ namespace ActiveAlarmsParser
                     throw new InvalidOperationException("WorkerMode must be 'Normal' or 'Step'.");
                 }
                 services.AddTransient<NotificationSender>();
+                services.AddSingleton<NotificationWorkflowService.Repository.INotificationRepository, NotificationWorkflowService.Repository.NotificationRepository>();
                 services.AddTransient<WorkFlowCommon>();
                 services.AddTransient<Func<WorkFlowCommon>>(provider => () => provider.GetRequiredService<WorkFlowCommon>());
                 services.AddTransient<WorkFlowInitiator>();

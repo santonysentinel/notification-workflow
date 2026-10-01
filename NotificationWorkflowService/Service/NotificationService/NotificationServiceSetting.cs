@@ -1,12 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Collections.Specialized;
-using System.Data;
 using System.Threading;
-using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using NotificationWorkflowService.Repository;
 using static ActiveAlarmsParser.Service.NotificationService.NotificationServiceData;
 
 namespace ActiveAlarmsParser.Service.NotificationService
@@ -14,17 +12,25 @@ namespace ActiveAlarmsParser.Service.NotificationService
     public static class NotificationServiceSetting
     {
         private static readonly object initializationLock = new object();
-        private static string ClientDatabase = string.Empty;
-        private const string READ_ACCOUNT_PUSH_NOTIFICATION_SETTINGS = "ActiveAlarms_ReadAccountPushNotificationSettings";
-        private const string READ_ACCOUNT_NOTIFICATION_TYPES = "ActiveAlarms_ReadAccountPushNotificationTypes";
-        private const string READ_VICTIM_NOTIFICATION_SETTINGS = "ActiveAlarms_ReadVictimNotificationSettings";
+        private static INotificationRepository? repository;
         private static SettingsSnapshotCache<Dictionary<string, Dictionary<string, AccountPushNotificationSetting>>>? accountSettingsCache;
         private static SettingsSnapshotCache<Dictionary<string, ReminderSetting>>? reminderSettingsCache;
         private static SettingsSnapshotCache<Dictionary<string, VictimSetting>>? victimSettingsCache;
-        private static ILogger logger = NullLogger.Instance;
         private static bool initialized;
 
         public static void Initialize(IConfiguration configuration, ILogger logger)
+        {
+            if (Volatile.Read(ref initialized))
+            {
+                return;
+            }
+
+            ArgumentNullException.ThrowIfNull(configuration);
+            ArgumentNullException.ThrowIfNull(logger);
+            Initialize(configuration, logger, new NotificationRepository(configuration, NullLogger<NotificationRepository>.Instance));
+        }
+
+        public static void Initialize(IConfiguration configuration, ILogger logger, INotificationRepository repository)
         {
             if (Volatile.Read(ref initialized))
             {
@@ -40,18 +46,9 @@ namespace ActiveAlarmsParser.Service.NotificationService
 
                 ArgumentNullException.ThrowIfNull(configuration);
                 ArgumentNullException.ThrowIfNull(logger);
-                string? clientDatabase = configuration["ClientDatabase"];
-                if (string.IsNullOrWhiteSpace(clientDatabase))
-                {
-                    clientDatabase = configuration.GetConnectionString("ClientDatabase");
-                }
-                if (string.IsNullOrWhiteSpace(clientDatabase))
-                {
-                    throw new InvalidOperationException("ClientDatabase configuration is required to initialize NotificationServiceSetting.");
-                }
+                ArgumentNullException.ThrowIfNull(repository);
 
-                NotificationServiceSetting.logger = logger;
-                ClientDatabase = clientDatabase;
+                NotificationServiceSetting.repository = repository;
                 accountSettingsCache = new SettingsSnapshotCache<Dictionary<string, Dictionary<string, AccountPushNotificationSetting>>>(
                     readAccountPushNotificationSettings,
                     new Dictionary<string, Dictionary<string, AccountPushNotificationSetting>>(),
@@ -119,44 +116,34 @@ namespace ActiveAlarmsParser.Service.NotificationService
 
         private static Dictionary<string, Dictionary<string, AccountPushNotificationSetting>> readAccountPushNotificationSettings()
         {
-            NameValueCollection parameters = new NameValueCollection();
-            parameters.Add("session", "");
-            using DataTable table = GetDataTable(ClientDatabase, true, parameters, READ_ACCOUNT_PUSH_NOTIFICATION_SETTINGS);
-            return BuildAccountSettings(table);
+            return BuildAccountSettings(repository!.ReadAccountNotificationSettingsAsync().GetAwaiter().GetResult());
         }
 
         private static Dictionary<string, ReminderSetting> readAccountPushNotificationTypes()
         {
-            NameValueCollection parameters = new NameValueCollection();
-            parameters.Add("session", "");
-            using DataTable table = GetDataTable(ClientDatabase, true, parameters, READ_ACCOUNT_NOTIFICATION_TYPES);
-            return BuildReminderSettings(table);
+            return BuildReminderSettings(repository!.ReadReminderSettingsAsync().GetAwaiter().GetResult());
         }
 
         private static Dictionary<string, VictimSetting> readVictimNotificationSettings()
         {
-            NameValueCollection parameters = new NameValueCollection();
-            parameters.Add("session", "");
-            using DataTable table = GetDataTable(ClientDatabase, true, parameters, READ_VICTIM_NOTIFICATION_SETTINGS);
-            return BuildVictimSettings(table);
+            return BuildVictimSettings(repository!.ReadVictimSettingsAsync().GetAwaiter().GetResult());
         }
 
-        internal static Dictionary<string, Dictionary<string, AccountPushNotificationSetting>> BuildAccountSettings(DataTable table)
+        internal static Dictionary<string, Dictionary<string, AccountPushNotificationSetting>> BuildAccountSettings(IEnumerable<AccountNotificationSettingRow> rows)
         {
             var snapshot = new Dictionary<string, Dictionary<string, AccountPushNotificationSetting>>();
-            foreach (DataRow row in table.Rows)
+            foreach (AccountNotificationSettingRow row in rows)
             {
-                string userName = row["UserName"].ToString()!;
-                string eventCode = row["EventCode"].ToString()!;
-                string eventType = row["EventType"].ToString()!;
-                string fieldName = row["FieldName"].ToString()!;
-                string pushNotificationToken = row["PushNotificationToken"].ToString()!;
-                string userFullname = row["UserFullname"].ToString()!;
-                string notificationSubType = row["NotificationSubType"].ToString()!;
-                string reminderType = row["ReminderType"].ToString()!;
-                // Preserve the existing column read without changing ReminderEnable behavior.
-                _ = row["ReminderEnable"].ToString();
-                string alternativeText = row["AlternativeText"].ToString()!;
+                string userName = row.UserName ?? string.Empty;
+                string eventCode = row.EventCode ?? string.Empty;
+                string eventType = row.EventType ?? string.Empty;
+                string fieldName = row.FieldName ?? string.Empty;
+                string pushNotificationToken = row.PushNotificationToken ?? string.Empty;
+                string userFullname = row.UserFullname ?? string.Empty;
+                string notificationSubType = row.NotificationSubType ?? string.Empty;
+                string reminderType = row.ReminderType ?? string.Empty;
+                // ReminderEnable remains intentionally unused; it does not filter settings.
+                string alternativeText = row.AlternativeText ?? string.Empty;
                 if (!snapshot.TryGetValue(userName, out var settings))
                 {
                     settings = new Dictionary<string, AccountPushNotificationSetting>();
@@ -181,17 +168,17 @@ namespace ActiveAlarmsParser.Service.NotificationService
             return snapshot;
         }
 
-        internal static Dictionary<string, ReminderSetting> BuildReminderSettings(DataTable table)
+        internal static Dictionary<string, ReminderSetting> BuildReminderSettings(IEnumerable<ReminderSettingRow> rows)
         {
             var snapshot = new Dictionary<string, ReminderSetting>();
-            foreach (DataRow row in table.Rows)
+            foreach (ReminderSettingRow row in rows)
             {
-                string eventCode = row["EventCode"].ToString()!;
-                string eventName = row["EventName"].ToString()!;
-                string reminderType = row["ReminderType"].ToString()!;
-                string notificationSubType = row["NotificationSubType"].ToString()!;
-                string alternativeText = row["AlternativeText"].ToString()!;
-                string eventNotificationType = row["EventNotificationType"].ToString()!;
+                string eventCode = row.EventCode ?? string.Empty;
+                string eventName = row.EventName ?? string.Empty;
+                string reminderType = row.ReminderType ?? string.Empty;
+                string notificationSubType = row.NotificationSubType ?? string.Empty;
+                string alternativeText = row.AlternativeText ?? string.Empty;
+                string eventNotificationType = row.EventNotificationType ?? string.Empty;
                 if (!snapshot.ContainsKey(eventCode))
                 {
                     snapshot.Add(eventCode, new ReminderSetting
@@ -207,16 +194,16 @@ namespace ActiveAlarmsParser.Service.NotificationService
             return snapshot;
         }
 
-        internal static Dictionary<string, VictimSetting> BuildVictimSettings(DataTable table)
+        internal static Dictionary<string, VictimSetting> BuildVictimSettings(IEnumerable<VictimNotificationSettingRow> rows)
         {
             var snapshot = new Dictionary<string, VictimSetting>();
-            foreach (DataRow row in table.Rows)
+            foreach (VictimNotificationSettingRow row in rows)
             {
-                string oid = row["OID"].ToString()!;
-                string victimproximity = row["victimproximity"].ToString()!;
-                string offbattery = row["offbattery"].ToString()!;
-                string offtamper = row["offtamper"].ToString()!;
-                string offcellgpstatus = row["offcellgpstatus"].ToString()!;
+                string oid = row.OID ?? string.Empty;
+                string victimproximity = row.victimproximity ?? string.Empty;
+                string offbattery = row.offbattery ?? string.Empty;
+                string offtamper = row.offtamper ?? string.Empty;
+                string offcellgpstatus = row.offcellgpstatus ?? string.Empty;
                 if (!snapshot.ContainsKey(oid))
                 {
                     snapshot.Add(oid, new VictimSetting
@@ -231,71 +218,5 @@ namespace ActiveAlarmsParser.Service.NotificationService
             return snapshot;
         }
 
-        private static DataTable GetDataTable(String connection, bool isProc, NameValueCollection InputParams, String Stmt)
-        {
-            const int maxTries = 3;
-            for (int currentTry = 0; currentTry < maxTries; currentTry++)
-            {
-                DataTable table = new DataTable();
-                using SqlConnection conn = new SqlConnection(connection);
-                SqlTransaction? tran = null;
-                try
-                {
-                    conn.Open();
-                    tran = conn.BeginTransaction();
-                    using SqlCommand cmd = new SqlCommand(Stmt, conn, tran);
-                    cmd.CommandTimeout = 600;
-                    cmd.CommandType = isProc ? CommandType.StoredProcedure : CommandType.Text;
-                    if (isProc)
-                    {
-                        SqlCommandBuilder.DeriveParameters(cmd);
-                        foreach (SqlParameter p in cmd.Parameters)
-                        {
-                            if (p.Direction == ParameterDirection.Input)
-                            {
-                                if (InputParams[p.ParameterName.ToLower().Substring(1)] != null)
-                                {
-                                    p.Value = InputParams[p.ParameterName.ToLower().Substring(1)];
-                                }
-                                p.DbType = DbType.AnsiString;
-                            }
-                            else
-                            {
-                                p.Value = DBNull.Value;
-                            }
-                        }
-                    }
-                    using SqlDataAdapter adapter = new SqlDataAdapter(cmd);
-                    adapter.Fill(table);
-                    tran.Commit();
-                    return table;
-                }
-                catch (Exception e)
-                {
-                    table.Dispose();
-                    if (tran != null)
-                    {
-                        try
-                        {
-                            tran.Rollback();
-                        }
-                        catch (Exception rollbackException)
-                        {
-                            NotificationDiagnostics.Failure(logger, "SettingsRollback", rollbackException);
-                        }
-                    }
-                    NotificationDiagnostics.Failure(logger, "SettingsQuery", e);
-                    if (currentTry == maxTries - 1)
-                    {
-                        throw;
-                    }
-                }
-                finally
-                {
-                    tran?.Dispose();
-                }
-            }
-            throw new InvalidOperationException("SQL retry attempts exhausted.");
-        }
     }
 }

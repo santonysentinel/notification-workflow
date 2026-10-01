@@ -5,8 +5,8 @@ using System.Collections;
 using System.Collections.Generic;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
-using System.Data;
-using Microsoft.Data.SqlClient;
+using NotificationWorkflowService.Repository;
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Threading;
 using static ActiveAlarmsParser.Service.NotificationService.NotificationServiceData;
 
@@ -24,7 +24,7 @@ namespace ActiveAlarmsParser.Service.NotificationService
         /// </summary>
         private string baseURL;
         private NotificationArray notifications = new NotificationArray();
-        private string AlarmsDatabase;
+        private readonly INotificationRepository repository;
         private readonly IHttpClientFactory httpClientFactory;
         private readonly bool idempotencyConfirmed;
         private DateTimeOffset retryNotBefore;
@@ -45,19 +45,24 @@ namespace ActiveAlarmsParser.Service.NotificationService
         }
 
         public NotificationService(ILogger<NotificationService> logger, IConfiguration configuration, IHttpClientFactory httpClientFactory)
+            : this(logger, configuration, httpClientFactory, new NotificationRepository(configuration, NullLogger<NotificationRepository>.Instance))
         {
+        }
+
+        public NotificationService(ILogger<NotificationService> logger, IConfiguration configuration, IHttpClientFactory httpClientFactory, INotificationRepository repository)
+        {
+            ArgumentNullException.ThrowIfNull(repository);
+            this.repository = repository;
             ArgumentNullException.ThrowIfNull(httpClientFactory);
             this.httpClientFactory = httpClientFactory;
             this.logger = logger;
             this.configuration = configuration;
             idempotencyConfirmed = configuration.GetValue<bool>("NotificationDelivery:IdempotencyConfirmed");
-            AlarmsDatabase = configuration["ClientDatabase"] ?? configuration.GetConnectionString("ClientDatabase")
-                ?? throw new InvalidOperationException("ClientDatabase is not configured.");
             baseURL = configuration["Notifications_Service_API_URL"]
                 ?? throw new InvalidOperationException("Notifications_Service_API_URL is not configured.");
             NotificationHttp.Endpoint(baseURL, "notification");
             NotificationServiceAccess.Initialize(configuration, logger, httpClientFactory);
-            NotificationServiceSetting.Initialize(configuration, logger);
+            NotificationServiceSetting.Initialize(configuration, logger, repository);
         }
 
         public void PushNotification(ArrayList nlist)
@@ -83,6 +88,9 @@ namespace ActiveAlarmsParser.Service.NotificationService
         }
 
         private bool HandlePostNotificationResponse(NotificationServiceResponse response, IReadOnlyDictionary<string, Notification> submitted)
+            => HandlePostNotificationResponseAsync(response, submitted, CancellationToken.None).GetAwaiter().GetResult();
+
+        private async Task<bool> HandlePostNotificationResponseAsync(NotificationServiceResponse response, IReadOnlyDictionary<string, Notification> submitted, CancellationToken cancellationToken)
         {
             IReadOnlyList<Notification> delivered;
             try
@@ -110,7 +118,7 @@ namespace ActiveAlarmsParser.Service.NotificationService
                             string note = notification.type == "push"
                                 ? "Push Notification ### sent to the Victim APP"
                                 : "Reminder Notification ### sent to the Victim APP";
-                            AddActiveAlarmActionToActivity(historyid, notification.victimid, note, 2);
+                            await repository.InsertNotificationHistoryAsync(historyid, notification.victimid, note, 2, cancellationToken).ConfigureAwait(false);
                         }
                     }
                 }
@@ -154,7 +162,7 @@ namespace ActiveAlarmsParser.Service.NotificationService
                     string response = await NotificationHttp.SendAsync(httpClientFactory, NotificationHttp.NotificationClient,
                         endpoint, json, bearerToken, token).ConfigureAwait(false);
                     var acknowledgement = NotificationServiceResponse.ParseResponse(response);
-                    bool success = HandlePostNotificationResponse(acknowledgement, submitted);
+                    bool success = await HandlePostNotificationResponseAsync(acknowledgement, submitted, token).ConfigureAwait(false);
                     // Unknown/missing acknowledgements or application rejections need review,
                     // not blind retries (even if transport idempotency has been confirmed).
                     if (!success) RequiresDeliveryReview = true;
@@ -182,46 +190,6 @@ namespace ActiveAlarmsParser.Service.NotificationService
                     RequiresDeliveryReview = true;
                 NotificationDiagnostics.Failure(logger, "Delivery", ex);
                 return false;
-            }
-        }
-
-        private void AddActiveAlarmActionToActivity(string historyID, string victimID, String note, int type)
-        {
-            ExecuteHistoryWithRetry(() =>
-            {
-                // Each attempt owns its connection and command, including failed opens/executions.
-                using var connection = new SqlConnection(AlarmsDatabase);
-                using var command = new SqlCommand("ActiveAlarms_InsertIntoHistory", connection)
-                {
-                    CommandType = CommandType.StoredProcedure,
-                    CommandTimeout = 30
-                };
-                command.Parameters.Add("@HistoryID", SqlDbType.Int).Value = historyID;
-                command.Parameters.Add("@emails", SqlDbType.VarChar, 1024).Value = note;
-                command.Parameters.Add("@type", SqlDbType.Int).Value = type;
-                command.Parameters.Add("@victimid", SqlDbType.VarChar, 30).Value = victimID;
-                connection.Open();
-                command.ExecuteNonQuery();
-            }, delay => Thread.Sleep(delay), logger);
-        }
-
-        internal static void ExecuteHistoryWithRetry(Action execute, Action<TimeSpan> delay, ILogger logger)
-        {
-            const int maxAttempts = 3;
-            for (int attempt = 1; attempt <= maxAttempts; attempt++)
-            {
-                try
-                {
-                    execute();
-                    return;
-                }
-                // A deadlock victim's transaction is rolled back. Timeouts/connection loss
-                // may follow a committed insert, so don't replay those without idempotency.
-                catch (SqlException exception) when (exception.Number == 1205 && attempt < maxAttempts)
-                {
-                    logger.LogWarning("History insert deadlocked (SQL 1205) on attempt {Attempt} of {MaxAttempts}; retrying", attempt, maxAttempts);
-                    delay(TimeSpan.FromSeconds(attempt * 2));
-                }
             }
         }
 

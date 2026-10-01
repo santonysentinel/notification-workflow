@@ -2,6 +2,7 @@ using System.Data;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 using ActiveAlarmsParser.Service.NotificationService;
+using NotificationWorkflowService.Repository;
 
 namespace NotificationWorkflowService.Tests;
 
@@ -125,32 +126,45 @@ public class SettingsSnapshotCacheTests
     [Fact]
     public void AllSettingsMappersAcceptEmptyResults()
     {
-        using var table = new DataTable();
-        Assert.Empty(NotificationServiceSetting.BuildAccountSettings(table));
-        Assert.Empty(NotificationServiceSetting.BuildReminderSettings(table));
-        Assert.Empty(NotificationServiceSetting.BuildVictimSettings(table));
+        Assert.Empty(NotificationServiceSetting.BuildAccountSettings(new List<AccountNotificationSettingRow>()));
+        Assert.Empty(NotificationServiceSetting.BuildReminderSettings(new List<ReminderSettingRow>()));
+        Assert.Empty(NotificationServiceSetting.BuildVictimSettings(new List<VictimNotificationSettingRow>()));
     }
 
     [Fact]
     public void MappersPreserveFieldsAndFirstDuplicateRowWins()
     {
-        using var accounts = Table("UserName", "EventCode", "EventType", "FieldName", "PushNotificationToken", "UserFullname", "NotificationSubType", "ReminderType", "ReminderEnable", "AlternativeText");
-        accounts.Rows.Add("v", "e", "event", "field", "token", "name", "sub", "reminder", "False", "first");
-        accounts.Rows.Add("v", "e", "event", "field", "token", "name", "sub", "reminder", "True", "second");
+        var accounts = new List<AccountNotificationSettingRow>
+        {
+            new() { UserName = "v", EventCode = "e", EventType = "event", FieldName = "field", PushNotificationToken = "token", UserFullname = "name", NotificationSubType = "sub", ReminderType = "reminder", ReminderEnable = "False", AlternativeText = "first" },
+            new() { UserName = "v", EventCode = "e", EventType = "second event", FieldName = "second field", PushNotificationToken = "second token", UserFullname = "second name", NotificationSubType = "second sub", ReminderType = "second reminder", ReminderEnable = "True", AlternativeText = "second" }
+        };
         var account = NotificationServiceSetting.BuildAccountSettings(accounts)["v"]["e"];
         Assert.Equal("first", account.AlternativeText);
         Assert.Equal("token", account.PushNotificationToken);
         Assert.Equal("reminder", account.ReminderType);
         Assert.Equal("v", account.UserName);
-        using var reminders = Table("EventCode", "EventName", "ReminderType", "NotificationSubType", "AlternativeText", "EventNotificationType");
-        reminders.Rows.Add("e", "first", "reminder", "sub", "text", "offtamper");
-        reminders.Rows.Add("e", "second", "reminder", "sub", "text", "offbattery");
+        Assert.Equal("e", account.EventCode);
+        Assert.Equal("event", account.EventType);
+        Assert.Equal("field", account.FieldName);
+        Assert.Equal("name", account.UserFullname);
+        Assert.Equal("sub", account.NotificationSubType);
+        var reminders = new List<ReminderSettingRow>
+        {
+            new() { EventCode = "e", EventName = "first", ReminderType = "reminder", NotificationSubType = "sub", AlternativeText = "text", EventNotificationType = "offtamper" },
+            new() { EventCode = "e", EventName = "second", ReminderType = "second reminder", NotificationSubType = "second sub", AlternativeText = "second text", EventNotificationType = "offbattery" }
+        };
         var reminder = NotificationServiceSetting.BuildReminderSettings(reminders)["e"];
         Assert.Equal("first", reminder.EventName);
         Assert.Equal("offtamper", reminder.EventNotificationType);
-        using var victims = Table("OID", "victimproximity", "offbattery", "offtamper", "offcellgpstatus");
-        victims.Rows.Add("o", "True", "False", "True", "False");
-        victims.Rows.Add("o", "False", "True", "False", "True");
+        Assert.Equal("reminder", reminder.ReminderType);
+        Assert.Equal("sub", reminder.NotificationSubType);
+        Assert.Equal("text", reminder.AlternativeText);
+        var victims = new List<VictimNotificationSettingRow>
+        {
+            new() { OID = "o", victimproximity = "True", offbattery = "False", offtamper = "True", offcellgpstatus = "False" },
+            new() { OID = "o", victimproximity = "False", offbattery = "True", offtamper = "False", offcellgpstatus = "True" }
+        };
         var victim = NotificationServiceSetting.BuildVictimSettings(victims)["o"];
         Assert.Equal("True", victim.victimproximity);
         Assert.Equal("False", victim.offbattery);
@@ -159,41 +173,73 @@ public class SettingsSnapshotCacheTests
     }
 
     [Fact]
+    public void MappersNormalizeNullFieldsToEmptyStrings()
+    {
+        var account = NotificationServiceSetting.BuildAccountSettings(new List<AccountNotificationSettingRow> { new() })[string.Empty][string.Empty];
+        Assert.Equal(string.Empty, account.UserName);
+        Assert.Equal(string.Empty, account.EventCode);
+        Assert.Equal(string.Empty, account.EventType);
+        Assert.Equal(string.Empty, account.FieldName);
+        Assert.Equal(string.Empty, account.PushNotificationToken);
+        Assert.Equal(string.Empty, account.UserFullname);
+        Assert.Equal(string.Empty, account.NotificationSubType);
+        Assert.Equal(string.Empty, account.ReminderType);
+        Assert.Equal(string.Empty, account.AlternativeText);
+
+        var reminder = NotificationServiceSetting.BuildReminderSettings(new List<ReminderSettingRow> { new() })[string.Empty];
+        Assert.Equal(string.Empty, reminder.EventName);
+        Assert.Equal(string.Empty, reminder.ReminderType);
+        Assert.Equal(string.Empty, reminder.NotificationSubType);
+        Assert.Equal(string.Empty, reminder.AlternativeText);
+        Assert.Equal(string.Empty, reminder.EventNotificationType);
+
+        var victim = NotificationServiceSetting.BuildVictimSettings(new List<VictimNotificationSettingRow> { new() })[string.Empty];
+        Assert.Equal(string.Empty, victim.victimproximity);
+        Assert.Equal(string.Empty, victim.offbattery);
+        Assert.Equal(string.Empty, victim.offtamper);
+        Assert.Equal(string.Empty, victim.offcellgpstatus);
+        Assert.Null(victim.OID); // Preserve the existing mapping: OID is only the dictionary key.
+    }
+
+    [Fact]
     public void MappingFailureAfterFirstRowDoesNotPublishPartialSnapshot()
     {
         var clock = new ManualClock();
-        using var table = Table("EventCode", "EventName", "ReminderType", "NotificationSubType", "AlternativeText", "EventNotificationType");
-        table.Rows.Add("old", "old name", "reminder", "sub", "text", "offtamper");
+        var rows = new List<ReminderSettingRow>
+        {
+            new() { EventCode = "old", EventName = "old name", ReminderType = "reminder", NotificationSubType = "sub", AlternativeText = "text", EventNotificationType = "offtamper" }
+        };
+        bool failAfterFirstRow = false;
         var cache = new SettingsSnapshotCache<Dictionary<string, NotificationServiceData.ReminderSetting>>(
-            () => NotificationServiceSetting.BuildReminderSettings(table), new(), NullLogger.Instance, "reminders", clock);
+            () => NotificationServiceSetting.BuildReminderSettings(failAfterFirstRow ? RowsThenThrow(rows[0]) : rows), new(), NullLogger.Instance, "reminders", clock);
         var original = cache.GetSnapshot();
-        table.Rows.Clear();
-        table.Rows.Add("new", "new name", "reminder", "sub", "text", "offtamper");
-        table.Rows.Add("bad", new BrokenValue(), "reminder", "sub", "text", "offtamper");
+        rows[0] = new() { EventCode = "new", EventName = "new name", ReminderType = "reminder", NotificationSubType = "sub", AlternativeText = "text", EventNotificationType = "offtamper" };
+        failAfterFirstRow = true;
         clock.Advance(TimeSpan.FromMinutes(5));
         Assert.Same(original, cache.GetSnapshot());
+        Assert.Single(original);
         Assert.True(original.ContainsKey("old"));
         Assert.False(original.ContainsKey("new"));
-        table.Rows.RemoveAt(1);
+        Assert.Equal("old name", original["old"].EventName);
+        failAfterFirstRow = false;
         clock.Advance(TimeSpan.FromSeconds(30));
         var recovered = cache.GetSnapshot();
+        Assert.NotSame(original, recovered);
+        Assert.Single(recovered);
         Assert.True(recovered.ContainsKey("new"));
         Assert.False(recovered.ContainsKey("old"));
+        Assert.Equal("new name", recovered["new"].EventName);
+        Assert.Single(original);
+        Assert.Equal("old name", original["old"].EventName);
     }
 
     private static SettingsSnapshotCache<Dictionary<string, string>> Create(Func<Dictionary<string, string>> loader, TimeProvider clock)
         => new(loader, new(), NullLogger.Instance, "test", clock);
 
-    private static DataTable Table(params string[] columns)
+    private static IEnumerable<ReminderSettingRow> RowsThenThrow(ReminderSettingRow first)
     {
-        var table = new DataTable();
-        foreach (string column in columns) table.Columns.Add(column, typeof(object));
-        return table;
-    }
-
-    private sealed class BrokenValue
-    {
-        public override string ToString() => throw new DataException("invalid row mapping");
+        yield return first;
+        throw new DataException("row enumeration failed");
     }
 
     private sealed class ManualClock : TimeProvider
