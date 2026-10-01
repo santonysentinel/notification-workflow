@@ -132,6 +132,18 @@ public class NotificationAcknowledgementTests
         Assert.True((bool)handler.Invoke(sender, [new NotificationServiceResponse { data = [Ack("2", true)] }, queue.GetSnapshot()])!);
     }
 
+    [Fact]
+    public async Task CancellationPropagatesWithoutDiscardingPendingNotifications()
+    {
+        var queue = CreateQueue("1");
+        var sender = CreateIsolatedSender(queue);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => sender.PostNotificationAsync(cancellation.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => sender.PushNotificationAsync(new ArrayList { Item("2") }, cancellation.Token));
+        Assert.Equal("1", Assert.Single(queue.GetSnapshot().Values).activityid);
+    }
+
     private static NotificationArray CreateQueue(params string[] ids)
     {
         var queue = new NotificationArray();
@@ -157,7 +169,6 @@ public class NotificationAcknowledgementTests
         SetField(sender, "notifications", queue);
         SetField(sender, "logger", NullLogger<Sender>.Instance);
         SetField(sender, "baseURL", "http://[");
-        SetField(sender, "ErrorMessage", "{0} {1} {2} {3}");
         return sender;
     }
 

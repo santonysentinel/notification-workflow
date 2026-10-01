@@ -3,15 +3,10 @@ using Newtonsoft.Json;
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Collections.Specialized;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System.Data;
 using Microsoft.Data.SqlClient;
-using System.IO;
-using System.Linq;
-using System.Net;
-using System.Text;
 using System.Threading;
 using static ActiveAlarmsParser.Service.NotificationService.NotificationServiceData;
 
@@ -28,31 +23,37 @@ namespace ActiveAlarmsParser.Service.NotificationService
         /// Defines the baseURL.
         /// </summary>
         private string baseURL;
-        private String ErrorMessage = "Function:{0}, URL:{1}, PostData:{2}, Response:{3}";
-        private String LogCallMessage = "RoutingCall:::{0}:: {1} :: {2} :: {3} :: {4} :: {5}"; // [Function-Request Type-Request URL-success/failure-Message-POST Data]
         private NotificationArray notifications = new NotificationArray();
         private string AlarmsDatabase;
-
-        private bool IsSuccessStatusCode(HttpStatusCode code)
-        {
-            return (code == HttpStatusCode.Created);
-        }
+        private readonly IHttpClientFactory httpClientFactory;
 
         private readonly IConfiguration configuration;
         public NotificationService(ILogger<NotificationService> logger, IConfiguration configuration)
+            : this(logger, configuration, NotificationHttp.DefaultFactory)
         {
+        }
+
+        public NotificationService(ILogger<NotificationService> logger, IConfiguration configuration, IHttpClientFactory httpClientFactory)
+        {
+            ArgumentNullException.ThrowIfNull(httpClientFactory);
+            this.httpClientFactory = httpClientFactory;
             this.logger = logger;
             this.configuration = configuration;
             AlarmsDatabase = configuration["ClientDatabase"] ?? configuration.GetConnectionString("ClientDatabase")
                 ?? throw new InvalidOperationException("ClientDatabase is not configured.");
             baseURL = configuration["Notifications_Service_API_URL"]
                 ?? throw new InvalidOperationException("Notifications_Service_API_URL is not configured.");
-            NotificationServiceAccess.Initialize(configuration, logger);
+            NotificationHttp.Endpoint(baseURL, "notification");
+            NotificationServiceAccess.Initialize(configuration, logger, httpClientFactory);
             NotificationServiceSetting.Initialize(configuration, logger);
         }
 
         public void PushNotification(ArrayList nlist)
+            => PushNotificationAsync(nlist).GetAwaiter().GetResult();
+
+        public async Task PushNotificationAsync(ArrayList nlist, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (nlist.Count > 0)
             {
                 notifications.BulkAdd(nlist);
@@ -60,14 +61,14 @@ namespace ActiveAlarmsParser.Service.NotificationService
 
             if(notifications.Count() > 0)
             {
-                bool success = PostNotification();
+                bool success = await PostNotificationAsync(cancellationToken).ConfigureAwait(false);
                 for (int i = 0; i < 5; i++)
                 {
                     if (success)
                     {
                         break;
                     }
-                    success = PostNotification();
+                    success = await PostNotificationAsync(cancellationToken).ConfigureAwait(false);
                 }
 
                 if (notifications.Count() > 0)
@@ -119,63 +120,42 @@ namespace ActiveAlarmsParser.Service.NotificationService
         }
 
         public bool PostNotification()
+            => PostNotificationAsync().GetAwaiter().GetResult();
+
+        public async Task<bool> PostNotificationAsync(CancellationToken cancellationToken = default)
         {
-            bool Success = false;
-            String requestURL = String.Empty;
-            String postData = "";
-            String respData = "";
-            String Message = String.Empty;
+            cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                requestURL = String.Format("{0}notification", baseURL);
+                var endpoint = NotificationHttp.Endpoint(baseURL, "notification");
 
                 var submitted = notifications.GetSnapshot();
                 if (submitted.Count == 0)
                 {
                     return true;
                 }
-                var request = (HttpWebRequest)WebRequest.Create(requestURL);
-                postData = JsonConvert.SerializeObject(submitted.Values);
-                //logger.LogInfo(postData);
-                var data = Encoding.ASCII.GetBytes(postData);
-                string bearerToken = NotificationServiceAccess.GetAuthorizationToken();
-
-                request.Method = "POST";
-                request.Headers.Add("Authorization", "Bearer " + bearerToken);
-                request.ContentType = "application/json";
-                request.ContentLength = data.Length;
-
-                using (var stream = request.GetRequestStream())
+                string bearerToken = await NotificationServiceAccess.GetAuthorizationTokenAsync(cancellationToken).ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(bearerToken))
                 {
-                    stream.Write(data, 0, data.Length);
+                    logger.LogWarning("Notification posting skipped because authentication did not provide a token");
+                    return false;
                 }
-
-                ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
-
-                var response = (HttpWebResponse)request.GetResponse();
-
-                if (IsSuccessStatusCode(response.StatusCode))
-                {
-                    respData = new StreamReader(response.GetResponseStream()).ReadToEnd();
-                    NotificationServiceResponse eresponse = JsonConvert.DeserializeObject<NotificationServiceResponse>(respData)
-                        ?? throw new JsonSerializationException("The notification service returned a null response.");
-
-                    Success = HandlePostNotificationResponse(eresponse, submitted);
-                }
+                string response = await NotificationHttp.SendAsync(httpClientFactory, NotificationHttp.NotificationClient,
+                    endpoint, JsonConvert.SerializeObject(submitted.Values), bearerToken, cancellationToken).ConfigureAwait(false);
+                var acknowledgement = JsonConvert.DeserializeObject<NotificationServiceResponse>(response)
+                    ?? throw new JsonSerializationException("The notification service returned a null response.");
+                cancellationToken.ThrowIfCancellationRequested();
+                return HandlePostNotificationResponse(acknowledgement, submitted);
             }
-            catch (WebException ex)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                logger.LogError(ex, "{ErrorMessage}", String.Format(ErrorMessage, "PostNotification", requestURL, postData, respData));
-                Message = ex.Message;
+                throw;
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "{ErrorMessage}", String.Format(ErrorMessage, "PostNotification", requestURL, postData, respData));
-                Message = ex.Message;
+                logger.LogError(ex, "Notification HTTP request failed; unacknowledged notifications remain pending");
+                return false;
             }
-
-            //logger.LogInformation(String.Format(LogCallMessage, "PostNotification:", "POST", requestURL, Success, Message, postData));
-            return Success;
         }
 
         private void AddActiveAlarmActionToActivity(string historyID, string victimID, String note, int type)

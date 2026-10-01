@@ -79,6 +79,7 @@ namespace ActiveAlarmsParser
                 
                 //Register the HttpClient factory
                 services.AddHttpClient();
+                ActiveAlarmsParser.Service.NotificationService.NotificationHttp.RegisterClients(services);
             })
             .UseSerilog();
         }

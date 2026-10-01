@@ -1,12 +1,6 @@
 ﻿
 using Newtonsoft.Json;
 using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Net;
-using System.Text;
-using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -52,11 +46,16 @@ namespace ActiveAlarmsParser.Service.NotificationService
 
         private static ILogger logger = NullLogger.Instance;
         private static bool initialized;
+        private static IHttpClientFactory? httpClientFactory;
+        private static readonly SemaphoreSlim tokenGate = new(1, 1);
 
         /// <summary>
         /// Initializes configuration for the <see cref="NotificationServiceAccess"/> class.
         /// </summary>
         public static void Initialize(IConfiguration configuration, ILogger logger)
+            => Initialize(configuration, logger, NotificationHttp.DefaultFactory);
+
+        public static void Initialize(IConfiguration configuration, ILogger logger, IHttpClientFactory httpClientFactory)
         {
             if (initialized)
             {
@@ -65,6 +64,7 @@ namespace ActiveAlarmsParser.Service.NotificationService
 
             ArgumentNullException.ThrowIfNull(configuration);
             ArgumentNullException.ThrowIfNull(logger);
+            ArgumentNullException.ThrowIfNull(httpClientFactory);
 
             string? cacheTimeValue = configuration["notificationservice-session-cache-time"];
             int cacheTime = 57;
@@ -93,6 +93,8 @@ namespace ActiveAlarmsParser.Service.NotificationService
             }
 
             NotificationServiceAccess.logger = logger;
+            NotificationHttp.Endpoint(authApi, "accounts/authenticate2");
+            NotificationServiceAccess.httpClientFactory = httpClientFactory;
             NOTIFICATION_SERVICE_SESSION_CACHE_TIME = cacheTime;
             notificationServiceUsername = username;
             notificationServiceAccess = access;
@@ -105,73 +107,56 @@ namespace ActiveAlarmsParser.Service.NotificationService
         /// </summary>
         /// <returns>The <see cref="string"/>.</returns>
         public static string GetAuthorizationToken()
+            => GetAuthorizationTokenAsync().GetAwaiter().GetResult();
+
+        public static async Task<string> GetAuthorizationTokenAsync(CancellationToken cancellationToken = default)
         {
             if (!initialized)
             {
                 throw new InvalidOperationException("NotificationServiceAccess.Initialize must be called before requesting an authorization token.");
             }
 
-            string token = GetTokenFromCache();
-
-            if (string.IsNullOrEmpty(token))
+            await tokenGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
             {
-                return AuthenticateService();
+                string token = GetTokenFromCache();
+                return string.IsNullOrEmpty(token)
+                    ? await AuthenticateServiceAsync(cancellationToken).ConfigureAwait(false)
+                    : token;
             }
-
-            return token;
+            finally
+            {
+                tokenGate.Release();
+            }
         }
 
         /// <summary>
         /// The AuthenticateService.
         /// </summary>
         /// <returns>The <see cref="string"/>.</returns>
-        private static string AuthenticateService()
+        private static async Task<string> AuthenticateServiceAsync(CancellationToken cancellationToken)
         {
-            string token = string.Empty;
-            string requestURL = string.Empty;
-            string respData = string.Empty;
             try
             {
-                requestURL = string.Format("{0}accounts/authenticate2", baseURL);
-                logger.LogInformation(requestURL);
-                var request = (HttpWebRequest)WebRequest.Create(requestURL);
-                string body = GetAuthBody();
-                request.Method = "POST";
-
-                var data = Encoding.ASCII.GetBytes(body);
-
-                request.ContentType = "application/json";
-                request.ContentLength = data.Length;
-
-                using (var stream = request.GetRequestStream())
-                {
-                    stream.Write(data, 0, data.Length);
-                }
-
-                ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
-
-                var response = (HttpWebResponse)request.GetResponse();
-
-                if (response.StatusCode == HttpStatusCode.OK || response.StatusCode == HttpStatusCode.Created)
-                {
-                    respData = new StreamReader(response.GetResponseStream()).ReadToEnd();
-                    AuthServiceResponse eresponse = JsonConvert.DeserializeObject<AuthServiceResponse>(respData)
-                        ?? throw new JsonSerializationException("Authentication response deserialized to null.");
-
-                    token = eresponse.jwt;
-                    SaveTokenForFutureAccess(token);
-                }
+                string response = await NotificationHttp.SendAsync(httpClientFactory!, NotificationHttp.AuthenticationClient,
+                    NotificationHttp.Endpoint(baseURL, "accounts/authenticate2"), GetAuthBody(), null, cancellationToken).ConfigureAwait(false);
+                var authentication = JsonConvert.DeserializeObject<AuthServiceResponse>(response)
+                    ?? throw new JsonSerializationException("Authentication response deserialized to null.");
+                if (string.IsNullOrWhiteSpace(authentication.jwt))
+                    throw new JsonSerializationException("Authentication response did not contain a token.");
+                SaveTokenForFutureAccess(authentication.jwt);
+                return authentication.jwt;
             }
-            catch (WebException ex)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                logger.LogError(ex, "MTService Access : AuthenticateService");
+                throw;
             }
             catch (Exception ex)
             {
                 logger.LogError(ex, "MTService Access : AuthenticateService");
             }
 
-            return token;
+            return string.Empty;
         }
 
         /// <summary>
@@ -183,7 +168,7 @@ namespace ActiveAlarmsParser.Service.NotificationService
             if (!string.IsNullOrEmpty(token))
             {
                 sessionToken = token;
-                sessionExpiryTime = DateTime.Now.AddMinutes(NOTIFICATION_SERVICE_SESSION_CACHE_TIME);
+                sessionExpiryTime = DateTime.UtcNow.AddMinutes(NOTIFICATION_SERVICE_SESSION_CACHE_TIME);
             }
         }
 
@@ -193,7 +178,7 @@ namespace ActiveAlarmsParser.Service.NotificationService
         /// <returns>The <see cref="string"/>.</returns>
         private static string GetTokenFromCache()
         {
-            if (DateTime.Now > sessionExpiryTime)
+            if (DateTime.UtcNow > sessionExpiryTime)
             {
                 sessionToken = string.Empty;
             }
@@ -207,13 +192,11 @@ namespace ActiveAlarmsParser.Service.NotificationService
         /// <returns>The <see cref="string"/>.</returns>
         private static string GetAuthBody()
         {
-            StringBuilder builder = new StringBuilder();
-            builder.Append("{");
-            builder.Append("\"signInName\":\"" + notificationServiceUsername + "\",");
-            builder.Append("\"password\":\"" + notificationServiceAccess + "\"");
-            builder.Append("}");
-            return builder.ToString();
+            return SerializeCredentials(notificationServiceUsername, notificationServiceAccess);
         }
+
+        internal static string SerializeCredentials(string username, string password)
+            => JsonConvert.SerializeObject(new { signInName = username, password });
     }
 
     /// <summary>
