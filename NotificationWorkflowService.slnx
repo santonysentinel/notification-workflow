@@ -1,3 +1,4 @@
 <Solution>
   <Project Path="NotificationWorkflowService/NotificationWorkflowService.csproj" />
+  <Project Path="NotificationWorkflowService.Tests/NotificationWorkflowService.Tests.csproj" />
 </Solution>

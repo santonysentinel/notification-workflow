@@ -45,6 +45,63 @@ namespace ActiveAlarmsParser.Service.NotificationService
                 }
             }
 
+            internal IReadOnlyDictionary<string, Notification> GetSnapshot()
+            {
+                return new Dictionary<string, Notification>(notifications);
+            }
+
+            internal IReadOnlyList<Notification> ApplyAcknowledgements(
+                IReadOnlyList<NotificationServiceDataResponse>? acknowledgements,
+                IReadOnlyDictionary<string, Notification> submitted)
+            {
+                if (acknowledgements == null || acknowledgements.Count == 0)
+                {
+                    throw new JsonSerializationException("The notification response must contain acknowledgements.");
+                }
+
+                var seen = new HashSet<string>();
+                var delivered = new List<KeyValuePair<string, Notification>>();
+                foreach (var acknowledgement in acknowledgements)
+                {
+                    if (acknowledgement == null ||
+                        string.IsNullOrWhiteSpace(acknowledgement.oid) ||
+                        string.IsNullOrWhiteSpace(acknowledgement.victimid) ||
+                        string.IsNullOrWhiteSpace(acknowledgement.type) ||
+                        string.IsNullOrWhiteSpace(acknowledgement.activityid))
+                    {
+                        throw new JsonSerializationException("A notification acknowledgement is missing its identity.");
+                    }
+
+                    string key = acknowledgement.oid + "#" + acknowledgement.victimid + "#" + acknowledgement.type + "#" + acknowledgement.activityid;
+                    if (!submitted.TryGetValue(key, out var notification) ||
+                        notification.oid != acknowledgement.oid ||
+                        notification.victimid != acknowledgement.victimid ||
+                        notification.type != acknowledgement.type ||
+                        notification.activityid != acknowledgement.activityid ||
+                        !seen.Add(key))
+                    {
+                        throw new JsonSerializationException("A notification acknowledgement has an unknown or duplicate identity.");
+                    }
+
+                    if (acknowledgement.isSuccessful)
+                    {
+                        delivered.Add(new KeyValuePair<string, Notification>(key, notification));
+                    }
+                }
+
+                // No queue mutation until all acknowledgement identities have been validated.
+                var confirmed = new List<Notification>();
+                foreach (var delivery in delivered)
+                {
+                    if (notifications.TryGetValue(delivery.Key, out var pending) && ReferenceEquals(pending, delivery.Value))
+                    {
+                        notifications.Remove(delivery.Key);
+                        confirmed.Add(delivery.Value);
+                    }
+                }
+                return confirmed;
+            }
+
             public int Count()
             {
                 return notifications.Count;

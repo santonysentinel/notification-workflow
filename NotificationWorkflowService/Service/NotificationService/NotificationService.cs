@@ -70,64 +70,52 @@ namespace ActiveAlarmsParser.Service.NotificationService
                     success = PostNotification();
                 }
 
-                //Clear after each active alarm - retry to post 5 more time
-                notifications.Clear();
+                if (notifications.Count() > 0)
+                {
+                    logger.LogWarning("Notification delivery attempts exhausted; retaining {PendingCount} unacknowledged notifications for the next call", notifications.Count());
+                }
             }
         }
 
-        private bool HandlePostNotificationResponse(NotificationServiceResponse response)
+        private bool HandlePostNotificationResponse(NotificationServiceResponse response, IReadOnlyDictionary<string, Notification> submitted)
         {
-            //If all notification was sent successful, return true at the end, else return false to retry the ones was failed
-            bool result = true;
-
+            IReadOnlyList<Notification> delivered;
             try
             {
-                for (int i = 0; i < response.data.Count; i++)
-                {
-                    if (response.data[i].isSuccessful == false)
-                    {
-                        //If failed to send, keep the notification, to retry, and return false
-                        //string key = response.data[i].oid + "#" + response.data[i].victimid + "#" + response.data[i].type + "#" + response.data[i].activityid;
-                        //notifications.Retried(key);
-                        logger.LogInformation(String.Format("Failed to send notification {0} from offender {1} to victim {2} - {3}", response.data[i].activityid, response.data[i].oid, response.data[i].victimid, response.data[i].type));
-                        result = false;
-                    }
-                    else
-                    {
-                        //If succecced to send, remove the notification
-                        string key = response.data[i].oid + "#" + response.data[i].victimid + "#" + response.data[i].type + "#" + response.data[i].activityid;
-                        notifications.RemoveWithKey(key);
-                        logger.LogInformation(String.Format("Success to send notification {0} from offender {1} to victim {2} - {3}", response.data[i].activityid, response.data[i].oid, response.data[i].victimid, response.data[i].type));
+                // Validate the entire response before changing the queue. Missing acknowledgements stay pending.
+                delivered = notifications.ApplyAcknowledgements(response.data, submitted);
+            }
+            catch (Exception e)
+            {
+                logger.LogError(e, "Invalid notification acknowledgement; submitted notifications remain pending");
+                return false;
+            }
 
-                        if(response.data[i].type == "push")
+            // Confirmed deliveries have already been removed. History failures must not resend them.
+            foreach (Notification notification in delivered)
+            {
+                logger.LogInformation("Notification {ActivityId} of type {NotificationType} was delivered", notification.activityid, notification.type);
+                try
+                {
+                    if (notification.type == "push" || notification.type == "reminder")
+                    {
+                        string? historyid = getHistoryIDFromActivityID(notification.activityid);
+                        if (!string.IsNullOrEmpty(historyid))
                         {
-                            string? historyid = getHistoryIDFromActivityID(response.data[i].activityid);
-                            if (!string.IsNullOrEmpty(historyid))
-                            {
-                                string note = "Push Notification ### sent to the Victim APP";
-                                AddActiveAlarmActionToActivity(historyid, response.data[i].victimid, note, 2);
-                            }
-                        }
-                        else if (response.data[i].type == "reminder")
-                        {
-                            string? historyid = getHistoryIDFromActivityID(response.data[i].activityid);
-                            if (!string.IsNullOrEmpty(historyid))
-                            {
-                                string note = "Reminder Notification ### sent to the Victim APP";
-                                AddActiveAlarmActionToActivity(historyid, response.data[i].victimid, note, 2);
-                            }
+                            string note = notification.type == "push"
+                                ? "Push Notification ### sent to the Victim APP"
+                                : "Reminder Notification ### sent to the Victim APP";
+                            AddActiveAlarmActionToActivity(historyid, notification.victimid, note, 2);
                         }
                     }
                 }
-
+                catch (Exception e)
+                {
+                    logger.LogError(e, "Failed to record history for delivered notification {ActivityId}; it will not be resent", notification.activityid);
+                }
             }
-            catch (Exception e )
-            {
-                logger.LogError(e, "HandlePostNotificationResponse Error");
-            }
 
-
-            return result;
+            return notifications.Count() == 0;
         }
 
         public bool PostNotification()
@@ -141,10 +129,13 @@ namespace ActiveAlarmsParser.Service.NotificationService
             {
                 requestURL = String.Format("{0}notification", baseURL);
 
-                //logger.LogInfo(requestURL);
+                var submitted = notifications.GetSnapshot();
+                if (submitted.Count == 0)
+                {
+                    return true;
+                }
                 var request = (HttpWebRequest)WebRequest.Create(requestURL);
-
-                postData = notifications.ToJSON();
+                postData = JsonConvert.SerializeObject(submitted.Values);
                 //logger.LogInfo(postData);
                 var data = Encoding.ASCII.GetBytes(postData);
                 string bearerToken = NotificationServiceAccess.GetAuthorizationToken();
@@ -169,7 +160,7 @@ namespace ActiveAlarmsParser.Service.NotificationService
                     NotificationServiceResponse eresponse = JsonConvert.DeserializeObject<NotificationServiceResponse>(respData)
                         ?? throw new JsonSerializationException("The notification service returned a null response.");
 
-                    Success = HandlePostNotificationResponse(eresponse);
+                    Success = HandlePostNotificationResponse(eresponse, submitted);
                 }
             }
             catch (WebException ex)
