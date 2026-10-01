@@ -44,18 +44,20 @@ namespace NotificationWorkflowService.Service
         /// The thread for the normal single step parser.
         /// </summary>
         /// <param name="platform">The platform name used for parser configuration.</param>
-        void startParse(string platform)
+        /// <param name="cancellationToken">Signals host shutdown.</param>
+        public async Task startParse(string platform, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             DateTime lastParserResetTime = DateTime.UtcNow;
             WorkFlowCommon p = parser;
 
             while (!p.setUpParser(platform))
             {
-                Thread.Sleep(2000);
+                await Task.Delay(2000, cancellationToken);
             }
 
 
-            while (true)
+            while (!cancellationToken.IsCancellationRequested)
             {
                 int pointsBehind = ReadCurrentActiveAlarmPoint() - readLastSuccessfulProcess(Convert.ToInt32(configuration[platform + "ParserID"]));
 
@@ -66,7 +68,7 @@ namespace NotificationWorkflowService.Service
 
                     while (!p.setUpParser(platform))
                     {
-                        Thread.Sleep(2000);
+                        await Task.Delay(2000, cancellationToken);
                     }
 
                     lastParserResetTime = DateTime.UtcNow;
@@ -79,12 +81,12 @@ namespace NotificationWorkflowService.Service
                 }
                 else
                 {
-                    Thread.Sleep(3000);
+                    await Task.Delay(3000, cancellationToken);
                 }
 
                 if (processActiveAlarmsHoldQueue(pointsBehind, sleepTime))
                 {
-                    Thread.Sleep(sleepTime);
+                    await Task.Delay(sleepTime, cancellationToken);
                 }
             }
         }
