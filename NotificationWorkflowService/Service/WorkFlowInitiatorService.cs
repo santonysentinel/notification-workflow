@@ -1,12 +1,16 @@
-﻿using System;
+﻿using ActiveAlarmsParser;
+using NotificationWorkflowService.Parser;
+using System;
 using System.Collections.Generic;
 using System.Data;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using System.Text;
-using NotificationWorkflowService.Parser;
+using Microsoft.Data.SqlClient;
 
 namespace NotificationWorkflowService.Service
 {
-    internal class WorkFlowInitiatorService
+    public class WorkFlowInitiatorService
     {
         /// <summary>
         /// Defines the aggressiveIterations.
@@ -16,24 +20,34 @@ namespace NotificationWorkflowService.Service
         /// <summary>
         /// Defines the log.
         /// </summary>
-        private static readonly ILogger log = new SentinelLog(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
+        private readonly ILogger<WorkFlowInitiatorService> log;
 
         /// <summary>
         /// Defines the READ_CURRENT_ACTIVE_ALARMPOINT.
         /// </summary>
         private static readonly String READ_CURRENT_ACTIVE_ALARMPOINT = "ActiveAlarms_ReadLastAlarmPoint";
 
-        
+        private readonly IConfiguration configuration;
+        private readonly ILoggerFactory loggerFactory;
+
+        public WorkFlowInitiatorService(ILogger<WorkFlowInitiatorService> logger, IConfiguration configuration, ILoggerFactory loggerFactory)
+        {
+            this.log = logger;
+            this.configuration = configuration;
+            this.loggerFactory = loggerFactory;
+        }
+
+
         /// <summary>
         /// The thread for the normal single step parser.
         /// </summary>
-        /// <param name="connectionString">The connectionString<see cref="Object"/>.</param>
-        static void startParse(Object connectionString)
+        /// <param name="platform">The platform name used for parser configuration.</param>
+        void startParse(string platform)
         {
             DateTime lastParserResetTime = DateTime.UtcNow;
-            Parser p = new Parser(((ConnectionStringSettings)connectionString).ConnectionString.ToString());
+            WorkFlowCommon p = new WorkFlowCommon(loggerFactory.CreateLogger<WorkFlowCommon>(), configuration);
 
-            while (!p.setUpParser(((ConnectionStringSettings)connectionString).Name))
+            while (!p.setUpParser(platform))
             {
                 Thread.Sleep(2000);
             }
@@ -41,14 +55,14 @@ namespace NotificationWorkflowService.Service
 
             while (true)
             {
-                int pointsBehind = ReadCurrentActiveAlarmPoint(((ConnectionStringSettings)connectionString).ConnectionString.ToString()) - readLastSuccessfulProcess(Convert.ToInt32(ConfigurationManager.AppSettings[((ConnectionStringSettings)connectionString).Name + "ParserID"]), ((ConnectionStringSettings)connectionString).ConnectionString.ToString(), ((ConnectionStringSettings)connectionString).Name.ToString());
+                int pointsBehind = ReadCurrentActiveAlarmPoint() - readLastSuccessfulProcess(Convert.ToInt32(configuration[platform + "ParserID"]));
 
                 int sleepTime = returnWaitTime(pointsBehind);
 
-                if (DateTime.UtcNow > lastParserResetTime.AddMinutes(Convert.ToInt32(ConfigurationManager.AppSettings["ParserRefreshTime"])))
+                if (DateTime.UtcNow > lastParserResetTime.AddMinutes(Convert.ToInt32(configuration["ParserRefreshTime"])))
                 {
 
-                    while (!p.setUpParser(((ConnectionStringSettings)connectionString).Name))
+                    while (!p.setUpParser(platform))
                     {
                         Thread.Sleep(2000);
                     }
@@ -76,14 +90,14 @@ namespace NotificationWorkflowService.Service
         /// <summary>
         /// The thread for the multi step parser.
         /// </summary>
-        /// <param name="connectionString">The connectionString<see cref="Object"/>.</param>
-        static void startParseSteps(Object connectionString)
+        /// <param name="platform">The platform name used for parser configuration.</param>
+        void startParseSteps(string platform)
         {
             DateTime lastParserResetTime = DateTime.UtcNow;
-            StepParser p = new StepParser(((ConnectionStringSettings)connectionString).ConnectionString.ToString());
+            WorkFlowSteps p = new WorkFlowSteps(loggerFactory.CreateLogger<WorkFlowSteps>(), configuration);
 
 
-            while (!p.setUpParser(((ConnectionStringSettings)connectionString).Name))
+            while (!p.setUpParser(platform))
             {
                 Thread.Sleep(2000);
             }
@@ -91,10 +105,10 @@ namespace NotificationWorkflowService.Service
 
             while (true)
             {
-                if (DateTime.UtcNow > lastParserResetTime.AddMinutes(Convert.ToInt32(ConfigurationManager.AppSettings["StepParserRefreshTime"])))
+                if (DateTime.UtcNow > lastParserResetTime.AddMinutes(Convert.ToInt32(configuration["StepParserRefreshTime"])))
                 {
 
-                    while (!p.setUpParser(((ConnectionStringSettings)connectionString).Name))
+                    while (!p.setUpParser(platform))
                     {
                         Thread.Sleep(2000);
                     }
@@ -112,20 +126,20 @@ namespace NotificationWorkflowService.Service
                 }
 
 
-                Thread.Sleep(Convert.ToInt32(ConfigurationManager.AppSettings["StepParserSleepTime"]));
+                Thread.Sleep(Convert.ToInt32(configuration["StepParserSleepTime"]));
             }
         }
 
         /// <summary>
         /// Returns the current ActiveAlarms point in the TRPT table.
         /// </summary>
-        /// <param name="connectionString">The connectionString<see cref="String"/>.</param>
         /// <returns>.</returns>
-        static int ReadCurrentActiveAlarmPoint(String connectionString)
+        int ReadCurrentActiveAlarmPoint()
         {
             int currentAlarmPoint = 0;
 
-            string ConnectionString = connectionString;
+            string ConnectionString = configuration.GetConnectionString("connstr")
+                ?? throw new InvalidOperationException("Connection string 'connstr' is not configured.");
 
             using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
             {
@@ -164,11 +178,11 @@ namespace NotificationWorkflowService.Service
                                     }
                                     else
                                     {
-                                        throw ex;
+                                        throw;
                                     }
                                 }
                             }
-                            catch (Exception exc)
+                            catch (Exception)
                             {
                                 if (retries > 0)
                                 {
@@ -177,7 +191,7 @@ namespace NotificationWorkflowService.Service
                                 }
                                 else
                                 {
-                                    throw exc;
+                                    throw;
                                 }
                             }
                         }
@@ -195,14 +209,12 @@ namespace NotificationWorkflowService.Service
         /// Reads the Last Processed Point SystemID from the ParserActivity table, used when the program is restarted or when reading in a set of points.
         /// </summary>
         /// <param name="parserID">The parserID<see cref="int"/>.</param>
-        /// <param name="connectionString">The connectionString<see cref="String"/>.</param>
-        /// <param name="platForm">The platForm<see cref="String"/>.</param>
         /// <returns>.</returns>
-        private static int readLastSuccessfulProcess(int parserID, String connectionString, String platForm)
+        private int readLastSuccessfulProcess(int parserID)
         {
             int SystemID = 0;
-            string ConnectionString = connectionString;
-
+            string ConnectionString =  configuration.GetConnectionString("connstr")
+                ?? throw new InvalidOperationException("Connection string 'connstr' is not configured.");
             StringBuilder sb = new StringBuilder();
             sb.Append("SELECT CONVERT(int, [StatusID]) AS StatusID ");
             sb.Append("FROM ParserActivity ");
@@ -231,9 +243,9 @@ namespace NotificationWorkflowService.Service
                             }
                             catch (SqlException ex)
                             {
-                                log.LogError("[" + platForm + "] " + "SQLException on readLastSuccessfulProcess in Parser ", ex);
+                                log.LogError(ex, "SQLException on readLastSuccessfulProcess in Parser ");
                                 Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readLastSuccessfulProcess in Parser " + ex);
+                                Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readLastSuccessfulProcess in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -244,15 +256,15 @@ namespace NotificationWorkflowService.Service
                                     }
                                     else
                                     {
-                                        throw ex;
+                                        throw;
                                     }
                                 }
                             }
                             catch (Exception exc)
                             {
-                                log.LogError("[" + platForm + "] " + "ERROR: Unable to Read Last successful processed ActiveAlarms point ", exc);
+                                log.LogError(exc, "ERROR: Unable to Read Last successful processed ActiveAlarms point ");
                                 Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Last successful processed ActiveAlarms point " + exc);
+                                Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Last successful processed ActiveAlarms point " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -260,7 +272,7 @@ namespace NotificationWorkflowService.Service
                                 }
                                 else
                                 {
-                                    throw exc;
+                                    throw;
                                 }
                             }
                         }
@@ -268,9 +280,9 @@ namespace NotificationWorkflowService.Service
                 }
                 catch (Exception e)
                 {
-                    log.LogError("[" + platForm + "] " + "ERROR: Unable to Read Last successful processed ActiveAlarms point ", e);
+                    log.LogError(e, "ERROR: Unable to Read Last successful processed ActiveAlarms point ");
                     Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Last successful processed ActiveAlarms point " + e);
+                    Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Last successful processed ActiveAlarms point " + e);
                     MyConnection.Close();
                 }
             }
@@ -283,11 +295,11 @@ namespace NotificationWorkflowService.Service
         /// </summary>
         /// <param name="pointsBehind">The pointsBehind<see cref="int"/>.</param>
         /// <returns>The <see cref="int"/>.</returns>
-        static int returnWaitTime(int pointsBehind)
+        int returnWaitTime(int pointsBehind)
         {
             int toReturn = 3;
 
-            int numberOfProcessIntervals = pointsBehind / Convert.ToInt32(ConfigurationManager.AppSettings["NumberOfProcessPoints"]);
+            int numberOfProcessIntervals = pointsBehind / Convert.ToInt32(configuration["NumberOfProcessPoints"]);
 
             int sleepTime = Int32.MaxValue;
             if (numberOfProcessIntervals != 0)
@@ -320,10 +332,11 @@ namespace NotificationWorkflowService.Service
         /// <param name="pointsBehind">.</param>
         /// <param name="waitTime">.</param>
         /// <returns>.</returns>
-        static bool processActiveAlarmsHoldQueue(int pointsBehind, int waitTime)
+        bool processActiveAlarmsHoldQueue(int pointsBehind, int waitTime)
         {
+
             Boolean sleep = false;
-            int x = 60 * Convert.ToInt32(ConfigurationManager.AppSettings["NumberOfProcessPoints"]);
+            int x = 60 * Convert.ToInt32(configuration["NumberOfProcessPoints"]);
             int y = (waitTime / 1000) + 3;
 
             if (pointsBehind >= x / y)
@@ -336,12 +349,12 @@ namespace NotificationWorkflowService.Service
                 sleep = true;
             }
 
-            if (sleep == true && pointsBehind != 0 && aggressiveIterations <= Convert.ToInt32(ConfigurationManager.AppSettings["NumberOfAggressiveIterations"]))
+            if (sleep == true && pointsBehind != 0 && aggressiveIterations <= Convert.ToInt32(configuration["NumberOfAggressiveIterations"]))
             {
                 sleep = false;
             }
 
-            if (aggressiveIterations >= Convert.ToInt32(ConfigurationManager.AppSettings["NumberOfAggressiveIterations"]) && sleep == false)
+            if (aggressiveIterations >= Convert.ToInt32(configuration["NumberOfAggressiveIterations"]) && sleep == false)
             {
                 aggressiveIterations = 0;
                 sleep = true;

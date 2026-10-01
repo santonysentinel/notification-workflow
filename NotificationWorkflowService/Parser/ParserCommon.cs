@@ -11,7 +11,7 @@ using System.Text;
 
 namespace NotificationWorkflowService.Parser
 {
-    internal class Parser
+    public class WorkFlowCommon
     {
         /// <summary>
         /// Used To Update The Console title information - data about the number of points behind and
@@ -27,7 +27,7 @@ namespace NotificationWorkflowService.Parser
         /// <summary>
         /// Defines the log.
         /// </summary>
-        private readonly ILogger<Parser> log;
+        private readonly ILogger<WorkFlowCommon> log;
 
         /// <summary>
         /// Defines the activeAlarms.
@@ -218,7 +218,7 @@ namespace NotificationWorkflowService.Parser
         /// Initializes a new instance of the <see cref="Parser"/> class.
         /// </summary>
         /// <param name="connection">The connection<see cref="String"/>.</param>
-        public Parser(ILogger<Parser> logger, IConfiguration configuration)
+        public WorkFlowCommon(ILogger<WorkFlowCommon> logger, IConfiguration configuration)
         {
             this.log = logger;
             this.configuration = configuration;
