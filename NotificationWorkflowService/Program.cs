@@ -56,9 +56,22 @@ namespace ActiveAlarmsParser
             return Host.CreateDefaultBuilder(args)
             .ConfigureServices((hostContext, services) =>
             {
-                services.AddHostedService<Worker>();
+                string workerMode = hostContext.Configuration["WorkerMode"] ?? "Normal";
+                if (string.Equals(workerMode, "Normal", StringComparison.OrdinalIgnoreCase))
+                {
+                    services.AddHostedService<Worker>();
+                }
+                else if (string.Equals(workerMode, "Step", StringComparison.OrdinalIgnoreCase))
+                {
+                    services.AddHostedService<StepWorker>();
+                }
+                else
+                {
+                    throw new InvalidOperationException("WorkerMode must be 'Normal' or 'Step'.");
+                }
                 services.AddTransient<NotificationSender>();
                 services.AddTransient<WorkFlowCommon>();
+                services.AddTransient<Func<WorkFlowCommon>>(provider => () => provider.GetRequiredService<WorkFlowCommon>());
                 services.AddTransient<WorkFlowInitiator>();
                 services.AddTransient<WorkFlowInitiatorService>();
                

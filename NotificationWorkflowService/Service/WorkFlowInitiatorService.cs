@@ -29,14 +29,14 @@ namespace NotificationWorkflowService.Service
 
         private readonly IConfiguration configuration;
         private readonly ILoggerFactory loggerFactory;
-        private readonly WorkFlowCommon parser;
+        private readonly Func<WorkFlowCommon> parserFactory;
 
-        public WorkFlowInitiatorService(ILogger<WorkFlowInitiatorService> logger, IConfiguration configuration, ILoggerFactory loggerFactory, WorkFlowCommon parser)
+        public WorkFlowInitiatorService(ILogger<WorkFlowInitiatorService> logger, IConfiguration configuration, ILoggerFactory loggerFactory, Func<WorkFlowCommon> parserFactory)
         {
             this.log = logger;
             this.configuration = configuration;
             this.loggerFactory = loggerFactory;
-            this.parser = parser;
+            this.parserFactory = parserFactory;
         }
 
 
@@ -49,7 +49,7 @@ namespace NotificationWorkflowService.Service
         {
             cancellationToken.ThrowIfCancellationRequested();
             DateTime lastParserResetTime = DateTime.UtcNow;
-            WorkFlowCommon p = parser;
+            WorkFlowCommon p = parserFactory();
 
             while (!p.setUpParser(platform))
             {
@@ -95,26 +95,28 @@ namespace NotificationWorkflowService.Service
         /// The thread for the multi step parser.
         /// </summary>
         /// <param name="platform">The platform name used for parser configuration.</param>
-        void startParseSteps(string platform)
+        /// <param name="cancellationToken">Signals host shutdown.</param>
+        public async Task startParseSteps(string platform, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             DateTime lastParserResetTime = DateTime.UtcNow;
             WorkFlowSteps p = new WorkFlowSteps(loggerFactory.CreateLogger<WorkFlowSteps>(), configuration);
 
 
             while (!p.setUpParser(platform))
             {
-                Thread.Sleep(2000);
+                await Task.Delay(2000, cancellationToken);
             }
 
 
-            while (true)
+            while (!cancellationToken.IsCancellationRequested)
             {
                 if (DateTime.UtcNow > lastParserResetTime.AddMinutes(Convert.ToInt32(configuration["StepParserRefreshTime"])))
                 {
 
                     while (!p.setUpParser(platform))
                     {
-                        Thread.Sleep(2000);
+                        await Task.Delay(2000, cancellationToken);
                     }
 
                     lastParserResetTime = DateTime.UtcNow;
@@ -126,11 +128,11 @@ namespace NotificationWorkflowService.Service
                 }
                 else
                 {
-                    Thread.Sleep(3000);
+                    await Task.Delay(3000, cancellationToken);
                 }
 
 
-                Thread.Sleep(Convert.ToInt32(configuration["StepParserSleepTime"]));
+                await Task.Delay(Convert.ToInt32(configuration["StepParserSleepTime"]), cancellationToken);
             }
         }
 
