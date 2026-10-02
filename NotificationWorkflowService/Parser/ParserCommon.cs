@@ -32,7 +32,7 @@ namespace NotificationWorkflowService.Parser
         /// <summary>
         /// Defines the log.
         /// </summary>
-        private readonly ILogger<WorkFlowCommon> log;
+        private readonly ILogger log;
 
         /// <summary>
         /// Defines the activeAlarms.
@@ -111,6 +111,11 @@ namespace NotificationWorkflowService.Parser
         }
 
         public WorkFlowCommon(ILogger<WorkFlowCommon> logger, IConfiguration configuration, NotificationSender notificationService, IRepository repository)
+            : this((ILogger)logger, configuration, notificationService, repository)
+        {
+        }
+
+        protected WorkFlowCommon(ILogger logger, IConfiguration configuration, NotificationSender notificationService, IRepository repository)
         {
             this.log = logger;
             this.configuration = configuration;

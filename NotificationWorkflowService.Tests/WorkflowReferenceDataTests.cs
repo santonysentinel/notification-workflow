@@ -606,8 +606,22 @@ public class WorkflowReferenceDataTests
         return Call(parser, parts[0], parts.Length == 2 ? [int.Parse(parts[1])] : []);
     }
     private static bool Setup(object parser) => (bool)Call(parser, "setUpParser", "Offline")!;
-    private static object? Call(object parser, string method, params object?[] args) => parser.GetType().GetMethod(method, Instance)!.Invoke(parser, args);
-    private static object? Value(object parser, string field) => parser.GetType().GetField(field, Instance)!.GetValue(parser);
+    private static MethodInfo Method(object parser, string name)
+    {
+        for (Type? type = parser.GetType(); type != null; type = type.BaseType)
+            if (type.GetMethod(name, Instance | BindingFlags.DeclaredOnly) is { } method)
+                return method;
+        throw new MissingMethodException(parser.GetType().FullName, name);
+    }
+    private static FieldInfo FieldInfo(object parser, string name)
+    {
+        for (Type? type = parser.GetType(); type != null; type = type.BaseType)
+            if (type.GetField(name, Instance | BindingFlags.DeclaredOnly) is { } field)
+                return field;
+        throw new MissingFieldException(parser.GetType().FullName, name);
+    }
+    private static object? Call(object parser, string method, params object?[] args) => Method(parser, method).Invoke(parser, args);
+    private static object? Value(object parser, string field) => FieldInfo(parser, field).GetValue(parser);
     private static T Field<T>(object parser, string field) => (T)Value(parser, field)!;
     private static object Parser(int kind, ReferenceRepository spy)
     {

@@ -370,10 +370,26 @@ public class WorkflowSelectionCharacterizationTests
     }
 
     private static void SetField(object parser, string name, object value) =>
-        parser.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(parser, value);
+        FieldInfo(parser, name).SetValue(parser, value);
 
     private static T Field<T>(object parser, string name) =>
-        (T)parser.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(parser)!;
+        (T)FieldInfo(parser, name).GetValue(parser)!;
+
+    private static FieldInfo FieldInfo(object parser, string name)
+    {
+        for (Type? type = parser.GetType(); type != null; type = type.BaseType)
+            if (type.GetField(name, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly) is { } field)
+                return field;
+        throw new MissingFieldException(parser.GetType().FullName, name);
+    }
+
+    private static MethodInfo Method(object parser, string name)
+    {
+        for (Type? type = parser.GetType(); type != null; type = type.BaseType)
+            if (type.GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly) is { } method)
+                return method;
+        throw new MissingMethodException(parser.GetType().FullName, name);
+    }
 
     private static Dictionary<string, List<Holiday>> Holidays(object parser) => Field<Dictionary<string, List<Holiday>>>(parser, "activeHolidays");
     private static Dictionary<int, Profile> Profiles(object parser) => Field<Dictionary<int, Profile>>(parser, "activeProfiles");
@@ -381,7 +397,7 @@ public class WorkflowSelectionCharacterizationTests
         Field<Dictionary<string, int>>(parser, holiday ? "clientHolidayProfileMapping" : "clientProfileMapping");
 
     private static bool IsHoliday(object parser, ActiveAlarm alarm, DateTime current) =>
-        (bool)parser.GetType().GetMethod("holidayCheck", BindingFlags.Instance | BindingFlags.NonPublic)!
+        (bool)Method(parser, "holidayCheck")
             .Invoke(parser, [alarm, current])!;
 
     private static ProfileItem? SelectInitial(object parser, List<ProfileItem> items, DateTime current) => parser switch
@@ -394,7 +410,7 @@ public class WorkflowSelectionCharacterizationTests
     private static void Populate(object parser, List<ActiveAlarm> alarms)
     {
         object?[] arguments = parser is WorkFlowSteps ? [alarms] : [alarms, 0];
-        parser.GetType().GetMethod("getPriorityAndEmail", BindingFlags.Instance | BindingFlags.NonPublic)!
+        Method(parser, "getPriorityAndEmail")
             .Invoke(parser, arguments);
         Assert.Same(alarms, arguments[0]);
     }

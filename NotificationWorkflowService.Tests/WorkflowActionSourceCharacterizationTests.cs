@@ -25,6 +25,20 @@ public class WorkflowActionSourceCharacterizationTests
 
     public static IEnumerable<object[]> Parsers() => ParserFiles.Select(file => new object[] { file });
 
+    [Fact]
+    public void SourceContract_CompatibilityWrapperHasOnlyTwoForwardingConstructorsAndNoExecutableOverrides()
+    {
+        string source = ReadRawSource("WorkFlowInitiator.cs");
+        string code = CodeMask(source);
+        Assert.Matches(@"\binternal\s+class\s+WorkFlowInitiator\s*:\s*WorkFlowCommon", code);
+        Assert.Equal(2, Regex.Matches(code, @"\bpublic\s+WorkFlowInitiator\s*\(").Count);
+        Assert.Equal(2, Regex.Matches(code, @"\)\s*:\s*(?:this|base)\s*\([^{}]*\)\s*\{\s*\}").Count);
+        Assert.Contains(": this(logger, configuration, notificationService, new Repository(configuration))", source);
+        Assert.Contains(": base((ILogger)logger, configuration, notificationService, repository)", source);
+        Assert.DoesNotMatch(@"\b(?:override|virtual)\b", code);
+        Assert.DoesNotMatch(@"\b(?:public|private|protected|internal)\s+(?:readonly\s+)?[\w<>?]+\s+\w+\s*(?:\(|[=;])", code);
+    }
+
     [Theory]
     [MemberData(nameof(Parsers))]
     public void SourceContract_FinalAuditThenArchiveThenConditionalStateWritesThenNormalCheckpoint(string file)
@@ -252,7 +266,12 @@ public class WorkflowActionSourceCharacterizationTests
 
     private static bool IsSteps(string file) => file == "WorkFlowSteps.cs";
 
-    private static string ReadSource(string file)
+    // WorkFlowInitiator inherits the normal bodies; keep every normal source
+    // assertion active, and inspect the wrapper itself separately above.
+    private static string ReadSource(string file) =>
+        ReadRawSource(file == "WorkFlowInitiator.cs" ? "ParserCommon.cs" : file);
+
+    private static string ReadRawSource(string file)
     {
         for (DirectoryInfo? directory = new(AppContext.BaseDirectory); directory != null; directory = directory.Parent)
         {

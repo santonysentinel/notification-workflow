@@ -123,7 +123,7 @@ public class WorkflowRepositoryAdapterTests
     {
         var spy = RepositorySpy.Create();
         object target = kind == 3 ? Service(spy) : Parser(kind, spy);
-        var field = target.GetType().GetField("repository", Instance)!;
+        var field = FieldInfo(target, "repository");
         Assert.True(field.IsInitOnly);
         Assert.Same(spy, field.GetValue(target));
         Assert.Contains(target.GetType().GetConstructors(), ctor =>
@@ -792,11 +792,23 @@ public class WorkflowRepositoryAdapterTests
         _ => throw new ArgumentOutOfRangeException(nameof(priority))
     };
 
-    private static MethodInfo Method(object target, string name) => target.GetType().GetMethod(name, Instance)
-        ?? throw new InvalidOperationException($"Missing runtime helper {target.GetType().Name}.{name}");
+    private static MethodInfo Method(object target, string name)
+    {
+        for (Type? type = target.GetType(); type != null; type = type.BaseType)
+            if (type.GetMethod(name, Instance | BindingFlags.DeclaredOnly) is { } method)
+                return method;
+        throw new MissingMethodException(target.GetType().FullName, name);
+    }
+    private static FieldInfo FieldInfo(object target, string name)
+    {
+        for (Type? type = target.GetType(); type != null; type = type.BaseType)
+            if (type.GetField(name, Instance | BindingFlags.DeclaredOnly) is { } field)
+                return field;
+        throw new MissingFieldException(target.GetType().FullName, name);
+    }
     private static object? Call(object target, string name, params object?[] args) => Method(target, name).Invoke(target, args);
-    private static T Field<T>(object target, string name) => (T)target.GetType().GetField(name, Instance)!.GetValue(target)!;
-    private static void SetField(object target, string name, object value) => target.GetType().GetField(name, Instance)!.SetValue(target, value);
+    private static T Field<T>(object target, string name) => (T)FieldInfo(target, name).GetValue(target)!;
+    private static void SetField(object target, string name, object value) => FieldInfo(target, name).SetValue(target, value);
 
     private static void AssertArguments(object?[] expected, object?[] actual)
     {
