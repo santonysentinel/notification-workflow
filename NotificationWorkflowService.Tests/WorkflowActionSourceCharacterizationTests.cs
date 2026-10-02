@@ -7,8 +7,9 @@ using Xunit;
 namespace NotificationWorkflowService.Tests;
 
 /// <summary>
-/// SOURCE CONTRACT tests, not runtime database or delivery tests. SQL is now behind
-/// an injectable repository; parser source checks remain lexical. The parameter mapping
+/// Parser shell and helper SOURCE CONTRACT tests, not runtime delivery tests.
+/// Priority behavior is covered by WorkflowActionExecutorTests instead of lexical switches.
+/// The parameter mapping
 /// test also calls pure internal repository builders to inspect unconnected SqlCommands;
 /// no SQL is executed. Ordered calls below are direct source occurrences, not transitive
 /// writes, successful commits, or proof that a conditional branch executes.
@@ -17,9 +18,6 @@ public class WorkflowActionSourceCharacterizationTests
 {
     private static readonly string[] ParserFiles =
         ["WorkFlowInitiator.cs", "ParserCommon.cs", "WorkFlowSteps.cs"];
-    private static readonly int[] Priorities = [1, 2, 3, 4, 5, 6, 7, 9, 11, 12, 13, 14, 15, 16, 17];
-    private const string Officer = "SendNotificationsToOfficersInSameGroup(a)";
-    private const string McApp = "PushAlertToMcApp(a)";
     private const string ActionTargets =
         "SendNotificationsToOfficersInSameGroup|PushAlertToMcApp|AddToNotificationQueue|" +
         "CreateAlarmAudit|AddActiveAlarmActionToActivity|insertNotificationQueueVictim|" +
@@ -27,66 +25,42 @@ public class WorkflowActionSourceCharacterizationTests
 
     public static IEnumerable<object[]> Parsers() => ParserFiles.Select(file => new object[] { file });
 
-    public static IEnumerable<object[]> PriorityCases()
-    {
-        foreach (string file in ParserFiles)
-        foreach (int priority in Priorities)
-        {
-            if (priority == 12)
-            {
-                foreach (int role in new[] { 1, 2, 3 })
-                    yield return [file, priority, role];
-            }
-            else
-                yield return [file, priority, 0];
-        }
-    }
-
-    [Theory]
-    [MemberData(nameof(PriorityCases))]
-    public void SourceContract_EveryPriorityAndRoleHasExactOrderedDirectActionCalls(
-        string file, int priority, int role)
-    {
-        string segment = PrioritySegments(Method(ReadSource(file), "parseAlarms"))[priority.ToString()];
-        if (priority == 12)
-            segment = SwitchSegments(segment, "a.RoleAction")[role.ToString()];
-
-        Assert.Equal(ExpectedActionCalls(file, priority, role), Calls(segment, ActionTargets));
-
-        // These assignments are part of the source contract, not observed state changes.
-        bool stopsNextStep = priority is 3 or 6 or 7 or 9 or 14 || priority == 12 && role == 1;
-        Assert.Equal(stopsNextStep, Regex.IsMatch(CodeMask(segment), @"a\.ProcessNextStep\s*=\s*0\s*;"));
-        if (priority == 12)
-            Assert.Contains(role == 1 ? "if (a.Instruction != \"\")" : "if (a.EmailAddresses != \"\")", segment);
-    }
-
-    [Theory]
-    [MemberData(nameof(Parsers))]
-    public void SourceContract_EnumeratesActualPriorityAndRoleLabelsWithoutNestedCaseLeakage(string file)
-    {
-        string parse = Method(ReadSource(file), "parseAlarms");
-        var segments = PrioritySegments(parse);
-        Assert.Equal(Priorities.Select(p => p.ToString()).Append("default"), segments.Keys);
-        Assert.Equal(new[] { "1", "2", "3", "default" }, SwitchSegments(segments["12"], "a.RoleAction").Keys);
-        Assert.Empty(Calls(segments["default"], ActionTargets));
-        Assert.Empty(Calls(SwitchSegments(segments["12"], "a.RoleAction")["default"], ActionTargets));
-        var (open, close) = SwitchBounds(parse, "a.Priority");
-        // Count actual source occurrences as well as checking individual case slices.
-        Assert.Equal(48, Calls(parse[(open + 1)..close], ActionTargets).Length);
-    }
-
     [Theory]
     [MemberData(nameof(Parsers))]
     public void SourceContract_FinalAuditThenArchiveThenConditionalStateWritesThenNormalCheckpoint(string file)
     {
         string parse = Method(ReadSource(file), "parseAlarms");
-        var (switchStart, switchEnd) = SwitchBounds(parse, "a.Priority");
+        int execute = parse.IndexOf("WorkflowActionResult result = WorkflowActionExecutor.Execute", StringComparison.Ordinal);
+        Assert.True(execute >= 0);
         bool steps = IsSteps(file);
         string step = steps ? "a.CurrentStateNo" : "1";
         Assert.Equal(steps ? Array.Empty<string>() : new[] { "CreateAlarmAudit(15,\"\",a.HistoryID,1)" },
-            Calls(parse[..switchStart], ActionTargets));
+            Calls(parse[..execute], ActionTargets));
 
-        string tail = parse[(switchEnd + 1)..];
+        Assert.Equal(new[] { $"WorkflowActionExecutor.Execute(a,newWorkflowActionContext(WorkflowActionMode.{(steps ? "Step" : "Normal")},platForm,log,newActionOperations(this),RoleActionMapping,roles,victims))" },
+            Calls(parse, "WorkflowActionExecutor\\.Execute"));
+        Assert.DoesNotMatch(@"\bswitch\s*\(", CodeMask(parse));
+        AssertOrdered(parse, "sb.Append(\"Action as per the profile assigned:\");",
+            "WorkflowActionExecutor.Execute", "insert = result.Insert;", "sb.Append(result.Summary);",
+            "CreateAlarmAudit(14, sb.ToString()", "insertIntoAlarmNotification", "if (a.NextStateNo != -1 && insert)");
+        if (steps)
+        {
+            Assert.Empty(Calls(parse[..execute], "PushAlertsToVictims|PushNotificationToVictim|ClearMcAppAlarm"));
+        }
+        else
+        {
+            AssertOrdered(parse, "curr = a;", "PushAlertsToVictims(a);", "PushNotificationToVictim(a);",
+                "CreateAlarmAudit(15,", "if (a.IsAlarmClearingEnabled)", "ClearMcAppAlarm(clearEvents, a.ClientID);",
+                "WorkflowActionExecutor.Execute");
+            foreach (string message in new[] { "PushAlertsToVictims Error", "PushNotificationToVictim Error" })
+            {
+                string local = CatchContaining(parse, message);
+                Assert.Contains("log.LogError", local);
+                Assert.DoesNotMatch(@"\b(?:throw|break|return|continue)\b", CodeMask(local));
+            }
+        }
+
+        string tail = parse[parse.IndexOf("sb.Append(result.Summary);", StringComparison.Ordinal)..];
         string expiry = steps ? "DateTime.UtcNow.AddMinutes(a.StateTime)" : "ExpiryTimeApplied";
         string display = steps ? "a.CurrentStateNo" : "a.StateNo+1";
         string loop = steps ? "a.CurrentLoopNumber" : "0";
@@ -114,15 +88,12 @@ public class WorkflowActionSourceCharacterizationTests
 
     [Theory]
     [MemberData(nameof(Parsers))]
-    public void SourceContract_InsertFlagsAndExpiryRetainNormalStepDifferences(string file)
+    public void SourceContract_ExpiryAndExecutorInsertResultRemainInShell(string file)
     {
         string parse = Method(ReadSource(file), "parseAlarms");
-        var segments = PrioritySegments(parse);
         Assert.Matches(@"\b(?:bool|Boolean)\s+insert\s*=\s*true\s*;", parse);
-        Assert.Contains("insert = false;", segments["1"]);
-        Assert.Equal(!IsSteps(file), segments["default"].Contains("insert = false;", StringComparison.Ordinal));
-        Assert.Equal(IsSteps(file), segments["11"].Contains("insert = true;", StringComparison.Ordinal));
-        Assert.Equal(IsSteps(file) ? 1 : 2, Regex.Matches(CodeMask(parse), @"\binsert\s*=\s*false\s*;").Count);
+        Assert.Single(Regex.Matches(CodeMask(parse), @"\binsert\s*=\s*result\.Insert\s*;").Cast<Match>());
+        Assert.DoesNotMatch(@"\binsert\s*=\s*false\s*;", CodeMask(parse));
         if (IsSteps(file))
         {
             Assert.Equal(3, Regex.Matches(CodeMask(parse), @"DateTime\.UtcNow\.AddMinutes\(a\.StateTime\)").Count);
@@ -190,26 +161,6 @@ public class WorkflowActionSourceCharacterizationTests
         // Deliberately do not freeze legacy retry counts/deadlock detection/sleeps.
         // Non-deadlock failures can leave retry loops spinning; exhausted retries can
         // bypass intended throws. Outer catch syntax is not proof those catches run.
-    }
-
-    [Theory]
-    [MemberData(nameof(Parsers))]
-    public void SourceContract_VictimAndClientLocalCatchesClearRecipientsBeforeAuditAndHistory(string file)
-    {
-        var segments = PrioritySegments(Method(ReadSource(file), "parseAlarms"));
-        foreach (var (priority, recipient) in new[] { (13, "victimsMail"), (15, "clientMail"),
-            (16, "clientText"), (17, "victimsText") })
-        {
-            string segment = segments[priority.ToString()];
-            string local = Assert.Single(CatchBodies(segment));
-            Assert.Contains("log.LogError", local);
-            Assert.Contains(recipient + " = \"\";", local);
-            Assert.DoesNotMatch(@"\b(?:throw|break|return)\b", CodeMask(local));
-            AssertOrdered(segment, "insertNotificationQueueVictim", "catch (Exception ex)",
-                "CreateAlarmAudit", "AddActiveAlarmActionToActivity");
-            if (priority is 15 or 16)
-                Assert.Matches($@"if\s*\({recipient}\s*!=\s*(?:String|string)\.Empty\)", segment);
-        }
     }
 
     [Theory]
@@ -299,32 +250,6 @@ public class WorkflowActionSourceCharacterizationTests
         }
     }
 
-    private static string[] ExpectedActionCalls(string file, int priority, int role)
-    {
-        string step = IsSteps(file) ? "a.CurrentStateNo" : "1";
-        string Audit(int type, string text, string? auditStep = null) =>
-            $"CreateAlarmAudit({type},{text},a.HistoryID,{auditStep ?? step})";
-        string History(string text, int type) => $"AddActiveAlarmActionToActivity(a.HistoryID,{text},{type})";
-        return priority switch
-        {
-            1 or 11 => [],
-            2 => [Officer, "AddToNotificationQueue(a,3)", Audit(1, "emailAdresses"), History("a.EmailAddresses", 1)],
-            3 or 6 or 14 => [Officer, McApp],
-            4 => [Officer],
-            5 => [Officer, "AddToNotificationQueue(a,1)", "getInsertEmails(a)", Audit(3, "autoPageEmails"), History("autoPageEmails", 0)],
-            7 => [McApp, Officer, "AddToNotificationQueue(a,3)", Audit(IsSteps(file) ? 3 : 1, "emailAdresses7"), History("a.EmailAddresses", 1)],
-            9 => [Officer, McApp, "AddToNotificationQueue(a,1)", "getInsertEmails(a)", Audit(3, "autoPageMcAppEmails"), History("autoPageMcAppEmails", 0)],
-            12 when role == 1 => [McApp],
-            12 => ["AddToNotificationQueue(a,3)", Audit(14, role == 2 ? "emails" : "txtMessages"), History("a.EmailAddresses", 1)],
-            // Victim/client audits still use literal step 1 even in WorkFlowSteps.
-            13 => ["insertNotificationQueueVictim(a,3,victimsMail,true)", Audit(14, "victimEmails", "1"), History("victimEmails", 1)],
-            15 => ["getClientEmail(a)", "insertNotificationQueueVictim(a,3,clientMail)", Audit(14, "cMail", "1"), History("cMail", 1)],
-            16 => ["getClientText(a)", "insertNotificationQueueVictim(a,4,clientText)", Audit(14, "cText", "1"), History("cText", 1)],
-            17 => ["insertNotificationQueueVictim(a,4,victimsText,true)", Audit(14, "Msg", "1"), History("Msg", 1)],
-            _ => throw new ArgumentOutOfRangeException(nameof(priority))
-        };
-    }
-
     private static bool IsSteps(string file) => file == "WorkFlowSteps.cs";
 
     private static string ReadSource(string file)
@@ -346,32 +271,6 @@ public class WorkflowActionSourceCharacterizationTests
         int close = MatchingDelimiter(CodeMask(source), open, '{', '}');
         return source[(open + 1)..close];
     }
-
-    private static Dictionary<string, string> PrioritySegments(string parse) => SwitchSegments(parse, "a.Priority");
-
-    private static (int Open, int Close) SwitchBounds(string source, string expression)
-    {
-        Match match = Regex.Match(CodeMask(source), @"\bswitch\s*\(\s*" + Regex.Escape(expression) + @"\s*\)\s*\{");
-        Assert.True(match.Success, $"Missing switch ({expression}).");
-        int open = match.Index + match.Length - 1;
-        return (open, MatchingDelimiter(CodeMask(source), open, '{', '}'));
-    }
-
-    private static Dictionary<string, string> SwitchSegments(string source, string expression)
-    {
-        var (open, close) = SwitchBounds(source, expression);
-        string body = source[(open + 1)..close];
-        string code = CodeMask(body);
-        var labels = Regex.Matches(code, @"\b(?:case\s+(?<label>\d+)|(?<label>default))\s*:")
-            .Cast<Match>().Where(match => BraceDepth(code, match.Index) == 0).ToArray();
-        var result = new Dictionary<string, string>();
-        for (int i = 0; i < labels.Length; i++)
-            result.Add(labels[i].Groups["label"].Value,
-                body[(labels[i].Index + labels[i].Length)..(i + 1 < labels.Length ? labels[i + 1].Index : body.Length)]);
-        return result;
-    }
-
-    private static int BraceDepth(string code, int end) => code[..end].Count(c => c == '{') - code[..end].Count(c => c == '}');
 
     private static string[] Calls(string source, string targets)
     {

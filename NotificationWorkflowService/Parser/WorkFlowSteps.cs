@@ -13,6 +13,7 @@
     using NotificationWorkflowService.Repository;
     using NotificationWorkflowService.Parser;
     using NotificationWorkflowService.Parser.ReferenceData;
+    using NotificationWorkflowService.Parser.Actions;
     using Microsoft.Extensions.Configuration;
     using Microsoft.Extensions.Logging;
 
@@ -797,306 +798,11 @@
                         , insert.ToString()
                         ));
 
-                    switch (a.Priority)
-                    {
-                        case 1:
-                            sb.Append("Do Nothing");
-                            Console.ForegroundColor = ConsoleColor.Cyan;
-                            Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Do Nothing " + "(Step " + a.StateNo + ")");
-                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Do Nothing " + "(Step " + a.StateNo + ")");
-                            insert = false;
-                            break;
-
-                        case 2:
-                            sb.Append("Auto Email");
-                            Console.ForegroundColor = ConsoleColor.Cyan;
-                            Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email " + "(Step " + a.StateNo + ")");
-                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email " + "(Step " + a.StateNo + ")");
-                            SendNotificationsToOfficersInSameGroup(a);
-                            AddToNotificationQueue(a, 3);
-                            string emailAdresses = "Pages sent to: " + a.EmailAddresses;
-                            if (emailAdresses.Length > 4096)
-                            {
-                                emailAdresses = emailAdresses.Substring(0, 4096);
-                            }
-                            CreateAlarmAudit(1, emailAdresses, a.HistoryID, a.CurrentStateNo);
-                            AddActiveAlarmActionToActivity(a.HistoryID, a.EmailAddresses, 1);
-                            break;
-                        case 3:
-                            sb.Append("McApp");
-                            Console.ForegroundColor = ConsoleColor.Cyan;
-                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp " + "(Step " + a.StateNo + ")");
-                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp " + "(Step " + a.StateNo + ")");
-                            SendNotificationsToOfficersInSameGroup(a);
-                            PushAlertToMcApp(a);
-                            a.ProcessNextStep = 0;
-                            break;
-                        case 4:
-                            sb.Append("Auto Fax");
-                            Console.ForegroundColor = ConsoleColor.Cyan;
-                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Fax " + "(Step " + a.StateNo + ")");
-                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Fax " + "(Step " + a.StateNo + ")");
-                            SendNotificationsToOfficersInSameGroup(a);
-                            break;
-                        case 5:
-                            sb.Append("Auto Page");
-                            Console.ForegroundColor = ConsoleColor.Cyan;
-                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Page " + "(Step " + a.StateNo + ")");
-                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Page " + "(Step " + a.StateNo + ")");
-                            SendNotificationsToOfficersInSameGroup(a);
-                            AddToNotificationQueue(a, 1);
-                            string autoPageEmails = "Pages sent to: " + getInsertEmails(a);
-                            if (autoPageEmails.Length > 4096)
-                            {
-                                autoPageEmails = autoPageEmails.Substring(0, 4096);
-                            }
-                            CreateAlarmAudit(3, autoPageEmails, a.HistoryID, a.CurrentStateNo);
-                            AddActiveAlarmActionToActivity(a.HistoryID, autoPageEmails, 0);
-                            break;
-                        case 6:
-                            sb.Append("McApp and Auto Fax");
-                            Console.ForegroundColor = ConsoleColor.Cyan;
-                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Fax " + "(Step " + a.StateNo + ")");
-                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Fax " + "(Step " + a.StateNo + ")");
-                            SendNotificationsToOfficersInSameGroup(a);
-                            PushAlertToMcApp(a);
-                            a.ProcessNextStep = 0;
-                            break;
-                        case 7:
-                            sb.Append("McApp and Auto Email");
-                            Console.ForegroundColor = ConsoleColor.Cyan;
-                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Email " + "(Step " + a.StateNo + ")");
-                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Email " + "(Step " + a.StateNo + ")");
-                            PushAlertToMcApp(a);
-                            SendNotificationsToOfficersInSameGroup(a);
-                            AddToNotificationQueue(a, 3);
-                            string emailAdresses7 = "Pages sent to: " + a.EmailAddresses;
-                            if (emailAdresses7.Length > 4096)
-                            {
-                                emailAdresses7 = emailAdresses7.Substring(0, 4096);
-                            }
-                            CreateAlarmAudit(3, emailAdresses7, a.HistoryID, a.CurrentStateNo);
-                            AddActiveAlarmActionToActivity(a.HistoryID, a.EmailAddresses, 1);
-                            a.ProcessNextStep = 0;
-                            break;
-                        case 9:
-                            sb.Append("McApp and Auto Page");
-                            Console.ForegroundColor = ConsoleColor.Cyan;
-                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Page " + "(Step " + a.StateNo + ")");
-                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp and Auto Page " + "(Step " + a.StateNo + ")");
-                            SendNotificationsToOfficersInSameGroup(a);
-                            PushAlertToMcApp(a);
-                            AddToNotificationQueue(a, 1);
-                            string autoPageMcAppEmails = "Pages sent to: " + getInsertEmails(a);
-                            if (autoPageMcAppEmails.Length > 4096)
-                            {
-                                autoPageMcAppEmails = autoPageMcAppEmails.Substring(0, 4096);
-                            }
-                            CreateAlarmAudit(3, autoPageMcAppEmails, a.HistoryID, a.CurrentStateNo);
-                            AddActiveAlarmActionToActivity(a.HistoryID, autoPageMcAppEmails, 0);
-                            a.ProcessNextStep = 0;
-                            break;
-                        case 11:
-                            sb.Append("Delay");
-                            Console.ForegroundColor = ConsoleColor.Cyan;
-                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Delay " + "(Step " + a.StateNo + ")");
-                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Delay " + "(Step " + a.StateNo + ")");
-                            insert = true;
-                            break;
-                        case 12:
-                            sb.Append("Role Based - ");
-                            sb.Append(RoleActionMapping[a.RoleAction] + " ");
-                            sb.Append(roles[a.RoleID.ToString()]);
-                            switch (a.RoleAction)
-                            {
-                                case 1:
-                                    if (a.Instruction != "")
-                                    {
-                                        Console.ForegroundColor = ConsoleColor.Green;
-                                        Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp Call Officers " + "(Step " + a.StateNo + ")");
-                                        log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "McApp Call Officers " + "(Step " + a.StateNo + ")");
-                                        PushAlertToMcApp(a);
-                                        a.ProcessNextStep = 0;
-                                    }
-                                    break;
-                                case 2:
-                                    if (a.EmailAddresses != "")
-                                    {
-                                        Console.ForegroundColor = ConsoleColor.Green;
-                                        Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email " + "(Step " + a.StateNo + ")");
-                                        log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email " + "(Step " + a.StateNo + ")");
-                                        AddToNotificationQueue(a, 3);
-                                        string emails = "Pages sent to: " + a.EmailAddresses;
-                                        if (emails.Length > 4096)
-                                        {
-                                            emails = emails.Substring(0, 4096);
-                                        }
-                                        CreateAlarmAudit(14, emails, a.HistoryID, a.CurrentStateNo);
-                                        AddActiveAlarmActionToActivity(a.HistoryID, a.EmailAddresses, 1);
-                                    }
-                                    break;
-                                case 3:
-                                    if (a.EmailAddresses != "")
-                                    {
-                                        Console.ForegroundColor = ConsoleColor.Green;
-                                        Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email " + "(Step " + a.StateNo + ")");
-                                        log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Auto Email " + "(Step " + a.StateNo + ")");
-                                        AddToNotificationQueue(a, 3);
-                                        string txtMessages = "Pages sent to: " + a.EmailAddresses;
-                                        if (txtMessages.Length > 4096)
-                                        {
-                                            txtMessages = txtMessages.Substring(0, 4096);
-                                        }
-                                        CreateAlarmAudit(14, txtMessages, a.HistoryID, a.CurrentStateNo);
-                                        AddActiveAlarmActionToActivity(a.HistoryID, a.EmailAddresses, 1);
-                                    }
-                                    break;
-                                default: break;
-                            }
-                            break;
-                        case 13: //send victims email
-
-                            Console.ForegroundColor = ConsoleColor.Green;
-                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Email-Victims");
-                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Email-Victims");
-
-                            string victimsMail = "";
-                            try
-                            {
-                                List<Victim> offenderVictims = victims[a.ClientID];
-                                StringBuilder victimEmail = new StringBuilder();
-                                foreach (Victim vi in offenderVictims)
-                                {
-                                    if (!string.IsNullOrEmpty(vi.Email))
-                                    {
-                                        victimEmail.Append(vi.Email);
-                                        victimEmail.Append(";");
-                                    }
-                                }
-
-                                victimsMail = victimEmail.ToString();
-                                insertNotificationQueueVictim(a, 3, victimsMail, true);
-                            }
-                            catch (Exception ex)
-                            {
-                                log.LogError(ex, "victimsMail");
-                                victimsMail = "";
-                            }
-
-                            string victimEmails = "Pages sent to: " + victimsMail;
-                            if (victimEmails.Length > 4096)
-                            {
-                                victimEmails = victimEmails.Substring(0, 4096);
-                            }
-                            CreateAlarmAudit(14, victimEmails, a.HistoryID, 1);
-                            AddActiveAlarmActionToActivity(a.HistoryID, victimEmails, 1);
-                            break;
-                        case 14:
-                            sb.Append("Contact Victim");
-                            Console.ForegroundColor = ConsoleColor.Green;
-                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Contact Victim");
-                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Contact Victim");
-                            SendNotificationsToOfficersInSameGroup(a);
-                            PushAlertToMcApp(a);
-                            a.ProcessNextStep = 0;
-                            break;
-
-                        case 15: //alert client
-                            Console.ForegroundColor = ConsoleColor.Green;
-                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Alert Client");
-                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Alert Client");
-
-                            string clientMail = "";
-                            try
-                            {
-                                clientMail = getClientEmail(a).Trim();
-                                if (clientMail != string.Empty)
-                                {
-                                    insertNotificationQueueVictim(a, 3, clientMail);
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                log.LogError(ex, "clientMail");
-                                clientMail = "";
-                            }
-
-                            string cMail = "Pages sent to: " + clientMail;
-                            if (cMail.Length > 4096)
-                            {
-                                cMail = cMail.Substring(0, 4096);
-                            }
-                            CreateAlarmAudit(14, cMail, a.HistoryID, 1);
-                            AddActiveAlarmActionToActivity(a.HistoryID, cMail, 1);
-                            break;
-                        case 16: //alert client text
-                            Console.ForegroundColor = ConsoleColor.Green;
-                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Alert Client Text");
-                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Alert Client Text");
-
-                            string clientText = "";
-                            try
-                            {
-                                clientText = getClientText(a).Trim();
-                                if (clientText != string.Empty)
-                                {
-                                    insertNotificationQueueVictim(a, 4, clientText);
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                log.LogError(ex, "clientText");
-                                clientText = "";
-                            }
-
-                            string cText = "Pages sent to: " + clientText;
-                            if (cText.Length > 4096)
-                            {
-                                cText = cText.Substring(0, 4096);
-                            }
-                            CreateAlarmAudit(14, cText, a.HistoryID, 1);
-                            AddActiveAlarmActionToActivity(a.HistoryID, cText, 1);
-                            break;
-                        case 17: //Send text to all victims
-                            sb.Append("Text All Victims");
-                            Console.ForegroundColor = ConsoleColor.Green;
-                            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Text All Victims");
-                            log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID.ToString() + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: " + "Text All Victims");
-
-                            string victimsText = "";
-                            try
-                            {
-                                List<Victim> offenderVictims = victims[a.ClientID];
-                                StringBuilder victimText = new StringBuilder();
-                                foreach (Victim vi in offenderVictims)
-                                {
-                                    if (!string.IsNullOrEmpty(vi.CellPhone))
-                                    {
-                                        victimText.Append(vi.CellPhone);
-                                        victimText.Append(";");
-                                    }
-                                }
-
-                                victimsText = victimText.ToString();
-                                insertNotificationQueueVictim(a, 4, victimsText, true);
-                            }
-                            catch (Exception ex)
-                            {
-                                log.LogError(ex, "victimsText");
-                                victimsText = "";
-                            }
-
-
-                            string Msg = "Text sent to: " + victimsText;
-                            if (Msg.Length > 4096)
-                            {
-                                Msg = Msg.Substring(0, 4096);
-                            }
-                            CreateAlarmAudit(14, Msg, a.HistoryID, 1);
-                            AddActiveAlarmActionToActivity(a.HistoryID, Msg, 1);
-                            break;
-                        default: sb.Append("Do Nothing"); break;
-                    }
+                    WorkflowActionResult result = WorkflowActionExecutor.Execute(a,
+                        new WorkflowActionContext(WorkflowActionMode.Step, platForm, log,
+                            new ActionOperations(this), RoleActionMapping, roles, victims));
+                    insert = result.Insert;
+                    sb.Append(result.Summary);
 
                     CreateAlarmAudit(14, sb.ToString(), a.HistoryID, a.CurrentStateNo);
 
@@ -1150,6 +856,19 @@
                 }
 
             }
+        }
+
+        private sealed class ActionOperations(WorkFlowSteps parser) : IWorkflowActionOperations
+        {
+            public void SendNotificationsToOfficersInSameGroup(ActiveAlarm a) => parser.SendNotificationsToOfficersInSameGroup(a);
+            public bool PushAlertToMcApp(ActiveAlarm a) => parser.PushAlertToMcApp(a);
+            public bool AddToNotificationQueue(ActiveAlarm a, int insertType) => parser.AddToNotificationQueue(a, insertType);
+            public void CreateAlarmAudit(int type, string action, int historyID, int StepNo) => parser.CreateAlarmAudit(type, action, historyID, StepNo);
+            public void AddActiveAlarmActionToActivity(int historyID, string email, int type) => parser.AddActiveAlarmActionToActivity(historyID, email, type);
+            public bool insertNotificationQueueVictim(ActiveAlarm a, int insertType, string victimsEmails, bool isVictimNotification = false) => parser.insertNotificationQueueVictim(a, insertType, victimsEmails, isVictimNotification);
+            public string getInsertEmails(ActiveAlarm a) => parser.getInsertEmails(a);
+            public string getClientEmail(ActiveAlarm a) => parser.getClientEmail(a);
+            public string getClientText(ActiveAlarm a) => parser.getClientText(a);
         }
 
         /// <summary>
