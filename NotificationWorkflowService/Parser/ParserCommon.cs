@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using NotificationWorkflowService.Entity;
 using NotificationWorkflowService.Repository;
+using NotificationWorkflowService.Parser.ReferenceData;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -96,6 +97,7 @@ namespace NotificationWorkflowService.Parser
         private readonly String Platform;
         private readonly NotificationSender notificationService;
         private readonly IRepository repository;
+        private WorkflowReferenceData? pendingReferenceData;
 
 
         /// <summary>
@@ -124,9 +126,25 @@ namespace NotificationWorkflowService.Parser
         /// <returns>The <see cref="bool"/>.</returns>
         public bool setUpParser(String platform)
         {
-            
             platForm = platform;
+            pendingReferenceData = new WorkflowReferenceData();
+            try
+            {
+                if (!SetUpReferenceData())
+                {
+                    return false;
+                }
+                PublishReferenceData(pendingReferenceData);
+                return true;
+            }
+            finally
+            {
+                pendingReferenceData = null;
+            }
+        }
 
+        private bool SetUpReferenceData()
+        {
             if (!FetchClientProfile(0))
             {
                 return false;
@@ -175,6 +193,49 @@ namespace NotificationWorkflowService.Parser
             //readPNSettings(); // We do not have push notifications now. (April 2021)
 
             return true;
+        }
+
+        // Workers call this parser serially; sequential publication is not a
+        // concurrent-reader guarantee. The staging shell has init-only properties.
+        private void StageReferenceData(
+            Dictionary<string, int>? clientProfiles = null,
+            Dictionary<string, int>? holidayProfiles = null,
+            Dictionary<int, Profile>? profiles = null,
+            Dictionary<string, List<Holiday>>? holidays = null,
+            Dictionary<string, string>? roleNames = null,
+            WorkflowVictimReferenceData? victimData = null,
+            Dictionary<string, HashSet<string>>? mezVictims = null,
+            Dictionary<string, Dictionary<string, HashSet<string>>>? attachedZones = null,
+            Dictionary<int, List<ProfileItemClear>>? clearEvents = null)
+        {
+            var pending = pendingReferenceData ?? throw new InvalidOperationException("No reference refresh is pending.");
+            pendingReferenceData = new WorkflowReferenceData
+            {
+                ClientProfileMapping = clientProfiles ?? pending.ClientProfileMapping,
+                ClientHolidayProfileMapping = holidayProfiles ?? pending.ClientHolidayProfileMapping,
+                ActiveProfiles = profiles ?? pending.ActiveProfiles,
+                ActiveHolidays = holidays ?? pending.ActiveHolidays,
+                Roles = roleNames ?? pending.Roles,
+                Victims = victimData?.Victims ?? pending.Victims,
+                VictimTypeDict = victimData?.VictimTypeDict ?? pending.VictimTypeDict,
+                MEZVictims = mezVictims ?? pending.MEZVictims,
+                AttachedVictimZones = attachedZones ?? pending.AttachedVictimZones,
+                ClearEvents = clearEvents ?? pending.ClearEvents
+            };
+        }
+
+        private void PublishReferenceData(WorkflowReferenceData data)
+        {
+            clientProfileMapping = data.ClientProfileMapping;
+            clientHolidayProfileMapping = data.ClientHolidayProfileMapping;
+            activeProfiles = data.ActiveProfiles;
+            activeHolidays = data.ActiveHolidays;
+            roles = data.Roles;
+            victims = data.Victims;
+            victimTypeDict = data.VictimTypeDict;
+            MEZVictims = data.MEZVictims;
+            AttachedVictimZones = data.AttachedVictimZones;
+            ClearEvents = data.ClearEvents;
         }
 
         /// <summary>
@@ -344,30 +405,8 @@ namespace NotificationWorkflowService.Parser
 
                 Boolean found = false;
 
-                Boolean isHoliday = holidayCheck(a, current);
-
-                Profile? p = null;
-
-                if (!isHoliday)
-                {
-                    if (clientProfileMapping.ContainsKey(a.ClientID))
-                    {
-                        if (activeProfiles.ContainsKey(clientProfileMapping[a.ClientID]))
-                        {
-                            p = activeProfiles[clientProfileMapping[a.ClientID]];
-                        }
-                    }
-                }
-                else
-                {
-                    if (clientHolidayProfileMapping.ContainsKey(a.ClientID))
-                    {
-                        if (activeProfiles.ContainsKey(clientHolidayProfileMapping[a.ClientID]))
-                        {
-                            p = activeProfiles[clientHolidayProfileMapping[a.ClientID]];
-                        }
-                    }
-                }
+                Profile? p = WorkflowProfileResolver.ResolveProfile(a, current,
+                    clientProfileMapping, clientHolidayProfileMapping, activeProfiles, activeHolidays);
 
                 if (p != null)
                 {
@@ -487,41 +526,7 @@ namespace NotificationWorkflowService.Parser
         {
             try
             {
-                Dictionary<int, int> indexes = new Dictionary<int, int>();
-                for (int i = 0; i < profileItems.Count; i++)
-                {
-                    if (profileItems[i].StartTime.TimeOfDay <= current.TimeOfDay && profileItems[i].EndTime.TimeOfDay >= current.TimeOfDay)
-                    {
-                        //Add all StateNo, and its index in the List of profileItems that current time is in the time range
-                        if (!indexes.ContainsKey(profileItems[i].StateNo))
-                        {
-                            indexes.Add(profileItems[i].StateNo, i);
-                        }
-                    }
-                }
-
-                if (indexes.Count > 0)
-                {
-                    if (indexes.ContainsKey(0))
-                    {
-                        //If there are StateNo = 0, use profileItem at StateNo = 0
-                        int idx = indexes[0];
-                        return profileItems[idx];
-                    }
-                    else
-                    {
-                        //Find MinStateNo
-                        int minStateNoKey = indexes.Min(pi => pi.Key);
-                        //Get Min State ProfileItems index, use profileItem at StateNo = minState
-                        int minStateNoIndex = indexes[minStateNoKey];
-
-                        return profileItems[minStateNoIndex];
-                    }
-                }
-                else
-                {
-                    return null;
-                }
+                return WorkflowProfileResolver.FindInitialProfileItem(profileItems, current);
             }
             catch (Exception e)
             {
@@ -1031,18 +1036,11 @@ namespace NotificationWorkflowService.Parser
             bool success = true;
             Console.ForegroundColor = ConsoleColor.White;
             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " Refreshing Client Profiles");
-            if (profileType == 0)
-            {
-                clientProfileMapping = new Dictionary<String, int>();
-            }
-            else if (profileType == 1)
-            {
-                clientHolidayProfileMapping = new Dictionary<String, int>();
-            }
+            Dictionary<string, int> result = new();
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareFetchClientProfile(profileType)))
+            try
             {
-                try
+                using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareFetchClientProfile(profileType)))
                 {
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
@@ -1055,23 +1053,7 @@ namespace NotificationWorkflowService.Parser
                                 MyConnection.Open();
                                 IDataReader MyDataReader = cmd.ExecuteReader();
 
-                                while (MyDataReader.Read())
-                                {
-                                    if (profileType == 0)
-                                    {
-                                        if (!clientProfileMapping.ContainsKey(MyDataReader["OID"].ToString()))
-                                        {
-                                            clientProfileMapping.Add(MyDataReader["OID"].ToString(), Convert.ToInt32(MyDataReader["ProfileID"]));
-                                        }
-                                    }
-                                    if (profileType == 1)
-                                    {
-                                        if (!clientHolidayProfileMapping.ContainsKey(MyDataReader["OID"].ToString()))
-                                        {
-                                            clientHolidayProfileMapping.Add(MyDataReader["OID"].ToString(), Convert.ToInt32(MyDataReader["ProfileID"]));
-                                        }
-                                    }
-                                }
+                                result = WorkflowReferenceDataBuilders.BuildClientProfiles(MyDataReader, profileType);
                                 success = true;
                                 break;
                             }
@@ -1116,13 +1098,26 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
-                catch (Exception e)
-                {
-                    success = false;
-                    log.LogInformation("[" + platForm + "] " + "FAILED TO RETRIEVE CLIENT PROFILES " + e);
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE CLIENT PROFILES " + e);
+            }
+            catch (Exception e)
+            {
+                success = false;
+                log.LogInformation("[" + platForm + "] " + "FAILED TO RETRIEVE CLIENT PROFILES " + e);
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE CLIENT PROFILES " + e);
 
+            }
+            if (success)
+            {
+                if (profileType == 0)
+                {
+                    if (pendingReferenceData != null) StageReferenceData(clientProfiles: result);
+                    else clientProfileMapping = result;
+                }
+                else if (profileType == 1)
+                {
+                    if (pendingReferenceData != null) StageReferenceData(holidayProfiles: result);
+                    else clientHolidayProfileMapping = result;
                 }
             }
 
@@ -1138,12 +1133,12 @@ namespace NotificationWorkflowService.Parser
             bool success = true;
             Console.ForegroundColor = ConsoleColor.White;
             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " Refreshing Client Profiles");
-            activeProfiles = new Dictionary<int, Profile>();
+            Dictionary<int, Profile> result = new();
 
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAllProfiles()))
+            try
             {
-                try
+                using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAllProfiles()))
                 {
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
@@ -1156,167 +1151,7 @@ namespace NotificationWorkflowService.Parser
                                 MyConnection.Open();
                                 IDataReader MyDataReader = cmd.ExecuteReader();
 
-                                while (MyDataReader.Read())
-                                {
-                                    int ProfileID = (int)MyDataReader["ProfileID"];
-                                    String ProfileName = MyDataReader["ProfileName"].ToString();
-                                    int currentDay = Convert.ToInt32(MyDataReader["Day"].ToString());
-                                    String currentEvent = MyDataReader["EventCode"].ToString(); ;
-
-                                    if (!activeProfiles.ContainsKey(ProfileID))
-                                    {
-                                        Dictionary<String, Dictionary<int, List<ProfileItem>>> profileEvents = new Dictionary<String, Dictionary<int, List<ProfileItem>>>();
-                                        Dictionary<int, List<ProfileItem>> dayEvents = new Dictionary<int, List<ProfileItem>>();
-                                        List<ProfileItem> profileItems = new List<ProfileItem>();
-
-
-                                        ProfileItem pi = new ProfileItem()
-                                        {
-                                            ProfileID = ProfileID,
-                                            EventCode = currentEvent,
-                                            StartTime = DateTime.ParseExact(MyDataReader["StartTime"].ToString(), "HH:mm:ss", CultureInfo.InvariantCulture),
-                                            EndTime = DateTime.ParseExact(MyDataReader["EndTime"].ToString(), "HH:mm:ss", CultureInfo.InvariantCulture),
-                                            Day = currentDay,
-                                            Action = Convert.ToInt32(MyDataReader["Action"]),
-                                            HoldDuration = (int)MyDataReader["HoldDuration"],
-                                            GracePeriod = (int)MyDataReader["GracePeriod"],
-                                            Instruction = MyDataReader["Instruction"].ToString(),
-                                            Email = MyDataReader["EmailAddress"].ToString(),
-                                            EmailJoin = Convert.ToInt32(MyDataReader["EmailJoin"]),
-                                            StateNo = Convert.ToInt32(MyDataReader["StateNo"]),
-                                            StateTime = (int)MyDataReader["StateTime"],
-                                            FeedBackRequired = Convert.ToBoolean(MyDataReader["FeedbackRequired"]),
-                                            ProfileType = (int)MyDataReader["ProfileType"],
-                                            TimeIntervalsID = (int)MyDataReader["TimeIntervalsID"],
-                                            NextState = Convert.ToInt32(MyDataReader["NextState"]),
-                                            LoopStartState = Convert.ToInt32(MyDataReader["LoopStartState"]),
-                                            NumberOfLoops = Convert.ToInt32(MyDataReader["NumberOfLoops"]),
-                                            RoleID = Convert.ToInt32(MyDataReader["RoleID"]),
-                                            RoleAction = Convert.ToInt32(MyDataReader["RoleAction"])
-                                        };
-                                        profileItems.Add(pi);
-                                        dayEvents.Add(currentDay, profileItems);
-                                        profileEvents.Add(currentEvent, dayEvents);
-
-                                        Profile p = new Profile()
-                                        {
-                                            ProfileID = ProfileID,
-                                            ProfileName = ProfileName,
-                                            Events = profileEvents
-                                        };
-
-                                        activeProfiles.Add(ProfileID, p);
-                                    }
-                                    else
-                                    {
-                                        Profile p = activeProfiles[ProfileID];
-
-                                        Dictionary<String, Dictionary<int, List<ProfileItem>>> profileEvents = p.Events;
-
-                                        if (!profileEvents.ContainsKey(currentEvent))
-                                        {
-                                            Dictionary<int, List<ProfileItem>> dayEvents = new Dictionary<int, List<ProfileItem>>();
-
-                                            List<ProfileItem> profileItems = new List<ProfileItem>();
-
-                                            ProfileItem pi = new ProfileItem()
-                                            {
-                                                ProfileID = ProfileID,
-                                                EventCode = currentEvent,
-                                                StartTime = DateTime.ParseExact(MyDataReader["StartTime"].ToString(), "HH:mm:ss", CultureInfo.InvariantCulture),
-                                                EndTime = DateTime.ParseExact(MyDataReader["EndTime"].ToString(), "HH:mm:ss", CultureInfo.InvariantCulture),
-                                                Day = currentDay,
-                                                Action = Convert.ToInt32(MyDataReader["Action"]),
-                                                HoldDuration = (int)MyDataReader["HoldDuration"],
-                                                GracePeriod = (int)MyDataReader["GracePeriod"],
-                                                Instruction = MyDataReader["Instruction"].ToString(),
-                                                Email = MyDataReader["EmailAddress"].ToString(),
-                                                EmailJoin = Convert.ToInt32(MyDataReader["EmailJoin"]),
-                                                StateNo = Convert.ToInt32(MyDataReader["StateNo"]),
-                                                StateTime = (int)MyDataReader["StateTime"],
-                                                FeedBackRequired = Convert.ToBoolean(MyDataReader["FeedbackRequired"]),
-                                                ProfileType = (int)MyDataReader["ProfileType"],
-                                                TimeIntervalsID = (int)MyDataReader["TimeIntervalsID"],
-                                                NextState = Convert.ToInt32(MyDataReader["NextState"]),
-                                                LoopStartState = Convert.ToInt32(MyDataReader["LoopStartState"]),
-                                                NumberOfLoops = Convert.ToInt32(MyDataReader["NumberOfLoops"]),
-                                                RoleID = Convert.ToInt32(MyDataReader["RoleID"]),
-                                                RoleAction = Convert.ToInt32(MyDataReader["RoleAction"]),
-                                            };
-                                            profileItems.Add(pi);
-
-                                            dayEvents.Add(currentDay, profileItems);
-
-                                            profileEvents.Add(currentEvent, dayEvents);
-                                        }
-                                        else
-                                        {
-                                            Dictionary<int, List<ProfileItem>> dayEvents = profileEvents[currentEvent];
-
-                                            if (!dayEvents.ContainsKey(currentDay))
-                                            {
-                                                List<ProfileItem> profileItems = new List<ProfileItem>();
-
-                                                ProfileItem pi = new ProfileItem()
-                                                {
-                                                    ProfileID = ProfileID,
-                                                    EventCode = currentEvent,
-                                                    StartTime = DateTime.ParseExact(MyDataReader["StartTime"].ToString(), "HH:mm:ss", CultureInfo.InvariantCulture),
-                                                    EndTime = DateTime.ParseExact(MyDataReader["EndTime"].ToString(), "HH:mm:ss", CultureInfo.InvariantCulture),
-                                                    Day = currentDay,
-                                                    Action = Convert.ToInt32(MyDataReader["Action"]),
-                                                    HoldDuration = (int)MyDataReader["HoldDuration"],
-                                                    GracePeriod = (int)MyDataReader["GracePeriod"],
-                                                    Instruction = MyDataReader["Instruction"].ToString(),
-                                                    Email = MyDataReader["EmailAddress"].ToString(),
-                                                    EmailJoin = Convert.ToInt32(MyDataReader["EmailJoin"]),
-                                                    StateNo = Convert.ToInt32(MyDataReader["StateNo"]),
-                                                    StateTime = (int)MyDataReader["StateTime"],
-                                                    FeedBackRequired = Convert.ToBoolean(MyDataReader["FeedbackRequired"]),
-                                                    ProfileType = (int)MyDataReader["ProfileType"],
-                                                    TimeIntervalsID = (int)MyDataReader["TimeIntervalsID"],
-                                                    NextState = Convert.ToInt32(MyDataReader["NextState"]),
-                                                    LoopStartState = Convert.ToInt32(MyDataReader["LoopStartState"]),
-                                                    NumberOfLoops = Convert.ToInt32(MyDataReader["NumberOfLoops"]),
-                                                    RoleID = Convert.ToInt32(MyDataReader["RoleID"]),
-                                                    RoleAction = Convert.ToInt32(MyDataReader["RoleAction"])
-                                                };
-                                                profileItems.Add(pi);
-                                                dayEvents.Add(currentDay, profileItems);
-                                            }
-                                            else
-                                            {
-                                                List<ProfileItem> profileItems = dayEvents[currentDay];
-
-                                                ProfileItem pi = new ProfileItem()
-                                                {
-                                                    ProfileID = ProfileID,
-                                                    EventCode = currentEvent,
-                                                    StartTime = DateTime.ParseExact(MyDataReader["StartTime"].ToString(), "HH:mm:ss", CultureInfo.InvariantCulture),
-                                                    EndTime = DateTime.ParseExact(MyDataReader["EndTime"].ToString(), "HH:mm:ss", CultureInfo.InvariantCulture),
-                                                    Day = currentDay,
-                                                    Action = Convert.ToInt32(MyDataReader["Action"]),
-                                                    HoldDuration = (int)MyDataReader["HoldDuration"],
-                                                    GracePeriod = (int)MyDataReader["GracePeriod"],
-                                                    Instruction = MyDataReader["Instruction"].ToString(),
-                                                    Email = MyDataReader["EmailAddress"].ToString(),
-                                                    EmailJoin = Convert.ToInt32(MyDataReader["EmailJoin"]),
-                                                    StateNo = Convert.ToInt32(MyDataReader["StateNo"]),
-                                                    StateTime = (int)MyDataReader["StateTime"],
-                                                    FeedBackRequired = Convert.ToBoolean(MyDataReader["FeedbackRequired"]),
-                                                    ProfileType = (int)MyDataReader["ProfileType"],
-                                                    TimeIntervalsID = (int)MyDataReader["TimeIntervalsID"],
-                                                    NextState = Convert.ToInt32(MyDataReader["NextState"]),
-                                                    LoopStartState = Convert.ToInt32(MyDataReader["LoopStartState"]),
-                                                    NumberOfLoops = Convert.ToInt32(MyDataReader["NumberOfLoops"]),
-                                                    RoleID = Convert.ToInt32(MyDataReader["RoleID"]),
-                                                    RoleAction = Convert.ToInt32(MyDataReader["RoleAction"])
-                                                };
-                                                profileItems.Add(pi);
-                                            }
-                                        }
-                                    }
-                                }
+                                result = WorkflowReferenceDataBuilders.BuildProfiles(MyDataReader);
 
                                 success = true;
                                 break;
@@ -1363,16 +1198,21 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
-                catch (Exception e)
-                {
-                    success = false;
-                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE PROFILES ");
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE PROFILES IN PARSER " + e);
+            }
+            catch (Exception e)
+            {
+                success = false;
+                log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE PROFILES ");
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE PROFILES IN PARSER " + e);
 
 
-                    //System.Environment.Exit(1);
-                }
+                //System.Environment.Exit(1);
+            }
+            if (success)
+            {
+                if (pendingReferenceData != null) StageReferenceData(profiles: result);
+                else activeProfiles = result;
             }
 
             return success;
@@ -1387,12 +1227,12 @@ namespace NotificationWorkflowService.Parser
             bool success = true;
             Console.ForegroundColor = ConsoleColor.White;
             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " Refreshing PO GRoup Holidays");
-            activeHolidays = new Dictionary<String, List<Holiday>>();
+            Dictionary<string, List<Holiday>> result = new();
 
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAllHolidays()))
+            try
             {
-                try
+                using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAllHolidays()))
                 {
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
@@ -1405,38 +1245,7 @@ namespace NotificationWorkflowService.Parser
                                 MyConnection.Open();
                                 IDataReader MyDataReader = cmd.ExecuteReader();
 
-                                List<Holiday> holidays = new List<Holiday>();
-                                String currentPOGroup = "";
-
-                                while (MyDataReader.Read())
-                                {
-                                    if (currentPOGroup != MyDataReader["POGroup"].ToString())
-                                    {
-                                        if (currentPOGroup != "")
-                                        {
-                                            activeHolidays.Add(currentPOGroup, holidays);
-                                            holidays = new List<Holiday>();
-                                        }
-                                        currentPOGroup = MyDataReader["POGroup"].ToString();
-                                    }
-
-                                    DateTime startDate = Convert.ToDateTime(MyDataReader["StartDate"].ToString());
-                                    DateTime endDate = Convert.ToDateTime(MyDataReader["EndDate"].ToString());
-                                    String holidayName = MyDataReader["HolidayName"].ToString();
-
-                                    Holiday h = new Holiday()
-                                    {
-                                        HolidayName = holidayName,
-                                        StartDate = startDate,
-                                        EndDate = endDate
-                                    };
-                                    holidays.Add(h);
-                                }
-
-                                if (holidays.Count > 0)
-                                {
-                                    activeHolidays.Add(currentPOGroup, holidays);
-                                }
+                                result = WorkflowReferenceDataBuilders.BuildHolidays(MyDataReader);
 
                                 success = true;
                                 break;
@@ -1481,14 +1290,19 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
-                catch (Exception e)
-                {
-                    success = false;
-                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE HOLIDAYS ");
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE HOLIDAYS IN PARSER " + e);
+            }
+            catch (Exception e)
+            {
+                success = false;
+                log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE HOLIDAYS ");
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE HOLIDAYS IN PARSER " + e);
 
-                }
+            }
+            if (success)
+            {
+                if (pendingReferenceData != null) StageReferenceData(holidays: result);
+                else activeHolidays = result;
             }
             return success;
         }
@@ -1503,12 +1317,12 @@ namespace NotificationWorkflowService.Parser
 
             Console.ForegroundColor = ConsoleColor.White;
             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " Refreshing POGroup Roles");
-            roles = new Dictionary<String, String>();
+            Dictionary<string, string> result = new();
 
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAllRoles()))
+            try
             {
-                try
+                using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAllRoles()))
                 {
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
@@ -1521,10 +1335,7 @@ namespace NotificationWorkflowService.Parser
                                 MyConnection.Open();
                                 IDataReader MyDataReader = cmd.ExecuteReader();
 
-                                while (MyDataReader.Read())
-                                {
-                                    roles.Add(MyDataReader["SystemID"].ToString(), MyDataReader["RoleName"].ToString());
-                                }
+                                result = WorkflowReferenceDataBuilders.BuildRoles(MyDataReader);
                                 success = true;
                                 break;
                             }
@@ -1568,14 +1379,19 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
-                catch (Exception e)
-                {
-                    success = false;
-                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ROLES ");
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ROLES IN PARSER " + e);
+            }
+            catch (Exception e)
+            {
+                success = false;
+                log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ROLES ");
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ROLES IN PARSER " + e);
 
-                }
+            }
+            if (success)
+            {
+                if (pendingReferenceData != null) StageReferenceData(roleNames: result);
+                else roles = result;
             }
             return success;
         }
@@ -2466,73 +2282,7 @@ namespace NotificationWorkflowService.Parser
         /// <returns>The <see cref="Boolean"/>.</returns>
         private Boolean holidayCheck(ActiveAlarm a, DateTime current)
         {
-            Boolean holiday = false;
-
-            if (a.POGroupNum.Trim() != "")
-            {
-                if (activeHolidays.ContainsKey(a.POGroupNum))
-                {
-                    List<Holiday> holidays = activeHolidays[a.POGroupNum];
-
-                    foreach (Holiday h in holidays)
-                    {
-                        if (h.StartDate.Date <= current.Date && h.EndDate.Date >= current.Date)
-                        {
-                            holiday = true;
-                        }
-                    }
-                }
-            }
-
-            if (a.POGroup1.Trim() != "")
-            {
-                if (activeHolidays.ContainsKey(a.POGroup1))
-                {
-                    List<Holiday> holidays = activeHolidays[a.POGroup1];
-
-                    foreach (Holiday h in holidays)
-                    {
-                        if (h.StartDate.Date <= current.Date && h.EndDate.Date >= current.Date)
-                        {
-                            holiday = true;
-                        }
-                    }
-                }
-            }
-
-            if (a.POGroup2.Trim() != "")
-            {
-                if (activeHolidays.ContainsKey(a.POGroup2))
-                {
-                    List<Holiday> holidays = activeHolidays[a.POGroup2];
-
-                    foreach (Holiday h in holidays)
-                    {
-                        if (h.StartDate.Date <= current.Date && h.EndDate.Date >= current.Date)
-                        {
-                            holiday = true;
-                        }
-                    }
-                }
-            }
-
-            if (a.POGroup3.Trim() != "")
-            {
-                if (activeHolidays.ContainsKey(a.POGroup3))
-                {
-                    List<Holiday> holidays = activeHolidays[a.POGroup3];
-
-                    foreach (Holiday h in holidays)
-                    {
-                        if (h.StartDate.Date <= current.Date && h.EndDate.Date >= current.Date)
-                        {
-                            holiday = true;
-                        }
-                    }
-                }
-            }
-
-            return holiday;
+            return WorkflowProfileResolver.IsHoliday(a, current, activeHolidays);
         }
 
         /// <summary>
@@ -2640,14 +2390,11 @@ namespace NotificationWorkflowService.Parser
         {
             bool success = true;
 
-            victims = new Dictionary<string, List<Victim>>();
-            victimTypeDict = new Dictionary<string, string>();
-            //victims.Clear();
-            //victimTypeDict.Clear();
+            WorkflowVictimReferenceData result = new(new(), new());
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadVictims()))
+            try
             {
-                try
+                using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadVictims()))
                 {
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
@@ -2660,34 +2407,7 @@ namespace NotificationWorkflowService.Parser
                                 MyConnection.Open();
                                 IDataReader MyDataReader = cmd.ExecuteReader();
 
-                                while (MyDataReader.Read())
-                                {
-                                    Victim v = new Victim()
-                                    {
-                                        OID = MyDataReader["Victim"].ToString(),
-                                        Email = MyDataReader["EmailAddress"].ToString(),
-                                        CellPhone = MyDataReader["CellPhone"].ToString(),
-                                        VictimType = MyDataReader["VictimType"].ToString()
-                                    };
-                                    String Offender = MyDataReader["Offender"].ToString();
-
-                                    if (!victimTypeDict.ContainsKey(v.OID))
-                                    {
-                                        victimTypeDict.Add(v.OID, v.VictimType);
-                                    }
-
-                                    if (victims.ContainsKey(Offender))
-                                    {
-                                        List<Victim> vList = victims[Offender];
-                                        vList.Add(v);
-                                    }
-                                    else
-                                    {
-                                        List<Victim> vList = new List<Victim>();
-                                        vList.Add(v);
-                                        victims.Add(Offender, vList);
-                                    }
-                                }
+                                result = WorkflowReferenceDataBuilders.BuildVictims(MyDataReader);
 
                                 success = true;
                                 break;
@@ -2731,13 +2451,22 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
-                catch (Exception e)
-                {
-                    success = false;
-                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER ");
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER " + e);
+            }
+            catch (Exception e)
+            {
+                success = false;
+                log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER ");
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER " + e);
 
+            }
+            if (success)
+            {
+                if (pendingReferenceData != null) StageReferenceData(victimData: result);
+                else
+                {
+                    victims = result.Victims;
+                    victimTypeDict = result.VictimTypeDict;
                 }
             }
             return success;
@@ -2752,11 +2481,11 @@ namespace NotificationWorkflowService.Parser
         {
             bool success = true;
 
-            MEZVictims = new Dictionary<string, HashSet<String>>();
+            Dictionary<string, HashSet<string>> result = new();
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadMEZVictims()))
+            try
             {
-                try
+                using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadMEZVictims()))
                 {
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
@@ -2769,17 +2498,7 @@ namespace NotificationWorkflowService.Parser
                                 MyConnection.Open();
                                 IDataReader MyDataReader = cmd.ExecuteReader();
 
-                                while (MyDataReader.Read())
-                                {
-                                    String Offender = MyDataReader["Offender"].ToString();
-                                    String Victim = MyDataReader["Victim"].ToString();
-                                    if (!MEZVictims.ContainsKey(Offender))
-                                    {
-                                        MEZVictims.Add(Offender, new HashSet<String>());
-                                    }
-                                    MEZVictims[Offender].Add(Victim);
-
-                                }
+                                result = WorkflowReferenceDataBuilders.BuildMezVictims(MyDataReader);
                                 success = true;
                                 break;
                             }
@@ -2823,14 +2542,19 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
-                catch (Exception e)
-                {
-                    success = false;
-                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE MEZ VICTIMS IN PARSER ");
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO MEZ VICTIMS IN PARSER " + e);
+            }
+            catch (Exception e)
+            {
+                success = false;
+                log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE MEZ VICTIMS IN PARSER ");
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO MEZ VICTIMS IN PARSER " + e);
 
-                }
+            }
+            if (success)
+            {
+                if (pendingReferenceData != null) StageReferenceData(mezVictims: result);
+                else MEZVictims = result;
             }
             return success;
         }
@@ -2843,19 +2567,12 @@ namespace NotificationWorkflowService.Parser
         {
             bool success = true;
 
-            if (AttachedVictimZones == null)
-            {
-                AttachedVictimZones = new Dictionary<String, Dictionary<String, HashSet<String>>>();
-            }
-            else
-            {
-                AttachedVictimZones.Clear();
-            }
+            Dictionary<string, Dictionary<string, HashSet<string>>> result = new();
 
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAttachedVictimZones()))
+            try
             {
-                try
+                using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAttachedVictimZones()))
                 {
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
@@ -2868,39 +2585,7 @@ namespace NotificationWorkflowService.Parser
                                 MyConnection.Open();
                                 IDataReader MyDataReader = cmd.ExecuteReader();
 
-                                while (MyDataReader.Read())
-                                {
-                                    String ZoneID = MyDataReader["ZoneID"].ToString();
-                                    String ZoneCategory = MyDataReader["ZoneCategory"].ToString();
-                                    String OffenderID = MyDataReader["OffenderID"].ToString();
-                                    String VictimID = MyDataReader["VictimID"].ToString();
-
-                                    string ZoneKey = ZoneID + "|" + ZoneCategory;
-
-                                    if (AttachedVictimZones.ContainsKey(OffenderID))
-                                    {
-
-                                        if (AttachedVictimZones[OffenderID].ContainsKey(ZoneKey))
-                                        {
-                                            if (!AttachedVictimZones[OffenderID][ZoneKey].Contains(VictimID))
-                                            {
-                                                AttachedVictimZones[OffenderID][ZoneKey].Add(VictimID);
-                                            }
-                                        }
-                                        else
-                                        {
-                                            AttachedVictimZones[OffenderID].Add(ZoneKey, new HashSet<string>());
-                                            AttachedVictimZones[OffenderID][ZoneKey].Add(VictimID);
-                                        }
-                                    }
-                                    else
-                                    {
-                                        AttachedVictimZones.Add(OffenderID, new Dictionary<string, HashSet<string>>());
-                                        AttachedVictimZones[OffenderID].Add(ZoneKey, new HashSet<string>());
-                                        AttachedVictimZones[OffenderID][ZoneKey].Add(VictimID);
-                                    }
-
-                                }
+                                result = WorkflowReferenceDataBuilders.BuildAttachedVictimZones(MyDataReader);
                                 success = true;
                                 break;
                             }
@@ -2944,14 +2629,19 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
-                catch (Exception e)
-                {
-                    success = false;
-                    log.LogError(e, "[" + platForm + "] " + "FAILED TO readAttachedVictimZones IN PARSER ");
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO readAttachedVictimZones IN PARSER " + e);
+            }
+            catch (Exception e)
+            {
+                success = false;
+                log.LogError(e, "[" + platForm + "] " + "FAILED TO readAttachedVictimZones IN PARSER ");
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO readAttachedVictimZones IN PARSER " + e);
 
-                }
+            }
+            if (success)
+            {
+                if (pendingReferenceData != null) StageReferenceData(attachedZones: result);
+                else AttachedVictimZones = result;
             }
             return success;
         }
@@ -2963,11 +2653,11 @@ namespace NotificationWorkflowService.Parser
         private bool readProfileItemsClear()
         {
             bool success = true;
-            ClearEvents = new Dictionary<int, List<ProfileItemClear>>();
+            Dictionary<int, List<ProfileItemClear>> result = new();
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadProfileItemsClear()))
+            try
             {
-                try
+                using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadProfileItemsClear()))
                 {
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
@@ -2980,29 +2670,7 @@ namespace NotificationWorkflowService.Parser
                                 MyConnection.Open();
                                 IDataReader MyDataReader = cmd.ExecuteReader();
 
-                                while (MyDataReader.Read())
-                                {
-                                    int ProfileID = Convert.ToInt32(MyDataReader["ProfileID"]);
-                                    String ClearingEvent = MyDataReader["ClearingEvent"].ToString();
-                                    String EventCode = MyDataReader["EventCode"].ToString();
-                                    ProfileItemClear p = new ProfileItemClear()
-                                    {
-                                        ClearingEvent = ClearingEvent,
-                                        EventCode = EventCode
-                                    };
-
-                                    if (ClearEvents.ContainsKey(ProfileID))
-                                    {
-                                        ClearEvents[ProfileID].Add(p);
-                                    }
-                                    else
-                                    {
-                                        List<ProfileItemClear> pl = new List<ProfileItemClear>();
-                                        pl.Add(p);
-
-                                        ClearEvents.Add(ProfileID, pl);
-                                    }
-                                }
+                                result = WorkflowReferenceDataBuilders.BuildClearEvents(MyDataReader);
                                 success = true;
                                 break;
                             }
@@ -3046,14 +2714,19 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
-                catch (Exception e)
-                {
-                    success = false;
-                    log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE CLEARING EVENTS IN PARSER ");
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE CLEARING EVENTS IN PARSER " + e);
+            }
+            catch (Exception e)
+            {
+                success = false;
+                log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE CLEARING EVENTS IN PARSER ");
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE CLEARING EVENTS IN PARSER " + e);
 
-                }
+            }
+            if (success)
+            {
+                if (pendingReferenceData != null) StageReferenceData(clearEvents: result);
+                else ClearEvents = result;
             }
             return success;
         }
