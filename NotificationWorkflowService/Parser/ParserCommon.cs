@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using NotificationWorkflowService.Entity;
+using NotificationWorkflowService.Repository;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -91,141 +92,27 @@ namespace NotificationWorkflowService.Parser
         /// </summary>
         internal Dictionary<String, Dictionary<String, HashSet<String>>> AttachedVictimZones = new Dictionary<String, Dictionary<String, HashSet<String>>>();
 
-        /// <summary>
-        /// Defines the AlarmsDatabase.
-        /// </summary>
-        private String AlarmsDatabase = "";
-
-        /// <summary>
-        /// Defines the READ_POGROUP_HOLIDAYS.
-        /// </summary>
-        private readonly String READ_POGROUP_HOLIDAYS = "ActiveAlarms_ReadGroupHolidays";
-
-        /// <summary>
-        /// Defines the READ_ACTIVE_ALARMS.
-        /// </summary>
-        private readonly String READ_ACTIVE_ALARMS = "ActiveAlarms_ReadAlarms";
-
-        /// <summary>
-        /// Defines the MCAPP_CREATEAUDIT.
-        /// </summary>
-        private readonly String MCAPP_CREATEAUDIT = "mcapp_CreateAudit";
-
-        /// <summary>
-        /// Defines the INSERT_MCAPP.
-        /// </summary>
-        private readonly String INSERT_MCAPP = "ActiveAlarms_InsertIntoMCAPP";
-
-        /// <summary>
-        /// Defines the INSERT_NOTIFICATIONQUEUE.
-        /// </summary>
-        private readonly String INSERT_NOTIFICATIONQUEUE = "ActiveAlarms_InsertIntoNotificationQueue";
-
-        /// <summary>
-        /// Defines the INSERT_PUSH_NOTIFICATIONQUEUE.
-        /// </summary>
-        private readonly String INSERT_PUSH_NOTIFICATIONQUEUE = "ActiveAlarms_InsertIntoPushNotificationQueue";
-
-        /// <summary>
-        /// Defines the UPDATE_PARSER_ACTIVITY.
-        /// </summary>
-        private readonly String UPDATE_PARSER_ACTIVITY = "ActiveAlarms_UpdateParserActivity";
-
-        /// <summary>
-        /// Defines the INSERT_INTO_HISTORY.
-        /// </summary>
-        private readonly String INSERT_INTO_HISTORY = "ActiveAlarms_InsertIntoHistory";
-
-        /// <summary>
-        /// Defines the READ_AUDIT_HISTORY_EMAILS.
-        /// </summary>
-        private readonly String READ_AUDIT_HISTORY_EMAILS = "ActiveAlarms_ReadAuditEmails";
-
-        /// <summary>
-        /// Defines the READ_CURRENT_ACTIVE_ALARMPOINT.
-        /// </summary>
-        private readonly String READ_CURRENT_ACTIVE_ALARMPOINT = "ActiveAlarms_ReadLastAlarmPoint";
-
-        /// <summary>
-        /// Defines the INSERT_INTO_CURRENT_NOTIFICATION_STATE.
-        /// </summary>
-        private readonly String INSERT_INTO_CURRENT_NOTIFICATION_STATE = "ActiveAlarms_InsertIntoCNotificationState";
-
-        /// <summary>
-        /// Defines the INSERT_INTO_ALARM_NOTIFICATION.
-        /// </summary>
-        private readonly String INSERT_INTO_ALARM_NOTIFICATION = "ActiveAlarms_InsertIntoAlarmNotification";
-
-        /// <summary>
-        /// Defines the READ_ROLES.
-        /// </summary>
-        private readonly String READ_ROLES = "ActiveAlarms_ReadRoles";
-
-        /// <summary>
-        /// Defines the READ_VICTIMS.
-        /// </summary>
-        private readonly String READ_VICTIMS = "ActiveAlarms_ReadVictims";
-
-        /// <summary>
-        /// Defines the READ_VICTIMS.
-        /// </summary>
-        private readonly String READ_ATTACHED_VICTIMS_ZONES = "ActiveAlarms_GetZonesAttachedVictim";
-
-        /// <summary>
-        /// Defines the READ_VICTIMS_EMAIL.
-        /// </summary>
-        private readonly String READ_VICTIMS_EMAIL = "ActiveAlarms_ReadVictimsEmail";
-
-        /// <summary>
-        /// Defines the GET_ROLES.
-        /// </summary>
-        private readonly String GET_ROLES = "spGetListPOGroupRoles";
-
-        /// <summary>
-        /// Defines the GET_CIENT_PROFILE.
-        /// </summary>
-        private readonly String GET_CIENT_PROFILE = "ActiveAlarms_GetClientProfile";
-
-        /// <summary>
-        /// Defines the READ_PROFILE_ITEMS.
-        /// </summary>
-        private readonly String READ_PROFILE_ITEMS = "ActiveAlarms_ReadProfileItems";
-
-        /// <summary>
-        /// Defines the READ_PROFILE_ITEMS_CLEAR.
-        /// </summary>
-        private readonly String READ_PROFILE_ITEMS_CLEAR = "ActiveAlarms_ReadProfileItemsClear";
-
-        /// <summary>
-        /// Defines the CLEAR_ACTIVE_ALARMS.
-        /// </summary>
-        private readonly String CLEAR_ACTIVE_ALARMS = "ActiveAlarms_ClearActiveAlarm";
-
-        /// <summary>
-        /// Defines the READ_CLIENT_EMAIL.
-        /// </summary>
-        private readonly String READ_CLIENT_EMAIL = "ActiveAlarms_ClientEmails";
-
-        /// <summary>
-        /// Defines the READ_CLIENT_TEXT.
-        /// </summary>
-        private readonly String READ_CLIENT_TEXT = "ActiveAlarms_ClientCell";
-
         private readonly IConfiguration configuration;
         private readonly String Platform;
         private readonly NotificationSender notificationService;
+        private readonly IRepository repository;
 
 
-        //private readonly String READ_PUSH_NOTIFICATION_SETTINGS = "ActiveAlarms_GetPushNotificationSettings";
         /// <summary>
         /// Initializes a new instance of the <see cref="Parser"/> class.
         /// </summary>
         /// <param name="connection">The connection<see cref="String"/>.</param>
         public WorkFlowCommon(ILogger<WorkFlowCommon> logger, IConfiguration configuration, NotificationSender notificationService)
+            : this(logger, configuration, notificationService, new NotificationWorkflowService.Repository.Repository(configuration))
+        {
+        }
+
+        public WorkFlowCommon(ILogger<WorkFlowCommon> logger, IConfiguration configuration, NotificationSender notificationService, IRepository repository)
         {
             this.log = logger;
             this.configuration = configuration;
             this.notificationService = notificationService;
+            this.repository = repository;
             Platform = configuration["Platform"] ?? "";
             setUpConnnectionStrings();
         }
@@ -295,7 +182,7 @@ namespace NotificationWorkflowService.Parser
         /// </summary>
         private void setUpConnnectionStrings()
         {
-            AlarmsDatabase = configuration.GetConnectionString("connstr")
+            _ = configuration.GetConnectionString("connstr")
                 ?? throw new InvalidOperationException("Connection string 'connstr' is not configured.");
         }
 
@@ -329,24 +216,12 @@ namespace NotificationWorkflowService.Parser
 
 
             //Create a connection to the SQL Server;
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadPoints(configuration["NumberOfProcessPoints"], readLastSuccessfulProcess(Convert.ToInt32(configuration[platForm + "ParserID"])))))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = READ_ACTIVE_ALARMS;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
-
-                        cmd.Parameters.Add("@NumberToRead", SqlDbType.Int);
-                        cmd.Parameters.Add("@StartingSystemID", SqlDbType.Int);
-
-                        cmd.Parameters["@NumberToRead"].Value = configuration["NumberOfProcessPoints"];
-                        cmd.Parameters["@StartingSystemID"].Value = readLastSuccessfulProcess(Convert.ToInt32(configuration[platForm + "ParserID"]));
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
@@ -356,7 +231,7 @@ namespace NotificationWorkflowService.Parser
                             try
                             {
                                 MyConnection.Open();
-                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+                                IDataReader MyDataReader = cmd.ExecuteReader();
 
                                 while (MyDataReader.Read())
                                 {
@@ -1165,22 +1040,12 @@ namespace NotificationWorkflowService.Parser
                 clientHolidayProfileMapping = new Dictionary<String, int>();
             }
             //Create a connection to the SQL Server;
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareFetchClientProfile(profileType)))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = GET_CIENT_PROFILE;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
-
-                        cmd.Parameters.Add("@HolidayProfile", SqlDbType.Int);
-
-                        cmd.Parameters["@HolidayProfile"].Value = profileType;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 5;
                         while (retries > 0)
@@ -1188,7 +1053,7 @@ namespace NotificationWorkflowService.Parser
                             try
                             {
                                 MyConnection.Open();
-                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+                                IDataReader MyDataReader = cmd.ExecuteReader();
 
                                 while (MyDataReader.Read())
                                 {
@@ -1276,19 +1141,12 @@ namespace NotificationWorkflowService.Parser
             activeProfiles = new Dictionary<int, Profile>();
 
             //Create a connection to the SQL Server;
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAllProfiles()))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = READ_PROFILE_ITEMS;
-                        cmd.CommandTimeout = 0;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 5;
                         while (retries > 0)
@@ -1296,7 +1154,7 @@ namespace NotificationWorkflowService.Parser
                             try
                             {
                                 MyConnection.Open();
-                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+                                IDataReader MyDataReader = cmd.ExecuteReader();
 
                                 while (MyDataReader.Read())
                                 {
@@ -1532,18 +1390,12 @@ namespace NotificationWorkflowService.Parser
             activeHolidays = new Dictionary<String, List<Holiday>>();
 
             //Create a connection to the SQL Server;
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAllHolidays()))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = READ_POGROUP_HOLIDAYS;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
@@ -1551,7 +1403,7 @@ namespace NotificationWorkflowService.Parser
                             try
                             {
                                 MyConnection.Open();
-                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+                                IDataReader MyDataReader = cmd.ExecuteReader();
 
                                 List<Holiday> holidays = new List<Holiday>();
                                 String currentPOGroup = "";
@@ -1654,18 +1506,12 @@ namespace NotificationWorkflowService.Parser
             roles = new Dictionary<String, String>();
 
             //Create a connection to the SQL Server;
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAllRoles()))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = GET_ROLES;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
@@ -1673,7 +1519,7 @@ namespace NotificationWorkflowService.Parser
                             try
                             {
                                 MyConnection.Open();
-                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+                                IDataReader MyDataReader = cmd.ExecuteReader();
 
                                 while (MyDataReader.Read())
                                 {
@@ -1743,48 +1589,12 @@ namespace NotificationWorkflowService.Parser
         {
             bool success = true;
             //Create a connection to the SQL Server;
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PreparePushAlertToMcApp(a)))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = INSERT_MCAPP;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
-
-                        cmd.Parameters.Add("@HistoryID", SqlDbType.Int);
-                        cmd.Parameters.Add("@AgencyID", SqlDbType.Int);
-                        cmd.Parameters.Add("@ClientID", SqlDbType.Int);
-                        cmd.Parameters.Add("@AlarmID", SqlDbType.Int);
-                        cmd.Parameters.Add("@DeviceID", SqlDbType.VarChar, 20);
-                        cmd.Parameters.Add("@StateID", SqlDbType.Int);
-                        cmd.Parameters.Add("@RecievedDateTime", SqlDbType.Int);
-                        cmd.Parameters.Add("@EventDateTime", SqlDbType.Int);
-                        cmd.Parameters.Add("@ProfileName", SqlDbType.VarChar, 100);
-                        cmd.Parameters.Add("@Instruction", SqlDbType.VarChar, 1500);
-                        cmd.Parameters.Add("@StepNo", SqlDbType.Int);
-                        cmd.Parameters.Add("@IsUpdatedStep", SqlDbType.Bit);
-                        cmd.Parameters.Add("@ProfileID", SqlDbType.Int);
-                        cmd.Parameters.Add("@OID", SqlDbType.VarChar, 20);
-
-                        cmd.Parameters["@HistoryID"].Value = a.HistoryID;
-                        cmd.Parameters["@AgencyID"].Value = a.AgencyID;
-                        cmd.Parameters["@ClientID"].Value = a.ClientSystemID;
-                        cmd.Parameters["@AlarmID"].Value = a.AlarmSystemID;
-                        cmd.Parameters["@DeviceID"].Value = a.DeviceID;
-                        cmd.Parameters["@StateID"].Value = a.StateID;
-                        cmd.Parameters["@RecievedDateTime"].Value = a.ReceivedDateTime;
-                        cmd.Parameters["@EventDateTime"].Value = a.EventDateTime;
-                        cmd.Parameters["@ProfileName"].Value = a.ProfileName;
-                        cmd.Parameters["@Instruction"].Value = a.Instruction;
-                        cmd.Parameters["@StepNo"].Value = a.StateNo;
-                        cmd.Parameters["@IsUpdatedStep"].Value = 1;
-                        cmd.Parameters["@ProfileID"].Value = a.ProfileID;
-                        cmd.Parameters["@OID"].Value = a.ClientID;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
@@ -1856,40 +1666,12 @@ namespace NotificationWorkflowService.Parser
         private bool AddToNotificationQueue(ActiveAlarm a, int insertType)
         {
             bool success = true;
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareAddToNotificationQueue(a, insertType)))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = INSERT_NOTIFICATIONQUEUE;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
-
-                        cmd.Parameters.Add("@AlarmID", SqlDbType.Int);
-                        cmd.Parameters.Add("@HistoryID", SqlDbType.Int);
-                        cmd.Parameters.Add("@ClientID", SqlDbType.VarChar, 20);
-                        cmd.Parameters.Add("@MsgReceivedDateTime", SqlDbType.Char, 20);
-                        cmd.Parameters.Add("@EventDateTime", SqlDbType.Char, 30);
-                        cmd.Parameters.Add("@MsgSubject", SqlDbType.VarChar, 128);
-                        cmd.Parameters.Add("@MsgToAddress", SqlDbType.NVarChar, 1000);
-                        cmd.Parameters.Add("@MsgSource", SqlDbType.VarChar, 50);
-                        cmd.Parameters.Add("@InsertType", SqlDbType.Int);
-                        cmd.Parameters.Add("@FeedBackReq", SqlDbType.Int);
-
-                        cmd.Parameters["@AlarmID"].Value = a.SystemID;
-                        cmd.Parameters["@HistoryID"].Value = a.HistoryID;
-                        cmd.Parameters["@ClientID"].Value = a.ClientID;
-                        cmd.Parameters["@MsgReceivedDateTime"].Value = a.MessageReceivedDateTime();
-                        cmd.Parameters["@EventDateTime"].Value = a.EventRecievedDateTime();
-                        cmd.Parameters["@MsgSubject"].Value = "Alarm Notification";
-                        cmd.Parameters["@MsgToAddress"].Value = a.EmailAddresses;
-                        cmd.Parameters["@MsgSource"].Value = "Sentrak Live Notify Trigger";
-                        cmd.Parameters["@InsertType"].Value = insertType;
-                        cmd.Parameters["@FeedBackReq"].Value = a.FeedbackREQ;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
@@ -1961,26 +1743,12 @@ namespace NotificationWorkflowService.Parser
         private void insertPushNotificationQueue(ActiveAlarm a, String VictimID, String OffenderID)
         {
             //Create a connection to the SQL Server;
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertPushNotificationQueue(a, VictimID, OffenderID)))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = INSERT_PUSH_NOTIFICATIONQUEUE;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
-
-                        cmd.Parameters.Add("@HistoryID", SqlDbType.Int);
-                        cmd.Parameters.Add("@ClientID", SqlDbType.VarChar, 32);
-                        cmd.Parameters.Add("@OffenderID", SqlDbType.VarChar, 32);
-
-                        cmd.Parameters["@HistoryID"].Value = a.HistoryID;
-                        cmd.Parameters["@ClientID"].Value = VictimID;
-                        cmd.Parameters["@OffenderID"].Value = OffenderID;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
@@ -2043,42 +1811,12 @@ namespace NotificationWorkflowService.Parser
         {
             bool success = true;
 
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertNotificationQueueVictim(a, insertType, victimsEmails, isVictimNotification)))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = INSERT_NOTIFICATIONQUEUE;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
-
-                        cmd.Parameters.Add("@AlarmID", SqlDbType.Int);
-                        cmd.Parameters.Add("@HistoryID", SqlDbType.Int);
-                        cmd.Parameters.Add("@ClientID", SqlDbType.VarChar, 20);
-                        cmd.Parameters.Add("@MsgReceivedDateTime", SqlDbType.Char, 20);
-                        cmd.Parameters.Add("@EventDateTime", SqlDbType.Char, 30);
-                        cmd.Parameters.Add("@MsgSubject", SqlDbType.VarChar, 128);
-                        cmd.Parameters.Add("@MsgToAddress", SqlDbType.NVarChar, 1000);
-                        cmd.Parameters.Add("@MsgSource", SqlDbType.VarChar, 50);
-                        cmd.Parameters.Add("@InsertType", SqlDbType.Int);
-                        cmd.Parameters.Add("@FeedBackReq", SqlDbType.Int);
-                        cmd.Parameters.Add("@IsVictimNotification", SqlDbType.Bit);
-
-                        cmd.Parameters["@AlarmID"].Value = a.SystemID;
-                        cmd.Parameters["@HistoryID"].Value = a.HistoryID;
-                        cmd.Parameters["@ClientID"].Value = a.ClientID;
-                        cmd.Parameters["@MsgReceivedDateTime"].Value = a.MessageReceivedDateTime();
-                        cmd.Parameters["@EventDateTime"].Value = a.EventRecievedDateTime();
-                        cmd.Parameters["@MsgSubject"].Value = "Alarm Notification";
-                        cmd.Parameters["@MsgToAddress"].Value = victimsEmails;
-                        cmd.Parameters["@MsgSource"].Value = "Notification Parser";
-                        cmd.Parameters["@InsertType"].Value = insertType;
-                        cmd.Parameters["@FeedBackReq"].Value = a.FeedbackREQ;
-                        cmd.Parameters["@IsVictimNotification"].Value = isVictimNotification;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
 
                         int retries = 3;
@@ -2152,24 +1890,12 @@ namespace NotificationWorkflowService.Parser
         {
             bool success = false;
             //Create a connection to the SQL Server;
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareUpdateParserActivty(systemID, configuration[platForm + "ParserID"])))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = UPDATE_PARSER_ACTIVITY;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
-
-                        cmd.Parameters.Add("@ParserID", SqlDbType.Int);
-                        cmd.Parameters.Add("@CurrSystemID", SqlDbType.Int);
-
-                        cmd.Parameters["@ParserID"].Value = Convert.ToInt32(configuration[platForm + "ParserID"]);
-                        cmd.Parameters["@CurrSystemID"].Value = systemID;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
 
 
@@ -2246,30 +1972,12 @@ namespace NotificationWorkflowService.Parser
         private void CreateAlarmAudit(int type, String action, int historyID, int StepNo)
         {
             //Create a connection to the SQL Server;
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareCreateAlarmAudit(type, action, historyID, StepNo)))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = MCAPP_CREATEAUDIT;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
-
-                        cmd.Parameters.Add("@Login", SqlDbType.VarChar, 30);
-                        cmd.Parameters.Add("@Type", SqlDbType.Int);
-                        cmd.Parameters.Add("@Action", SqlDbType.VarChar, 4096);
-                        cmd.Parameters.Add("@historyID", SqlDbType.Int);
-                        cmd.Parameters.Add("@stepno", SqlDbType.Int);
-
-                        cmd.Parameters["@Login"].Value = "system";
-                        cmd.Parameters["@Type"].Value = type;
-                        cmd.Parameters["@Action"].Value = action;
-                        cmd.Parameters["@historyID"].Value = historyID;
-                        cmd.Parameters["@stepno"].Value = StepNo;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
@@ -2337,26 +2045,12 @@ namespace NotificationWorkflowService.Parser
         private void AddActiveAlarmActionToActivity(int historyID, String email, int type)
         {
             //Create a connection to the SQL Server;
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareAddActiveAlarmActionToActivity(historyID, email, type)))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = INSERT_INTO_HISTORY;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
-
-                        cmd.Parameters.Add("@HistoryID", SqlDbType.Int);
-                        cmd.Parameters.Add("@emails", SqlDbType.VarChar, 1024);
-                        cmd.Parameters.Add("@type", SqlDbType.Int);
-
-                        cmd.Parameters["@HistoryID"].Value = historyID;
-                        cmd.Parameters["@emails"].Value = email;
-                        cmd.Parameters["@type"].Value = type;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
@@ -2427,28 +2121,12 @@ namespace NotificationWorkflowService.Parser
         {
             bool success = true;
             //Create a connection to the SQL Server;
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertIntoAlarmNotification(AlarmSystemID, CurentStateNo, ExpiryTime, Action)))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = INSERT_INTO_ALARM_NOTIFICATION;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
-
-                        cmd.Parameters.Add("@AlarmSystemID", SqlDbType.Int);
-                        cmd.Parameters.Add("@CurrentStateNo", SqlDbType.Int);
-                        cmd.Parameters.Add("@ExpiryTime", SqlDbType.DateTime);
-                        cmd.Parameters.Add("@Action", SqlDbType.VarChar, 50);
-
-                        cmd.Parameters["@AlarmSystemID"].Value = AlarmSystemID;
-                        cmd.Parameters["@CurrentStateNo"].Value = CurentStateNo;
-                        cmd.Parameters["@ExpiryTime"].Value = ExpiryTime;
-                        cmd.Parameters["@Action"].Value = Action;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
@@ -2525,32 +2203,12 @@ namespace NotificationWorkflowService.Parser
         {
             bool success = true;
             //Create a connection to the SQL Server;
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertIntoCurrentAlarmNotification(AlarmSystemID, CurentStateNo, ExpiryTime, DisplayStateNo, currentLoopNumber, processNext)))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = INSERT_INTO_CURRENT_NOTIFICATION_STATE;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
-
-                        cmd.Parameters.Add("@AlarmSystemID", SqlDbType.Int);
-                        cmd.Parameters.Add("@CurrentStateNo", SqlDbType.Int);
-                        cmd.Parameters.Add("@ExpiryTime", SqlDbType.DateTime);
-                        cmd.Parameters.Add("@ParserStateNo", SqlDbType.Int);
-                        cmd.Parameters.Add("@ProcessNextStep", SqlDbType.Bit);
-                        cmd.Parameters.Add("@CurrentLoopNumber", SqlDbType.Int);
-
-                        cmd.Parameters["@AlarmSystemID"].Value = AlarmSystemID;
-                        cmd.Parameters["@CurrentStateNo"].Value = DisplayStateNo;
-                        cmd.Parameters["@ExpiryTime"].Value = ExpiryTime;
-                        cmd.Parameters["@ParserStateNo"].Value = CurentStateNo;
-                        cmd.Parameters["@ProcessNextStep"].Value = processNext;
-                        cmd.Parameters["@CurrentLoopNumber"].Value = currentLoopNumber;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
@@ -2646,23 +2304,13 @@ namespace NotificationWorkflowService.Parser
         /// <returns>.</returns>
         private string getInsertEmails(ActiveAlarm a)
         {
-            string ConnectionString = AlarmsDatabase;
-
             StringBuilder sb = new StringBuilder();
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareGetInsertEmails(a)))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand(sb.ToString(), MyConnection))
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = READ_AUDIT_HISTORY_EMAILS;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
-
-                        cmd.Parameters.Add("@ClientSystemID", SqlDbType.Int);
-
-                        cmd.Parameters["@ClientSystemID"].Value = a.ClientSystemID;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
@@ -2670,7 +2318,7 @@ namespace NotificationWorkflowService.Parser
                             try
                             {
                                 MyConnection.Open();
-                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+                                IDataReader MyDataReader = cmd.ExecuteReader();
 
                                 while (MyDataReader.Read())
                                 {
@@ -2736,26 +2384,19 @@ namespace NotificationWorkflowService.Parser
         private int readLastSuccessfulProcess(int parserID)
         {
             int SystemID = 0;
-            string ConnectionString = AlarmsDatabase;
-
-            StringBuilder sb = new StringBuilder();
-            sb.Append("SELECT CONVERT(int, [StatusID]) AS StatusID ");
-            sb.Append("FROM ParserActivity ");
-            sb.AppendFormat("WHERE ParserId = {0} ", parserID);
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadLastSuccessfulProcess(parserID)))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand(sb.ToString(), MyConnection))
                     {
+                        IWorkflowOperation cmd = MyConnection.Prepare();
                         int retries = 5;
                         while (retries > 0)
                         {
                             try
                             {
                                 MyConnection.Open();
-                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+                                IDataReader MyDataReader = cmd.ExecuteReader();
 
                                 while (MyDataReader.Read())
                                 {
@@ -2905,24 +2546,12 @@ namespace NotificationWorkflowService.Parser
         {
             bool success = true;
             //Create a connection to the SQL Server;
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadRoles(a, RoleID, RoleAction)))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = READ_ROLES;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
-
-                        cmd.Parameters.Add("@RoleID", SqlDbType.Int);
-                        cmd.Parameters.Add("@POGroup", SqlDbType.VarChar, 32);
-
-                        cmd.Parameters["@RoleID"].Value = RoleID;
-                        cmd.Parameters["@POGroup"].Value = a.POGroupNum;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
@@ -2930,7 +2559,7 @@ namespace NotificationWorkflowService.Parser
                             try
                             {
                                 MyConnection.Open();
-                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+                                IDataReader MyDataReader = cmd.ExecuteReader();
 
                                 while (MyDataReader.Read())
                                 {
@@ -3016,18 +2645,12 @@ namespace NotificationWorkflowService.Parser
             //victims.Clear();
             //victimTypeDict.Clear();
             //Create a connection to the SQL Server;
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadVictims()))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = READ_VICTIMS_EMAIL;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
@@ -3035,7 +2658,7 @@ namespace NotificationWorkflowService.Parser
                             try
                             {
                                 MyConnection.Open();
-                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+                                IDataReader MyDataReader = cmd.ExecuteReader();
 
                                 while (MyDataReader.Read())
                                 {
@@ -3120,85 +2743,7 @@ namespace NotificationWorkflowService.Parser
             return success;
         }
 
-        /*
-        private void readPNSettings()
-        {
-            pnAlarms = new Dictionary<string, HashSet<String>>();
-            //Create a connection to the SQL Server;
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
-            {
-                try
-                {
-                    using (SqlCommand cmd = new SqlCommand())
-                    {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = READ_PUSH_NOTIFICATION_SETTINGS;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
-
-                        int retries = 3;
-                        while (retries > 0)
-                        {
-                            try
-                            {
-                                MyConnection.Open();
-                                SqlDataReader MyDataReader = cmd.ExecuteReader();
-
-                                while (MyDataReader.Read())
-                                {
-                                    String OID = MyDataReader["UserName"].ToString();
-                                    String Event = MyDataReader["EventCode"].ToString();
-                                    if (!pnAlarms.ContainsKey(OID))
-                                    {
-                                        pnAlarms.Add(OID, new HashSet<String>());
-                                    }
-                                    pnAlarms[OID].Add(Event);
-
-                                }
-
-                                break;
-                            }
-                            catch (SqlException ex)
-                            {
-                                log.Error("[" + platForm + "] " + "SQLException on readPNSettings in Parser ",ex);
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readPNSettings in Parser " + ex);
-                                if (ex.ErrorCode.Equals(1205) ||
-                                   ex.Message.ToLower().Contains("deadlock"))
-                                {
-                                    if (retries > 0)
-                                    {
-                                        retries--;
-                                    }
-                                    else
-                                    {
-                                        throw ex;
-                                    }
-                                }
-                            }
-                            catch (Exception exc)
-                            {
-                                log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE PUSH NOTIFICATION SETTINGS IN PARSER ",exc);
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE PUSH NOTIFICATION SETTINGS IN PARSER " + exc);
-                                throw exc;
-                            }
-                          
-                        }
-                    }
-                }
-                catch (Exception e)
-                {
-                    log.Error("[" + platForm + "] " + "FAILED TO RETRIEVE PUSH NOTIFICATION SETTINGS IN PARSER ",e);
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE PUSH NOTIFICATION SETTINGS IN PARSER " + e);
-                    
-                }
-            }
-        }
-        */
+        // Historical readPNSettings remains disabled (April 2021); no operation is prepared.
         /// <summary>
         /// The readMEZVictims.
         /// </summary>
@@ -3209,18 +2754,12 @@ namespace NotificationWorkflowService.Parser
 
             MEZVictims = new Dictionary<string, HashSet<String>>();
             //Create a connection to the SQL Server;
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadMEZVictims()))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = READ_VICTIMS;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
@@ -3228,7 +2767,7 @@ namespace NotificationWorkflowService.Parser
                             try
                             {
                                 MyConnection.Open();
-                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+                                IDataReader MyDataReader = cmd.ExecuteReader();
 
                                 while (MyDataReader.Read())
                                 {
@@ -3314,18 +2853,12 @@ namespace NotificationWorkflowService.Parser
             }
 
             //Create a connection to the SQL Server;
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAttachedVictimZones()))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = READ_ATTACHED_VICTIMS_ZONES;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
@@ -3333,7 +2866,7 @@ namespace NotificationWorkflowService.Parser
                             try
                             {
                                 MyConnection.Open();
-                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+                                IDataReader MyDataReader = cmd.ExecuteReader();
 
                                 while (MyDataReader.Read())
                                 {
@@ -3432,18 +2965,12 @@ namespace NotificationWorkflowService.Parser
             bool success = true;
             ClearEvents = new Dictionary<int, List<ProfileItemClear>>();
             //Create a connection to the SQL Server;
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadProfileItemsClear()))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = READ_PROFILE_ITEMS_CLEAR;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
@@ -3451,7 +2978,7 @@ namespace NotificationWorkflowService.Parser
                             try
                             {
                                 MyConnection.Open();
-                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+                                IDataReader MyDataReader = cmd.ExecuteReader();
 
                                 while (MyDataReader.Read())
                                 {
@@ -3539,18 +3066,12 @@ namespace NotificationWorkflowService.Parser
         {
             int currentAlarmPoint = 0;
 
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadCurrentActiveAlarmPoint()))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = READ_CURRENT_ACTIVE_ALARMPOINT;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
@@ -3558,7 +3079,7 @@ namespace NotificationWorkflowService.Parser
                             try
                             {
                                 MyConnection.Open();
-                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+                                IDataReader MyDataReader = cmd.ExecuteReader();
 
                                 while (MyDataReader.Read())
                                 {
@@ -3615,24 +3136,12 @@ namespace NotificationWorkflowService.Parser
         /// <param name="oid">The oid<see cref="String"/>.</param>
         private void ClearMcAppAlarm(String alarms, String oid)
         {
-            string ConnectionString = AlarmsDatabase;
-
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareClearMcAppAlarm(alarms, oid)))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = CLEAR_ACTIVE_ALARMS;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
-
-                        cmd.Parameters.Add("@Alarms", SqlDbType.VarChar, 4096);
-                        cmd.Parameters.Add("@OID", SqlDbType.VarChar, 32);
-
-                        cmd.Parameters["@Alarms"].Value = alarms;
-                        cmd.Parameters["@OID"].Value = oid;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
@@ -3703,23 +3212,13 @@ namespace NotificationWorkflowService.Parser
         /// <returns>.</returns>
         private string getClientEmail(ActiveAlarm a)
         {
-            string ConnectionString = AlarmsDatabase;
-
             StringBuilder sb = new StringBuilder();
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareGetClientEmail(a)))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand(sb.ToString(), MyConnection))
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = READ_CLIENT_EMAIL;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
-
-                        cmd.Parameters.Add("@ClientSystemID", SqlDbType.Int);
-
-                        cmd.Parameters["@ClientSystemID"].Value = a.ClientSystemID;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
@@ -3727,7 +3226,7 @@ namespace NotificationWorkflowService.Parser
                             try
                             {
                                 MyConnection.Open();
-                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+                                IDataReader MyDataReader = cmd.ExecuteReader();
 
                                 while (MyDataReader.Read())
                                 {
@@ -3791,23 +3290,13 @@ namespace NotificationWorkflowService.Parser
         /// <returns>.</returns>
         private string getClientText(ActiveAlarm a)
         {
-            string ConnectionString = AlarmsDatabase;
-
             StringBuilder sb = new StringBuilder();
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareGetClientText(a)))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand(sb.ToString(), MyConnection))
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = READ_CLIENT_TEXT;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
-
-                        cmd.Parameters.Add("@ClientSystemID", SqlDbType.Int);
-
-                        cmd.Parameters["@ClientSystemID"].Value = a.ClientSystemID;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
@@ -3815,7 +3304,7 @@ namespace NotificationWorkflowService.Parser
                             try
                             {
                                 MyConnection.Open();
-                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+                                IDataReader MyDataReader = cmd.ExecuteReader();
 
                                 while (MyDataReader.Read())
                                 {

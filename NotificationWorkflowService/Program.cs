@@ -1,6 +1,7 @@
 using NotificationWorkflowService;
 using NotificationWorkflowService.Parser;
 using NotificationWorkflowService.Service;
+using NotificationWorkflowService.Repository;
 using NotificationSender = ActiveAlarmsParser.Service.NotificationService.NotificationService;
 
 using Microsoft.Extensions.Configuration;
@@ -70,6 +71,7 @@ namespace ActiveAlarmsParser
                     throw new InvalidOperationException("WorkerMode must be 'Normal' or 'Step'.");
                 }
                 services.AddTransient<NotificationSender>();
+                services.AddTransient<IRepository, Repository>();
                 services.AddSingleton<NotificationWorkflowService.Repository.INotificationRepository, NotificationWorkflowService.Repository.NotificationRepository>();
                 services.AddTransient<WorkFlowCommon>();
                 services.AddTransient<Func<WorkFlowCommon>>(provider => () => provider.GetRequiredService<WorkFlowCommon>());

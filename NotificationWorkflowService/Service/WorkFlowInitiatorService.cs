@@ -1,11 +1,11 @@
 ﻿using ActiveAlarmsParser;
 using NotificationWorkflowService.Parser;
+using NotificationWorkflowService.Repository;
 using System;
 using System.Collections.Generic;
 using System.Data;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
-using System.Text;
 using Microsoft.Data.SqlClient;
 
 namespace NotificationWorkflowService.Service
@@ -22,21 +22,23 @@ namespace NotificationWorkflowService.Service
         /// </summary>
         private readonly ILogger<WorkFlowInitiatorService> log;
 
-        /// <summary>
-        /// Defines the READ_CURRENT_ACTIVE_ALARMPOINT.
-        /// </summary>
-        private static readonly String READ_CURRENT_ACTIVE_ALARMPOINT = "ActiveAlarms_ReadLastAlarmPoint";
-
         private readonly IConfiguration configuration;
         private readonly ILoggerFactory loggerFactory;
         private readonly Func<WorkFlowCommon> parserFactory;
+        private readonly IRepository repository;
 
         public WorkFlowInitiatorService(ILogger<WorkFlowInitiatorService> logger, IConfiguration configuration, ILoggerFactory loggerFactory, Func<WorkFlowCommon> parserFactory)
+            : this(logger, configuration, loggerFactory, parserFactory, new NotificationWorkflowService.Repository.Repository(configuration))
+        {
+        }
+
+        public WorkFlowInitiatorService(ILogger<WorkFlowInitiatorService> logger, IConfiguration configuration, ILoggerFactory loggerFactory, Func<WorkFlowCommon> parserFactory, IRepository repository)
         {
             this.log = logger;
             this.configuration = configuration;
             this.loggerFactory = loggerFactory;
             this.parserFactory = parserFactory;
+            this.repository = repository;
         }
 
 
@@ -100,7 +102,7 @@ namespace NotificationWorkflowService.Service
         {
             cancellationToken.ThrowIfCancellationRequested();
             DateTime lastParserResetTime = DateTime.UtcNow;
-            WorkFlowSteps p = new WorkFlowSteps(loggerFactory.CreateLogger<WorkFlowSteps>(), configuration);
+            WorkFlowSteps p = new WorkFlowSteps(loggerFactory.CreateLogger<WorkFlowSteps>(), configuration, repository);
 
 
             while (!p.setUpParser(platform))
@@ -144,19 +146,15 @@ namespace NotificationWorkflowService.Service
         {
             int currentAlarmPoint = 0;
 
-            string ConnectionString = configuration.GetConnectionString("connstr")
+            _ = configuration.GetConnectionString("connstr")
                 ?? throw new InvalidOperationException("Connection string 'connstr' is not configured.");
 
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadCurrentActiveAlarmPoint(reloadConnectionString: true)))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand())
                     {
-                        // Specify which stored procedure the SqlCommand will execute
-                        cmd.CommandText = READ_CURRENT_ACTIVE_ALARMPOINT;
-                        cmd.CommandType = CommandType.StoredProcedure;
-                        cmd.Connection = MyConnection;
+                        IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
@@ -164,7 +162,7 @@ namespace NotificationWorkflowService.Service
                             try
                             {
                                 MyConnection.Open();
-                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+                                IDataReader MyDataReader = cmd.ExecuteReader();
 
                                 while (MyDataReader.Read())
                                 {
@@ -219,26 +217,22 @@ namespace NotificationWorkflowService.Service
         private int readLastSuccessfulProcess(int parserID)
         {
             int SystemID = 0;
-            string ConnectionString =  configuration.GetConnectionString("connstr")
+            _ = configuration.GetConnectionString("connstr")
                 ?? throw new InvalidOperationException("Connection string 'connstr' is not configured.");
-            StringBuilder sb = new StringBuilder();
-            sb.Append("SELECT CONVERT(int, [StatusID]) AS StatusID ");
-            sb.Append("FROM ParserActivity ");
-            sb.AppendFormat("WHERE ParserId = {0} ", parserID);
 
-            using (SqlConnection MyConnection = new SqlConnection(ConnectionString))
+            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadLastSuccessfulProcess(parserID, reloadConnectionString: true)))
             {
                 try
                 {
-                    using (SqlCommand cmd = new SqlCommand(sb.ToString(), MyConnection))
                     {
+                        IWorkflowOperation cmd = MyConnection.Prepare();
                         int retries = 3;
                         while (retries > 0)
                         {
                             try
                             {
                                 MyConnection.Open();
-                                SqlDataReader MyDataReader = cmd.ExecuteReader();
+                                IDataReader MyDataReader = cmd.ExecuteReader();
 
                                 while (MyDataReader.Read())
                                 {

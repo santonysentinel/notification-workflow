@@ -1,13 +1,17 @@
 using System.Text.RegularExpressions;
+using Microsoft.Data.SqlClient;
+using NotificationWorkflowService.Entity;
+using WorkflowRepository = NotificationWorkflowService.Repository.Repository;
 using Xunit;
 
 namespace NotificationWorkflowService.Tests;
 
 /// <summary>
-/// SOURCE CONTRACT tests, not runtime database or delivery tests. The real parseAlarms
-/// methods hardwire SQL. Only File.ReadAllText is used; no production object is created
-/// or called. Ordered calls below are direct source occurrences, not transitive writes,
-/// successful commits, or proof that a conditional branch executes.
+/// SOURCE CONTRACT tests, not runtime database or delivery tests. SQL is now behind
+/// an injectable repository; parser source checks remain lexical. The parameter mapping
+/// test also calls pure internal repository builders to inspect unconnected SqlCommands;
+/// no SQL is executed. Ordered calls below are direct source occurrences, not transitive
+/// writes, successful commits, or proof that a conditional branch executes.
 /// </summary>
 public class WorkflowActionSourceCharacterizationTests
 {
@@ -228,31 +232,71 @@ public class WorkflowActionSourceCharacterizationTests
     {
         string source = ReadSource(file);
         string state = Method(source, "insertIntoCurrentAlarmNotification");
-        Assert.Contains("cmd.CommandText = INSERT_INTO_CURRENT_NOTIFICATION_STATE;", state);
-        AssertParameter(state, "@AlarmSystemID", "AlarmSystemID");
-        AssertParameter(state, "@CurrentStateNo", "DisplayStateNo");
-        AssertParameter(state, "@ParserStateNo", "CurentStateNo");
-        AssertParameter(state, "@ExpiryTime", "ExpiryTime");
-        AssertParameter(state, "@ProcessNextStep", "processNext");
-        AssertParameter(state, "@CurrentLoopNumber", "currentLoopNumber");
+        Assert.Contains("repository.PrepareInsertIntoCurrentAlarmNotification(AlarmSystemID, CurentStateNo, ExpiryTime, DisplayStateNo, currentLoopNumber, processNext)", state);
+        DateTime expiry = new(2026, 10, 1, 12, 34, 56, DateTimeKind.Utc);
+        const int alarmSystemID = 11, nextStateNo = 23, displayStateNo = 24, currentLoopNumber = 25, processNext = 1;
+        using var stateCommand = WorkflowRepository.BuildInsertIntoCurrentAlarmNotification(
+            alarmSystemID, nextStateNo, expiry, displayStateNo, currentLoopNumber, processNext);
+        Assert.Equal("ActiveAlarms_InsertIntoCNotificationState", stateCommand.CommandText);
+        AssertParameter(stateCommand, "@AlarmSystemID", alarmSystemID);
+        AssertParameter(stateCommand, "@CurrentStateNo", displayStateNo);
+        AssertParameter(stateCommand, "@ParserStateNo", nextStateNo);
+        AssertParameter(stateCommand, "@ExpiryTime", expiry);
+        AssertParameter(stateCommand, "@ProcessNextStep", processNext);
+        AssertParameter(stateCommand, "@CurrentLoopNumber", currentLoopNumber);
         string archive = Method(source, "insertIntoAlarmNotification");
-        Assert.Contains("cmd.CommandText = INSERT_INTO_ALARM_NOTIFICATION;", archive);
-        AssertParameter(archive, "@CurrentStateNo", "CurentStateNo");
-        AssertParameter(archive, "@Action", "Action");
+        Assert.Contains("repository.PrepareInsertIntoAlarmNotification(AlarmSystemID, CurentStateNo, ExpiryTime, Action)", archive);
+        using var archiveCommand = WorkflowRepository.BuildInsertIntoAlarmNotification(alarmSystemID, nextStateNo, expiry, "Delay");
+        Assert.Equal("ActiveAlarms_InsertIntoAlarmNotification", archiveCommand.CommandText);
+        AssertParameter(archiveCommand, "@AlarmSystemID", alarmSystemID);
+        AssertParameter(archiveCommand, "@CurrentStateNo", nextStateNo);
+        AssertParameter(archiveCommand, "@ExpiryTime", expiry);
+        AssertParameter(archiveCommand, "@Action", "Delay");
+        var a = new ActiveAlarm
+        {
+            SystemID = 31, HistoryID = 32, StateNo = 33, EmailAddresses = "officer@example.test",
+            ReceivedDateTime = 1_700_000_000L, EventDateTime = 1_700_000_001L
+        };
+        const int insertType = 4;
+        const string victimsEmails = "victim@example.test";
         foreach (string method in new[] { "AddToNotificationQueue", "insertNotificationQueueVictim" })
         {
             string queue = Method(source, method);
-            Assert.Contains("cmd.CommandText = INSERT_NOTIFICATIONQUEUE;", queue);
-            AssertParameter(queue, "@AlarmID", "a.SystemID");
-            AssertParameter(queue, "@HistoryID", "a.HistoryID");
-            AssertParameter(queue, "@InsertType", "insertType");
-            AssertParameter(queue, "@MsgToAddress", method == "AddToNotificationQueue" ? "a.EmailAddresses" : "victimsEmails");
+            bool officer = method == "AddToNotificationQueue";
+            Assert.Contains(officer
+                ? "repository.PrepareAddToNotificationQueue(a, insertType)"
+                : "repository.PrepareInsertNotificationQueueVictim(a, insertType, victimsEmails, isVictimNotification)", queue);
+            using var queueCommand = officer
+                ? WorkflowRepository.BuildAddToNotificationQueue(a, insertType)
+                : WorkflowRepository.BuildInsertNotificationQueueVictim(a, insertType, victimsEmails, true);
+            Assert.Equal("ActiveAlarms_InsertIntoNotificationQueue", queueCommand.CommandText);
+            AssertParameter(queueCommand, "@AlarmID", a.SystemID);
+            AssertParameter(queueCommand, "@HistoryID", a.HistoryID);
+            AssertParameter(queueCommand, "@InsertType", insertType);
+            AssertParameter(queueCommand, "@MsgToAddress", officer ? a.EmailAddresses : victimsEmails);
+            if (!officer)
+                AssertParameter(queueCommand, "@IsVictimNotification", true);
         }
-        AssertParameter(Method(source, "insertNotificationQueueVictim"), "@IsVictimNotification", "isVictimNotification");
-        AssertParameter(Method(source, "CreateAlarmAudit"), "@stepno", "StepNo");
-        AssertParameter(Method(source, "PushAlertToMcApp"), "@StepNo", "a.StateNo");
+        Assert.Contains("repository.PrepareCreateAlarmAudit(type, action, historyID, StepNo)", Method(source, "CreateAlarmAudit"));
+        using var auditCommand = WorkflowRepository.BuildCreateAlarmAudit(3, "audit action", a.HistoryID, displayStateNo);
+        Assert.Equal("mcapp_CreateAudit", auditCommand.CommandText);
+        AssertParameter(auditCommand, "@Type", 3);
+        AssertParameter(auditCommand, "@Action", "audit action");
+        AssertParameter(auditCommand, "@historyID", a.HistoryID);
+        AssertParameter(auditCommand, "@stepno", displayStateNo);
+        Assert.Contains("repository.PreparePushAlertToMcApp(a)", Method(source, "PushAlertToMcApp"));
+        using var mcCommand = WorkflowRepository.BuildPushAlertToMcApp(a);
+        Assert.Equal("ActiveAlarms_InsertIntoMCAPP", mcCommand.CommandText);
+        AssertParameter(mcCommand, "@StepNo", a.StateNo);
         if (!IsSteps(file))
-            AssertParameter(Method(source, "updateParserActivty"), "@CurrSystemID", "systemID");
+        {
+            Assert.Contains("repository.PrepareUpdateParserActivty(systemID, configuration[platForm + \"ParserID\"])",
+                Method(source, "updateParserActivty"));
+            using var checkpointCommand = WorkflowRepository.BuildUpdateParserActivty(a.SystemID, "0022");
+            Assert.Equal("ActiveAlarms_UpdateParserActivity", checkpointCommand.CommandText);
+            AssertParameter(checkpointCommand, "@CurrSystemID", a.SystemID);
+            AssertParameter(checkpointCommand, "@ParserID", 22);
+        }
     }
 
     private static string[] ExpectedActionCalls(string file, int priority, int role)
@@ -383,6 +427,9 @@ public class WorkflowActionSourceCharacterizationTests
         }
     }
 
-    private static void AssertParameter(string body, string parameter, string value) =>
-        Assert.Contains($"cmd.Parameters[\"{parameter}\"].Value = {value};", body);
+    private static void AssertParameter(SqlCommand command, string parameter, object value)
+    {
+        Assert.Null(command.Connection);
+        Assert.Equal(value, command.Parameters[parameter].Value);
+    }
 }
