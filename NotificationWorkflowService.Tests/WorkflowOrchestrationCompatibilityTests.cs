@@ -32,12 +32,12 @@ public class WorkflowOrchestrationCompatibilityTests
 
         (string Name, Type Return, Type[] Parameters)[] expected =
         [
-            ("setUpParser", typeof(bool), [typeof(string)]),
-            ("readPoints", typeof(bool), []),
+            ("setUpParserAsync", typeof(Task<bool>), [typeof(string), typeof(CancellationToken)]),
+            ("readPointsAsync", typeof(Task<bool>), [typeof(CancellationToken)]),
             ("FindStepOneProfileItem", typeof(ProfileItem), [typeof(List<ProfileItem>), typeof(DateTime)]),
-            ("parseAlarms", typeof(void), []),
-            ("PushAlertsToVictims", typeof(void), [typeof(ActiveAlarm)]),
-            ("PushNotificationToVictim", typeof(void), [typeof(ActiveAlarm)])
+            ("parseAlarmsAsync", typeof(Task), [typeof(CancellationToken)]),
+            ("PushAlertsToVictimsAsync", typeof(Task), [typeof(ActiveAlarm), typeof(CancellationToken)]),
+            ("PushNotificationToVictimAsync", typeof(Task), [typeof(ActiveAlarm), typeof(CancellationToken)])
         ];
         foreach (Type type in new[] { typeof(WorkFlowCommon), typeof(WorkFlowInitiator) })
         {
@@ -50,6 +50,13 @@ public class WorkflowOrchestrationCompatibilityTests
                 Assert.Equal(contract.Return, method.ReturnType);
                 Assert.Equal(contract.Parameters, method.GetParameters().Select(p => p.ParameterType));
                 Assert.Equal(typeof(WorkFlowCommon), method.DeclaringType);
+                if (contract.Name.EndsWith("Async", StringComparison.Ordinal))
+                {
+                    var token = method.GetParameters()[^1];
+                    Assert.Equal("cancellationToken", token.Name);
+                    Assert.True(token.IsOptional);
+                    Assert.Null(token.DefaultValue);
+                }
             }
         }
         var bridge = Assert.Single(typeof(WorkFlowCommon).GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic));
@@ -65,7 +72,7 @@ public class WorkflowOrchestrationCompatibilityTests
     [InlineData(false, true)]
     [InlineData(true, false)]
     [InlineData(true, true)]
-    public void BothConstructorOverloadsPreserveOriginalLoggerCategoryAndInitializeBaseState(bool compatibility, bool injected)
+    public async Task BothConstructorOverloadsPreserveOriginalLoggerCategoryAndInitializeBaseStateAsync(bool compatibility, bool injected)
     {
         var provider = new RecordingLoggerProvider();
         using var factory = LoggerFactory.Create(b => b.SetMinimumLevel(LogLevel.Trace).AddProvider(provider));
@@ -111,7 +118,7 @@ public class WorkflowOrchestrationCompatibilityTests
         Assert.Empty(spy.Calls);
         var failure = new InvalidOperationException("offline preparation failure");
         spy.PreparationFailure = _ => failure;
-        Assert.Equal(false, Method(parser.GetType(), "FetchClientProfile").Invoke(parser, [0]));
+        Assert.Equal(false, await WorkflowRepositoryAdapterTests.CallAsync(parser, "FetchClientProfile", 0));
         var entry = Assert.Single(provider.Entries);
         Assert.Equal(compatibility ? typeof(WorkFlowInitiator).FullName : typeof(WorkFlowCommon).FullName, entry.Category);
         // The existing preparation-failure outer catch logs at Information;
@@ -150,16 +157,18 @@ public class WorkflowOrchestrationCompatibilityTests
     }
 
     [Fact]
-    public void StepParserRemainsIndependentAndUsesExpiredAlarmEntryPoint()
+    public async Task StepParserRemainsIndependentAndUsesExpiredAlarmEntryPointAsync()
     {
         var spy = WorkflowRepositoryAdapterTests.RepositorySpy.Create();
         var parser = new WorkFlowSteps(NullLogger<WorkFlowSteps>.Instance, Configuration(), (IRepository)spy);
         Assert.False(typeof(WorkFlowCommon).IsAssignableFrom(parser.GetType()));
-        Assert.Equal(typeof(WorkFlowSteps), parser.GetType().GetMethod("parseAlarms")!.DeclaringType);
-        Assert.Equal(typeof(WorkFlowSteps), parser.GetType().GetMethod("getExpiredAlarms")!.DeclaringType);
+        Assert.Equal(typeof(WorkFlowSteps), parser.GetType().GetMethod("parseAlarmsAsync")!.DeclaringType);
+        Assert.Equal(typeof(WorkFlowSteps), parser.GetType().GetMethod("getExpiredAlarmsAsync")!.DeclaringType);
         Assert.Null(parser.GetType().GetMethod("readPoints"));
+        Assert.Null(parser.GetType().GetMethod("readPointsAsync"));
         Assert.Null(parser.GetType().GetMethod("PushNotificationToVictim"));
-        Assert.True(parser.getExpiredAlarms());
+        Assert.Null(parser.GetType().GetMethod("PushNotificationToVictimAsync"));
+        Assert.True(await parser.getExpiredAlarmsAsync());
         Assert.Equal("PrepareGetExpiredAlarms", Assert.Single(spy.Calls).Name);
     }
 
@@ -186,13 +195,6 @@ public class WorkflowOrchestrationCompatibilityTests
         for (Type? current = type; current != null; current = current.BaseType)
             if (current.GetField(name, Declared) is { } field) return field;
         throw new MissingFieldException(type.FullName, name);
-    }
-
-    private static MethodInfo Method(Type type, string name)
-    {
-        for (Type? current = type; current != null; current = current.BaseType)
-            if (current.GetMethod(name, Declared) is { } method) return method;
-        throw new MissingMethodException(type.FullName, name);
     }
 
     private sealed class RecordingLoggerProvider : ILoggerProvider

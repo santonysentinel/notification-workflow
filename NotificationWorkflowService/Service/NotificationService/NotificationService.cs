@@ -65,9 +65,6 @@ namespace ActiveAlarmsParser.Service.NotificationService
             NotificationServiceSetting.Initialize(configuration, logger, repository);
         }
 
-        public void PushNotification(ArrayList nlist)
-            => PushNotificationAsync(nlist).GetAwaiter().GetResult();
-
         public async Task PushNotificationAsync(ArrayList nlist, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -87,9 +84,6 @@ namespace ActiveAlarmsParser.Service.NotificationService
             }
         }
 
-        private bool HandlePostNotificationResponse(NotificationServiceResponse response, IReadOnlyDictionary<string, Notification> submitted)
-            => HandlePostNotificationResponseAsync(response, submitted, CancellationToken.None).GetAwaiter().GetResult();
-
         private async Task<bool> HandlePostNotificationResponseAsync(NotificationServiceResponse response, IReadOnlyDictionary<string, Notification> submitted, CancellationToken cancellationToken)
         {
             IReadOnlyList<Notification> delivered;
@@ -98,8 +92,13 @@ namespace ActiveAlarmsParser.Service.NotificationService
                 // Validate the entire response before changing the queue. Missing acknowledgements stay pending.
                 delivered = notifications.ApplyAcknowledgements(response.data, submitted);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception e)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 NotificationDiagnostics.Failure(logger, "AcknowledgementValidation", e);
                 return false;
             }
@@ -110,6 +109,7 @@ namespace ActiveAlarmsParser.Service.NotificationService
                 logger.LogInformation("Notification delivery confirmed");
                 try
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     if (notification.type == "push" || notification.type == "reminder")
                     {
                         string? historyid = getHistoryIDFromActivityID(notification.activityid);
@@ -122,17 +122,20 @@ namespace ActiveAlarmsParser.Service.NotificationService
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     NotificationDiagnostics.Failure(logger, "DeliveredNotificationHistory", e);
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             return notifications.Count() == 0;
         }
-
-        public bool PostNotification()
-            => PostNotificationAsync().GetAwaiter().GetResult();
 
         public async Task<bool> PostNotificationAsync(CancellationToken cancellationToken = default)
         {
@@ -158,6 +161,7 @@ namespace ActiveAlarmsParser.Service.NotificationService
                         logger.LogWarning("Notification posting skipped because authentication did not provide a token");
                         return false;
                     }
+                    token.ThrowIfCancellationRequested();
                     deliveryStarted = true;
                     string response = await NotificationHttp.SendAsync(httpClientFactory, NotificationHttp.NotificationClient,
                         endpoint, json, bearerToken, token).ConfigureAwait(false);
@@ -172,11 +176,17 @@ namespace ActiveAlarmsParser.Service.NotificationService
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                if (deliveryStarted && !idempotencyConfirmed) RequiresDeliveryReview = true;
+                // A history cancellation cannot make already acknowledged/removed deliveries ambiguous.
+                if (deliveryStarted && notifications.Count() > 0 && !idempotencyConfirmed) RequiresDeliveryReview = true;
                 throw;
             }
             catch (Exception ex)
             {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    if (deliveryStarted && notifications.Count() > 0 && !idempotencyConfirmed) RequiresDeliveryReview = true;
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
                 bool throttled = ex is HttpRequestException { StatusCode: System.Net.HttpStatusCode.TooManyRequests };
                 if (throttled || (idempotencyConfirmed && NotificationDeliveryPolicy.CanRetryWithIdempotency(ex)))
                 {

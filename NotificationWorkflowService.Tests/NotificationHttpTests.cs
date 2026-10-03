@@ -83,7 +83,7 @@ public class NotificationHttpTests
         }).Build();
         NotificationServiceAccess.Initialize(configuration, NullLogger.Instance, factory);
         Assert.Equal("test-token", await NotificationServiceAccess.GetAuthorizationTokenAsync());
-        Assert.Equal("test-token", NotificationServiceAccess.GetAuthorizationToken());
+        Assert.Equal("test-token", await NotificationServiceAccess.GetAuthorizationTokenAsync());
         Assert.Equal(1, factory.Calls);
         await NotificationServiceAccess.InvalidateTokenAsync("stale-token", default);
         Assert.Equal("test-token", await NotificationServiceAccess.GetAuthorizationTokenAsync());
@@ -217,15 +217,51 @@ public class NotificationHttpTests
         Assert.True(await refreshed.PostNotificationAsync()); // Queue was acknowledged; no HTTP call.
         Assert.Equal(2, recovering.Calls);
 
+        // Keep public delivery cancellation cases here: this is the only fixture that
+        // owns static authentication. The isolated history tests never reset globals.
+        foreach (string outcome in new[] { "canceled-task", "ignored-token", "other-failure" })
+        {
+            using var cancellation = new CancellationTokenSource();
+            var repository = new FakeNotificationRepository
+            {
+                InsertHistory = token =>
+                {
+                    Assert.Equal(cancellation.Token, token);
+                    cancellation.Cancel();
+                    return outcome switch
+                    {
+                        "canceled-task" => Task.FromCanceled(token),
+                        "other-failure" => Task.FromException(new InvalidOperationException("history failed after cancellation")),
+                        _ => Task.CompletedTask
+                    };
+                }
+            };
+            var confirmed = new FakeFactory((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Created)
+            {
+                Content = new StringContent("{\"object\":[{\"oid\":\"o\",\"victimid\":\"v\",\"type\":\"push\",\"activityid\":\"1-platform-v\",\"isSuccessful\":true}]}")
+            }));
+            var canceledHistory = IsolatedSender(confirmed, repository);
+            var failure = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => canceledHistory.PushNotificationAsync(new()
+            {
+                new NotificationServiceData.Notification { oid = "o", victimid = "v", type = "push", activityid = "1-platform-v" }
+            }, cancellation.Token));
+            Assert.Equal(cancellation.Token, failure.CancellationToken);
+            Assert.Equal(cancellation.Token, repository.HistoryToken);
+            Assert.Single(repository.History);
+            Assert.False(canceledHistory.RequiresDeliveryReview);
+            Assert.True(await canceledHistory.PostNotificationAsync()); // Confirmed delivery is not requeued.
+            Assert.Equal(1, confirmed.Calls);
+        }
+
         static System.Collections.ArrayList Batch() => new()
         {
             new NotificationServiceData.Notification { oid = "o", victimid = "v", type = "test", activityid = "1" }
         };
     }
 
-    private static NotificationService IsolatedSender(IHttpClientFactory factory)
+    private static NotificationService IsolatedSender(IHttpClientFactory factory, FakeNotificationRepository? repository = null)
     {
-        // Bypass live settings SQL initialization; all HTTP is handled by fake transports.
+        // Avoid shared static settings/authentication initialization; all HTTP uses fake transports.
         var sender = (NotificationService)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(NotificationService));
         void Set(string name, object value) => typeof(NotificationService).GetField(name,
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.SetValue(sender, value);
@@ -233,6 +269,7 @@ public class NotificationHttpTests
         Set("logger", NullLogger<NotificationService>.Instance);
         Set("baseURL", "https://example.test/api");
         Set("notifications", new NotificationServiceData.NotificationArray());
+        if (repository != null) Set("repository", repository);
         return sender;
     }
 

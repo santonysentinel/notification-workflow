@@ -1,4 +1,5 @@
 using System.Data;
+using System.Data.Common;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using ActiveAlarmsParser;
@@ -53,7 +54,7 @@ public class WorkflowRepositoryAdapterTests
 
     [Theory]
     [MemberData(nameof(AdapterCases))]
-    public void HelpersPassArgumentsAndOwnExactlyOneOperation(int kind, string helper)
+    public async Task HelpersPassArgumentsAndOwnExactlyOneOperationAsync(int kind, string helper)
     {
         var spy = RepositorySpy.Create();
         object parser = Parser(kind, spy);
@@ -61,7 +62,7 @@ public class WorkflowRepositoryAdapterTests
         var (method, prepare, args, expected) = Adapter(helper, alarm);
         DateTime before = DateTime.UtcNow;
 
-        object? result = Call(parser, method, args);
+        object? result = await CallAsync(parser, method, args);
 
         var call = Assert.Single(spy.Calls);
         Assert.Equal(prepare, call.Name);
@@ -75,7 +76,7 @@ public class WorkflowRepositoryAdapterTests
         else
             AssertArguments(expected, call.Arguments);
 
-        Type returnType = Method(parser, method).ReturnType;
+        Type returnType = ResultType(Method(parser, method));
         if (returnType == typeof(bool)) Assert.Equal(true, result);
         else if (returnType == typeof(int)) Assert.Equal(0, result);
         else if (returnType == typeof(string)) Assert.Equal("", result);
@@ -85,7 +86,7 @@ public class WorkflowRepositoryAdapterTests
 
     [Theory]
     [MemberData(nameof(AdapterCases))]
-    public void PreparationFailuresPreserveHelperSwallowAndRethrowContracts(int kind, string helper)
+    public async Task PreparationFailuresPreserveHelperSwallowAndRethrowContractsAsync(int kind, string helper)
     {
         var spy = RepositorySpy.Create();
         object parser = Parser(kind, spy);
@@ -95,13 +96,13 @@ public class WorkflowRepositoryAdapterTests
 
         if (Rethrows(kind, method))
         {
-            var exception = Assert.Throws<TargetInvocationException>(() => Call(parser, method, args));
-            Assert.Same(failure, exception.InnerException);
+            var exception = await Assert.ThrowsAsync<PreparationException>(() => CallAsync(parser, method, args));
+            Assert.Same(failure, exception);
         }
         else
         {
-            object? result = Call(parser, method, args);
-            Type returnType = Method(parser, method).ReturnType;
+            object? result = await CallAsync(parser, method, args);
+            Type returnType = ResultType(Method(parser, method));
             if (returnType == typeof(bool)) Assert.Equal(false, result);
             else if (returnType == typeof(string)) Assert.Equal("", result);
             else Assert.Null(result);
@@ -135,7 +136,7 @@ public class WorkflowRepositoryAdapterTests
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
-    public void IsolatedUninitializedActionHelpersNeedOnlyInstanceRepositoryAndLogger(int kind)
+    public async Task IsolatedUninitializedActionHelpersNeedOnlyInstanceRepositoryAndLoggerAsync(int kind)
     {
         var spy = RepositorySpy.Create();
         object parser = RuntimeHelpers.GetUninitializedObject(ParserType(kind));
@@ -143,9 +144,9 @@ public class WorkflowRepositoryAdapterTests
         SetField(parser, "log", Logger(kind));
         // No constructor, configuration, static notification initialization or sender is needed.
         var alarm = Alarm();
-        Assert.Equal(true, Call(parser, "PushAlertToMcApp", alarm));
-        Assert.Equal(true, Call(parser, "AddToNotificationQueue", alarm, 3));
-        Call(parser, "CreateAlarmAudit", 14, "action", 29, 4);
+        Assert.Equal(true, await CallAsync(parser, "PushAlertToMcApp", alarm));
+        Assert.Equal(true, await CallAsync(parser, "AddToNotificationQueue", alarm, 3));
+        await CallAsync(parser, "CreateAlarmAudit", 14, "action", 29, 4);
         Assert.Equal(new[] { "PreparePushAlertToMcApp", "PrepareAddToNotificationQueue", "PrepareCreateAlarmAudit" },
             spy.Calls.Select(c => c.Name));
         AssertLifetime(spy);
@@ -163,14 +164,14 @@ public class WorkflowRepositoryAdapterTests
 
     [Theory]
     [MemberData(nameof(ContactCases))]
-    public void ContactRowsRetainDuplicatesAndOriginalConcatenation(int kind, string method, string column, string expected)
+    public async Task ContactRowsRetainDuplicatesAndOriginalConcatenationAsync(int kind, string method, string column, string expected)
     {
         var spy = RepositorySpy.Create();
         spy.Rows = _ => Table([column], ["a"], ["a"], ["b"]);
         object parser = Parser(kind, spy);
         var alarm = Alarm();
 
-        Assert.Equal(expected, Call(parser, method, alarm));
+        Assert.Equal(expected, await CallAsync(parser, method, alarm));
 
         Assert.Same(alarm, Assert.Single(Assert.Single(spy.Calls).Arguments));
         AssertLifetime(spy);
@@ -186,7 +187,7 @@ public class WorkflowRepositoryAdapterTests
     [InlineData(2, 1)]
     [InlineData(2, 2)]
     [InlineData(2, 3)]
-    public void RoleRowsOverwriteContactsButAppendCallInstructions(int kind, int action)
+    public async Task RoleRowsOverwriteContactsButAppendCallInstructionsAsync(int kind, int action)
     {
         var spy = RepositorySpy.Create();
         spy.Rows = _ => Table(["EmailAddress", "MessageAddress", "RoleName", "OfficePhone"],
@@ -195,7 +196,7 @@ public class WorkflowRepositoryAdapterTests
         object parser = Parser(kind, spy);
         var alarm = Alarm();
 
-        Assert.Equal(true, Call(parser, "readRoles", alarm, 43, action));
+        Assert.Equal(true, await CallAsync(parser, "readRoles", alarm, 43, action));
 
         AssertArguments([alarm, 43, action], Assert.Single(spy.Calls).Arguments);
         if (action == 1)
@@ -210,7 +211,7 @@ public class WorkflowRepositoryAdapterTests
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
-    public void ClientMappingsAreRebuiltAndFirstDuplicateWinsForEachProfileType(int kind)
+    public async Task ClientMappingsAreRebuiltAndFirstDuplicateWinsForEachProfileTypeAsync(int kind)
     {
         var spy = RepositorySpy.Create();
         spy.Rows = _ => Table(["OID", "ProfileID"], ["client", 10], ["client", 20], ["other", 30]);
@@ -219,7 +220,7 @@ public class WorkflowRepositoryAdapterTests
         {
             string field = profileType == 0 ? "clientProfileMapping" : "clientHolidayProfileMapping";
             Field<Dictionary<string, int>>(parser, field)["stale"] = 99;
-            Assert.Equal(true, Call(parser, "FetchClientProfile", profileType));
+            Assert.Equal(true, await CallAsync(parser, "FetchClientProfile", profileType));
             var mapping = Field<Dictionary<string, int>>(parser, field);
             Assert.Equal(2, mapping.Count);
             Assert.Equal(10, mapping["client"]);
@@ -234,13 +235,13 @@ public class WorkflowRepositoryAdapterTests
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
-    public void ProfileRowsBuildEveryBranchRetainDuplicateItemsAndFirstProfileName(int kind)
+    public async Task ProfileRowsBuildEveryBranchRetainDuplicateItemsAndFirstProfileNameAsync(int kind)
     {
         var spy = RepositorySpy.Create();
         spy.Rows = _ => ProfileRows();
         object parser = Parser(kind, spy);
 
-        Assert.Equal(true, Call(parser, "readAllProfiles"));
+        Assert.Equal(true, await CallAsync(parser, "readAllProfiles"));
 
         var profiles = Field<Dictionary<int, Profile>>(parser, "activeProfiles");
         Assert.Equal(2, profiles.Count);
@@ -280,7 +281,7 @@ public class WorkflowRepositoryAdapterTests
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
-    public void VictimRowsRetainDuplicatesWhileNormalVictimTypeIsFirstWins(int kind)
+    public async Task VictimRowsRetainDuplicatesWhileNormalVictimTypeIsFirstWinsAsync(int kind)
     {
         var spy = RepositorySpy.Create();
         spy.Rows = _ => Table(["Offender", "Victim", "EmailAddress", "CellPhone", "VictimType"],
@@ -289,7 +290,7 @@ public class WorkflowRepositoryAdapterTests
             ["other", "victim", "third", "333", "OTHER"]);
         object parser = Parser(kind, spy);
 
-        Assert.Equal(true, Call(parser, "readVictims"));
+        Assert.Equal(true, await CallAsync(parser, "readVictims"));
 
         var victims = Field<Dictionary<string, List<Victim>>>(parser, "victims");
         Assert.Equal(new[] { "first", "second" }, victims["client"].Select(v => v.Email));
@@ -308,7 +309,7 @@ public class WorkflowRepositoryAdapterTests
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
-    public void HolidayRowsGroupInOrderIncludingFinalGroupAndRoleRowsBuildDictionary(int kind)
+    public async Task HolidayRowsGroupInOrderIncludingFinalGroupAndRoleRowsBuildDictionaryAsync(int kind)
     {
         var spy = RepositorySpy.Create();
         spy.Rows = call => call.Name == "PrepareReadAllHolidays"
@@ -318,8 +319,8 @@ public class WorkflowRepositoryAdapterTests
                 ["group2", Expiry, Expiry.AddDays(3), "last"])
             : Table(["SystemID", "RoleName"], [43, "officer"], [44, "supervisor"]);
         object parser = Parser(kind, spy);
-        Assert.Equal(true, Call(parser, "readAllHolidays"));
-        Assert.Equal(true, Call(parser, "readAllRoles"));
+        Assert.Equal(true, await CallAsync(parser, "readAllHolidays"));
+        Assert.Equal(true, await CallAsync(parser, "readAllRoles"));
 
         var holidays = Field<Dictionary<string, List<Holiday>>>(parser, "activeHolidays");
         Assert.Equal(2, holidays.Count);
@@ -335,7 +336,7 @@ public class WorkflowRepositoryAdapterTests
     }
 
     [Fact]
-    public void ExpiredAlarmRowsMapStateAndRetainOnlyAlarmsWithMatchingProfiles()
+    public async Task ExpiredAlarmRowsMapStateAndRetainOnlyAlarmsWithMatchingProfilesAsync()
     {
         var spy = RepositorySpy.Create();
         string[] columns = ["HistoryID", "AgencyID", "ClientID", "OID", "OTZ", "AlarmSystemID", "AlarmID",
@@ -360,7 +361,7 @@ public class WorkflowRepositoryAdapterTests
         };
         DateTime before = DateTime.UtcNow;
 
-        Assert.Equal(true, Call(parser, "getExpiredAlarms"));
+        Assert.Equal(true, await CallAsync(parser, "getExpiredAlarms"));
 
         var call = Assert.Single(spy.Calls);
         Assert.Equal("PrepareGetExpiredAlarms", call.Name);
@@ -404,7 +405,7 @@ public class WorkflowRepositoryAdapterTests
     [Theory]
     [InlineData(0)]
     [InlineData(1)]
-    public void VictimZoneSetsDeduplicateButClearingEventListsKeepDuplicates(int kind)
+    public async Task VictimZoneSetsDeduplicateButClearingEventListsKeepDuplicatesAsync(int kind)
     {
         var spy = RepositorySpy.Create();
         spy.Rows = call => call.Name switch
@@ -418,9 +419,9 @@ public class WorkflowRepositoryAdapterTests
             _ => throw new InvalidOperationException("Unexpected reference read")
         };
         object parser = Parser(kind, spy);
-        Assert.Equal(true, Call(parser, "readMEZVictims"));
-        Assert.Equal(true, Call(parser, "readAttachedVictimZones"));
-        Assert.Equal(true, Call(parser, "readProfileItemsClear"));
+        Assert.Equal(true, await CallAsync(parser, "readMEZVictims"));
+        Assert.Equal(true, await CallAsync(parser, "readAttachedVictimZones"));
+        Assert.Equal(true, await CallAsync(parser, "readProfileItemsClear"));
 
         Assert.Equal(new[] { "v", "w" }, Field<Dictionary<string, HashSet<string>>>(parser, "MEZVictims")["client"].Order());
         var zones = Field<Dictionary<string, Dictionary<string, HashSet<string>>>>(parser, "AttachedVictimZones");
@@ -438,7 +439,7 @@ public class WorkflowRepositoryAdapterTests
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
-    public void SetupPreparesReferencesInOrderAndStopsOnPreparationFailure(int kind)
+    public async Task SetupPreparesReferencesInOrderAndStopsOnPreparationFailureAsync(int kind)
     {
         var spy = RepositorySpy.Create();
         object parser = Parser(kind, spy);
@@ -446,7 +447,7 @@ public class WorkflowRepositoryAdapterTests
             "PrepareReadAllHolidays", "PrepareReadAllRoles", "PrepareReadVictims"];
         if (kind != 2) expected = [.. expected, "PrepareReadMEZVictims", "PrepareReadAttachedVictimZones", "PrepareReadProfileItemsClear"];
 
-        Assert.Equal(true, Call(parser, "setUpParser", "Offline"));
+        Assert.Equal(true, await CallAsync(parser, "setUpParser", "Offline"));
         Assert.Equal(expected, spy.Calls.Select(c => c.Name));
         AssertArguments([0], spy.Calls[0].Arguments);
         AssertArguments([1], spy.Calls[1].Arguments);
@@ -454,7 +455,7 @@ public class WorkflowRepositoryAdapterTests
 
         var failingSpy = RepositorySpy.Create();
         failingSpy.PreparationFailure = call => call.Name == "PrepareReadAllProfiles" ? new PreparationException() : null;
-        Assert.Equal(false, Call(Parser(kind, failingSpy), "setUpParser", "Offline"));
+        Assert.Equal(false, await CallAsync(Parser(kind, failingSpy), "setUpParser", "Offline"));
         Assert.Equal(expected.Take(3), failingSpy.Calls.Select(c => c.Name));
         AssertLifetime(failingSpy);
     }
@@ -466,15 +467,15 @@ public class WorkflowRepositoryAdapterTests
     [InlineData(1, true)]
     [InlineData(3, false)]
     [InlineData(3, true)]
-    public void CheckpointReadersUseLastRowOrZeroAndDisposeReader(int kind, bool empty)
+    public async Task CheckpointReadersUseLastRowOrZeroAndDisposeReaderAsync(int kind, bool empty)
     {
         var spy = RepositorySpy.Create();
         spy.Rows = call => empty ? new DataTable() : call.Name == "PrepareReadLastSuccessfulProcess"
             ? Table(["StatusID"], [12], [34]) : Table(["SystemID"], [56], [78]);
         object target = kind == 3 ? Service(spy) : Parser(kind, spy);
 
-        Assert.Equal(empty ? 0 : 34, Call(target, "readLastSuccessfulProcess", 47));
-        Assert.Equal(empty ? 0 : 78, Call(target, "ReadCurrentActiveAlarmPoint"));
+        Assert.Equal(empty ? 0 : 34, await CallAsync(target, "readLastSuccessfulProcess", 47));
+        Assert.Equal(empty ? 0 : 78, await CallAsync(target, "ReadCurrentActiveAlarmPoint"));
 
         Assert.Equal("PrepareReadLastSuccessfulProcess", spy.Calls[0].Name);
         AssertArguments([47, kind == 3], spy.Calls[0].Arguments);
@@ -486,7 +487,7 @@ public class WorkflowRepositoryAdapterTests
     [Theory]
     [InlineData("readLastSuccessfulProcess")]
     [InlineData("ReadCurrentActiveAlarmPoint")]
-    public void ServiceSwallowsCheckpointPreparationFailureWhereNormalParsersRethrow(string method)
+    public async Task ServiceSwallowsCheckpointPreparationFailureWhereNormalParsersRethrowAsync(string method)
     {
         for (int kind = 0; kind < 4; kind++)
         {
@@ -496,8 +497,8 @@ public class WorkflowRepositoryAdapterTests
             spy.PreparationFailure = _ => failure;
             object target = kind == 3 ? Service(spy) : Parser(kind, spy);
             object?[] args = method == "readLastSuccessfulProcess" ? [47] : [];
-            if (kind == 3) Assert.Equal(0, Call(target, method, args));
-            else Assert.Same(failure, Assert.Throws<TargetInvocationException>(() => Call(target, method, args)).InnerException);
+            if (kind == 3) Assert.Equal(0, await CallAsync(target, method, args));
+            else Assert.Same(failure, await Assert.ThrowsAsync<PreparationException>(() => CallAsync(target, method, args)));
             var call = Assert.Single(spy.Calls);
             Assert.Equal("Prepare" + char.ToUpperInvariant(method[0]) + method[1..], call.Name);
             AssertArguments([.. args, kind == 3], call.Arguments);
@@ -515,7 +516,7 @@ public class WorkflowRepositoryAdapterTests
 
     [Theory]
     [MemberData(nameof(ParseCases))]
-    public void ParseAlarmsOrdersActionsArchiveStateThenNormalCheckpoint(int kind, int priority)
+    public async Task ParseAlarmsOrdersActionsArchiveStateThenNormalCheckpointAsync(int kind, int priority)
     {
         var spy = RepositorySpy.Create();
         spy.Rows = call => call.Name switch
@@ -530,7 +531,7 @@ public class WorkflowRepositoryAdapterTests
         SetField(parser, "activeAlarms", new List<ActiveAlarm> { alarm });
         DateTime before = DateTime.UtcNow;
 
-        Call(parser, "parseAlarms");
+        await CallAsync(parser, "parseAlarms");
 
         var expected = new List<string>();
         if (kind != 2) expected.Add("PrepareCreateAlarmAudit");
@@ -574,7 +575,7 @@ public class WorkflowRepositoryAdapterTests
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
-    public void MissingExplicitNextStateUsesParserSpecificFallbackParameters(int kind)
+    public async Task MissingExplicitNextStateUsesParserSpecificFallbackParametersAsync(int kind)
     {
         var spy = RepositorySpy.Create();
         object parser = Parser(kind, spy);
@@ -582,7 +583,7 @@ public class WorkflowRepositoryAdapterTests
         alarm.NextStateNo = -1;
         SetField(parser, "activeAlarms", new List<ActiveAlarm> { alarm });
 
-        Call(parser, "parseAlarms");
+        await CallAsync(parser, "parseAlarms");
 
         var call = Assert.Single(spy.Calls, c => c.Name == "PrepareInsertIntoCurrentAlarmNotification");
         Assert.Equal(alarm.SystemID, call.Arguments[0]);
@@ -597,14 +598,14 @@ public class WorkflowRepositoryAdapterTests
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
-    public void SwallowedAuditPreparationFailureStillArchivesAdvancesAndCheckpoints(int kind)
+    public async Task SwallowedAuditPreparationFailureStillArchivesAdvancesAndCheckpointsAsync(int kind)
     {
         var spy = RepositorySpy.Create();
         spy.PreparationFailure = call => call.Name == "PrepareCreateAlarmAudit" ? new PreparationException() : null;
         object parser = Parser(kind, spy);
         SetField(parser, "activeAlarms", new List<ActiveAlarm> { Alarm() });
 
-        Call(parser, "parseAlarms");
+        await CallAsync(parser, "parseAlarms");
 
         Assert.Equal(101, Assert.Single(spy.Archived));
         Assert.Equal(101, Assert.Single(spy.CurrentStates));
@@ -616,14 +617,14 @@ public class WorkflowRepositoryAdapterTests
     [Theory]
     [InlineData(0)]
     [InlineData(1)]
-    public void CheckpointPreparationFailureRetainsPreviousCheckpointAndCompletedArchiveState(int kind)
+    public async Task CheckpointPreparationFailureRetainsPreviousCheckpointAndCompletedArchiveStateAsync(int kind)
     {
         var spy = RepositorySpy.Create();
         spy.PreparationFailure = call => call.Name == "PrepareUpdateParserActivty" ? new PreparationException() : null;
         object parser = Parser(kind, spy);
         SetField(parser, "activeAlarms", new List<ActiveAlarm> { Alarm(), Alarm(systemID: 102) });
 
-        Call(parser, "parseAlarms");
+        await CallAsync(parser, "parseAlarms");
 
         Assert.Equal(new[] { 101, 102 }, spy.Archived.Order());
         Assert.Equal(new[] { 101, 102 }, spy.CurrentStates.Order());
@@ -644,7 +645,7 @@ public class WorkflowRepositoryAdapterTests
 
     [Theory]
     [MemberData(nameof(ParseFailureCases))]
-    public void PreparationFailureBreaksNormalBatchButStepsContinueAndRetainSuccessfulWrites(
+    public async Task PreparationFailureBreaksNormalBatchButStepsContinueAndRetainSuccessfulWritesAsync(
         int kind, int failedIndex, string prepare)
     {
         var spy = RepositorySpy.Create();
@@ -654,7 +655,7 @@ public class WorkflowRepositoryAdapterTests
         spy.PreparationFailure = call => call.Name == prepare && AlarmID(call) == failedID ? new PreparationException() : null;
         SetField(parser, "activeAlarms", alarms);
 
-        Call(parser, "parseAlarms");
+        await CallAsync(parser, "parseAlarms");
 
         int[] successful = kind == 2 ? alarms.Where(a => a.SystemID != failedID).Select(a => a.SystemID).ToArray()
             : alarms.Take(failedIndex).Select(a => a.SystemID).ToArray();
@@ -688,11 +689,11 @@ public class WorkflowRepositoryAdapterTests
     [Theory]
     [InlineData(0)]
     [InlineData(1)]
-    public void PushQueueExecutionFailureIsSwallowedAndOwnedOperationStillDisposedWithoutRetry(int kind)
+    public async Task PushQueueExecutionFailureIsSwallowedAndOwnedOperationStillDisposedWithoutRetryAsync(int kind)
     {
         var spy = RepositorySpy.Create();
         spy.ExecutionFailure = new InvalidOperationException("offline execution failure");
-        Call(Parser(kind, spy), "insertPushNotificationQueue", Alarm(), "victim", "offender");
+        await CallAsync(Parser(kind, spy), "insertPushNotificationQueue", Alarm(), "victim", "offender");
         AssertLifetime(spy);
     }
 
@@ -794,9 +795,14 @@ public class WorkflowRepositoryAdapterTests
 
     private static MethodInfo Method(object target, string name)
     {
+        // Prefer the migrated name; fallback is permitted only for pure synchronous helpers.
         for (Type? type = target.GetType(); type != null; type = type.BaseType)
-            if (type.GetMethod(name, Instance | BindingFlags.DeclaredOnly) is { } method)
+            if (type.GetMethod(name.EndsWith("Async", StringComparison.Ordinal) ? name : name + "Async",
+                Instance | BindingFlags.DeclaredOnly) is { } method)
                 return method;
+        for (Type? type = target.GetType(); type != null; type = type.BaseType)
+            if (type.GetMethod(name, Instance | BindingFlags.DeclaredOnly) is { } method &&
+                !typeof(Task).IsAssignableFrom(method.ReturnType)) return method;
         throw new MissingMethodException(target.GetType().FullName, name);
     }
     private static FieldInfo FieldInfo(object target, string name)
@@ -806,7 +812,22 @@ public class WorkflowRepositoryAdapterTests
                 return field;
         throw new MissingFieldException(target.GetType().FullName, name);
     }
-    private static object? Call(object target, string name, params object?[] args) => Method(target, name).Invoke(target, args);
+    internal static async Task<object?> CallAsync(object target, string name, params object?[] args)
+    {
+        MethodInfo method = Method(target, name);
+        if (!typeof(Task).IsAssignableFrom(method.ReturnType))
+            return method.Invoke(target, args); // Pure in-memory methods only.
+        ParameterInfo[] parameters = method.GetParameters();
+        Assert.Equal(typeof(CancellationToken), parameters[^1].ParameterType);
+        Assert.True(parameters[^1].IsOptional);
+        object?[] arguments = args.Length == parameters.Length - 1 ? [.. args, CancellationToken.None] : args;
+        var task = Assert.IsAssignableFrom<Task>(method.Invoke(target, arguments));
+        await task;
+        // Reflect on the declared Task<T>, not the runtime async state-machine box.
+        return method.ReturnType.IsGenericType ? method.ReturnType.GetProperty("Result")!.GetValue(task) : null;
+    }
+    private static Type ResultType(MethodInfo method) => method.ReturnType.IsGenericType
+        ? method.ReturnType.GenericTypeArguments[0] : typeof(void);
     private static T Field<T>(object target, string name) => (T)FieldInfo(target, name).GetValue(target)!;
     private static void SetField(object target, string name, object value) => FieldInfo(target, name).SetValue(target, value);
 
@@ -915,40 +936,44 @@ public class WorkflowRepositoryAdapterTests
         public bool Disposed { get; private set; }
         private bool opened;
 
-        public void Open()
+        public Task OpenAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Assert.False(Disposed);
             Assert.False(opened); // A second Open would expose an unexpected retry immediately.
             opened = true;
             Record("Open");
+            return Task.CompletedTask;
         }
 
-        public IDataReader ExecuteReader()
+        public Task<DbDataReader> ExecuteReaderAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Assert.True(opened);
             Assert.False(Disposed);
             Record("ExecuteReader");
             Reader = rows.CreateDataReader();
-            return Reader;
+            return Task.FromResult<DbDataReader>(Reader);
         }
 
-        public int ExecuteNonQuery()
+        public Task<int> ExecuteNonQueryAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Assert.True(opened);
             Assert.False(Disposed);
             Record("ExecuteNonQuery");
             if (spy.ExecutionFailure is { } failure) throw failure;
             spy.Executed(call);
-            return -7; // Helpers report completion, not affected-row counts.
+            return Task.FromResult(-7); // Helpers report completion, not affected-row counts.
         }
 
-        public void Close() { Assert.False(Disposed); Record("Close"); }
+        public Task CloseAsync() { Assert.False(Disposed); Record("Close"); return Task.CompletedTask; }
 
-        public void Dispose()
+        public async ValueTask DisposeAsync()
         {
             Assert.False(Disposed);
             Record("Dispose");
-            Reader?.Dispose();
+            if (Reader is not null) await Reader.DisposeAsync();
             rows.Dispose();
             Disposed = true;
         }

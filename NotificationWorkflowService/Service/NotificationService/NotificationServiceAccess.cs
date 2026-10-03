@@ -89,13 +89,6 @@ namespace ActiveAlarmsParser.Service.NotificationService
             Volatile.Write(ref initialized, true);
         }
 
-        /// <summary>
-        /// The GetAuthorizationToken.
-        /// </summary>
-        /// <returns>The <see cref="string"/>.</returns>
-        public static string GetAuthorizationToken()
-            => GetAuthorizationTokenAsync().GetAwaiter().GetResult();
-
         public static async Task<string> GetAuthorizationTokenAsync(CancellationToken cancellationToken = default)
         {
             if (!Volatile.Read(ref initialized))
@@ -125,6 +118,7 @@ namespace ActiveAlarmsParser.Service.NotificationService
             }
             catch (Exception ex)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 NotificationDiagnostics.Failure(logger, "Authentication", ex);
             }
 

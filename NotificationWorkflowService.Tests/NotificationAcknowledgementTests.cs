@@ -105,31 +105,31 @@ public class NotificationAcknowledgementTests
     }
 
     [Fact]
-    public void ExhaustedPostAttemptsRetainBatchAcrossCalls()
+    public async Task ExhaustedPostAttemptsRetainBatchAcrossCalls()
     {
         var queue = new NotificationArray();
         var sender = CreateIsolatedSender(queue);
 
-        sender.PushNotification(new ArrayList { Item("1") });
+        await sender.PushNotificationAsync(new ArrayList { Item("1") });
         Assert.Equal(1, queue.Count());
-        sender.PushNotification(new ArrayList { Item("1"), Item("2") });
+        await sender.PushNotificationAsync(new ArrayList { Item("1"), Item("2") });
         Assert.Equal(2, queue.Count());
-        sender.PushNotification(new ArrayList());
+        await sender.PushNotificationAsync(new ArrayList());
         Assert.Equal(2, queue.Count());
     }
 
     [Fact]
-    public void HandlerDoesNotReportSuccessForPartialOrEmptyResponse()
+    public async Task HandlerDoesNotReportSuccessForPartialOrEmptyResponse()
     {
         var queue = CreateQueue("1", "2");
         var sender = CreateIsolatedSender(queue);
-        var handler = typeof(Sender).GetMethod("HandlePostNotificationResponse", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var handler = typeof(Sender).GetMethod("HandlePostNotificationResponseAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var submitted = queue.GetSnapshot();
 
         // The test-only type avoids history SQL writes while exercising the production handler.
-        Assert.False((bool)handler.Invoke(sender, [new NotificationServiceResponse { data = [Ack("1", true)] }, submitted])!);
-        Assert.False((bool)handler.Invoke(sender, [new NotificationServiceResponse(), queue.GetSnapshot()])!);
-        Assert.True((bool)handler.Invoke(sender, [new NotificationServiceResponse { data = [Ack("2", true)] }, queue.GetSnapshot()])!);
+        Assert.False(await (Task<bool>)handler.Invoke(sender, [new NotificationServiceResponse { data = [Ack("1", true)] }, submitted, CancellationToken.None])!);
+        Assert.False(await (Task<bool>)handler.Invoke(sender, [new NotificationServiceResponse(), queue.GetSnapshot(), CancellationToken.None])!);
+        Assert.True(await (Task<bool>)handler.Invoke(sender, [new NotificationServiceResponse { data = [Ack("2", true)] }, queue.GetSnapshot(), CancellationToken.None])!);
     }
 
     [Fact]
@@ -163,7 +163,7 @@ public class NotificationAcknowledgementTests
 
     private static Sender CreateIsolatedSender(NotificationArray queue)
     {
-        // Bypass the legacy constructor's live settings SQL initialization. An invalid URI
+        // Avoid initializing shared static settings/authentication. An invalid URI
         // fails before HTTP/authentication, making exhausted-retry tests entirely offline.
         var sender = (Sender)RuntimeHelpers.GetUninitializedObject(typeof(Sender));
         SetField(sender, "notifications", queue);

@@ -9,96 +9,96 @@ namespace NotificationWorkflowService.Tests;
 public class SettingsSnapshotCacheTests
 {
     [Fact]
-    public void InitialLoadDoesNotRepeatUntilFiveMinuteExpiry()
+    public async Task InitialLoadDoesNotRepeatUntilFiveMinuteExpiry()
     {
         var clock = new ManualClock();
         int loads = 0;
-        var cache = Create(() => new Dictionary<string, string> { ["value"] = (++loads).ToString() }, clock);
-        var first = cache.GetSnapshot();
-        Assert.Same(first, cache.GetSnapshot());
+        var cache = Create(_ => Task.FromResult(new Dictionary<string, string> { ["value"] = (++loads).ToString() }), clock);
+        var first = await cache.GetSnapshotAsync();
+        Assert.Same(first, await cache.GetSnapshotAsync());
         clock.Advance(TimeSpan.FromMinutes(5) - TimeSpan.FromTicks(1));
-        Assert.Same(first, cache.GetSnapshot());
+        Assert.Same(first, await cache.GetSnapshotAsync());
         clock.Advance(TimeSpan.FromTicks(1));
-        Assert.Equal("2", cache.GetSnapshot()["value"]);
+        Assert.Equal("2", (await cache.GetSnapshotAsync())["value"]);
         Assert.Equal(2, loads);
     }
 
     [Fact]
-    public void EmptySuccessfulLoadReplacesOldSnapshot()
+    public async Task EmptySuccessfulLoadReplacesOldSnapshot()
     {
         var clock = new ManualClock();
         int loads = 0;
-        var cache = Create(() => ++loads == 1 ? new() { ["obsolete"] = "setting" } : new(), clock);
-        var original = cache.GetSnapshot();
+        var cache = Create(_ => Task.FromResult(++loads == 1 ? new Dictionary<string, string> { ["obsolete"] = "setting" } : new()), clock);
+        var original = await cache.GetSnapshotAsync();
         clock.Advance(TimeSpan.FromMinutes(5));
-        Assert.Empty(cache.GetSnapshot());
+        Assert.Empty(await cache.GetSnapshotAsync());
         Assert.Single(original); // Previously published snapshots aren't cleared in place.
-        Assert.Empty(cache.GetSnapshot());
+        Assert.Empty(await cache.GetSnapshotAsync());
         Assert.Equal(2, loads);
     }
 
     [Fact]
-    public void FailedRefreshRetainsOldSnapshotAndRetriesAfterThirtySeconds()
+    public async Task FailedRefreshRetainsOldSnapshotAndRetriesAfterThirtySeconds()
     {
         var clock = new ManualClock();
         int loads = 0;
-        var cache = Create(() => ++loads switch
+        var cache = Create(_ => Task.FromResult<Dictionary<string, string>>(++loads switch
         {
             1 => new() { ["old"] = "value" },
             2 => throw new DataException("refresh failed"),
             _ => new() { ["new"] = "value" }
-        }, clock);
-        var original = cache.GetSnapshot();
+        }), clock);
+        var original = await cache.GetSnapshotAsync();
         clock.Advance(TimeSpan.FromMinutes(5));
-        Assert.Same(original, cache.GetSnapshot());
+        Assert.Same(original, await cache.GetSnapshotAsync());
         clock.Advance(TimeSpan.FromSeconds(29));
-        Assert.Same(original, cache.GetSnapshot());
+        Assert.Same(original, await cache.GetSnapshotAsync());
         Assert.Equal(2, loads);
         clock.Advance(TimeSpan.FromSeconds(1));
-        var recovered = cache.GetSnapshot();
+        var recovered = await cache.GetSnapshotAsync();
         Assert.True(recovered.ContainsKey("new"));
         clock.Advance(TimeSpan.FromMinutes(4));
-        Assert.Same(recovered, cache.GetSnapshot());
+        Assert.Same(recovered, await cache.GetSnapshotAsync());
         Assert.Equal(3, loads);
     }
 
     [Fact]
-    public void FailedInitialLoadUsesFailureIntervalRatherThanSuccessLifetime()
+    public async Task FailedInitialLoadUsesFailureIntervalRatherThanSuccessLifetime()
     {
         var clock = new ManualClock();
         int loads = 0;
-        var cache = Create(() =>
+        var cache = Create(_ =>
         {
             if (++loads <= 2) throw new DataException("unavailable");
-            return new() { ["recovered"] = "yes" };
+            return Task.FromResult(new Dictionary<string, string> { ["recovered"] = "yes" });
         }, clock);
-        Assert.Empty(cache.GetSnapshot());
-        Assert.Empty(cache.GetSnapshot());
+        Assert.Empty(await cache.GetSnapshotAsync());
+        Assert.Empty(await cache.GetSnapshotAsync());
         Assert.Equal(1, loads);
         clock.Advance(TimeSpan.FromSeconds(30));
-        Assert.Empty(cache.GetSnapshot());
+        Assert.Empty(await cache.GetSnapshotAsync());
         Assert.Equal(2, loads);
         clock.Advance(TimeSpan.FromSeconds(30));
-        Assert.True(cache.GetSnapshot().ContainsKey("recovered"));
+        Assert.True((await cache.GetSnapshotAsync()).ContainsKey("recovered"));
     }
 
     [Fact]
-    public void SuccessLifetimeStartsAfterLoadCompletes()
+    public async Task SuccessLifetimeStartsAfterLoadCompletes()
     {
         var clock = new ManualClock();
         int loads = 0;
-        var cache = Create(() =>
+        var cache = Create(_ =>
         {
             loads++;
             clock.Advance(TimeSpan.FromMinutes(2));
-            return new();
+            return Task.FromResult(new Dictionary<string, string>());
         }, clock);
-        var snapshot = cache.GetSnapshot();
+        var snapshot = await cache.GetSnapshotAsync();
         clock.Advance(TimeSpan.FromMinutes(4));
-        Assert.Same(snapshot, cache.GetSnapshot());
+        Assert.Same(snapshot, await cache.GetSnapshotAsync());
         Assert.Equal(1, loads);
         clock.Advance(TimeSpan.FromMinutes(1));
-        cache.GetSnapshot();
+        await cache.GetSnapshotAsync();
         Assert.Equal(2, loads);
     }
 
@@ -107,20 +107,39 @@ public class SettingsSnapshotCacheTests
     {
         var clock = new ManualClock();
         int loads = 0;
-        var cache = Create(() =>
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cache = Create(async token =>
         {
             Interlocked.Increment(ref loads);
+            await release.Task.WaitAsync(token);
             return Enumerable.Range(0, 100).ToDictionary(i => i.ToString(), i => i.ToString());
         }, clock);
-        var initial = await Task.WhenAll(Enumerable.Range(0, 40).Select(_ => Task.Run(cache.GetSnapshot)));
+        var initial = await ReadTogether();
         Assert.Equal(1, loads);
         Assert.All(initial, snapshot => { Assert.Same(initial[0], snapshot); Assert.Equal(100, snapshot.Count); });
         clock.Advance(TimeSpan.FromMinutes(5));
-        var refreshed = await Task.WhenAll(Enumerable.Range(0, 40).Select(_ => Task.Run(cache.GetSnapshot)));
+        release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var refreshed = await ReadTogether();
         Assert.Equal(2, loads);
         Assert.All(refreshed, snapshot => { Assert.Same(refreshed[0], snapshot); Assert.Equal(100, snapshot.Count); });
         Assert.NotSame(initial[0], refreshed[0]);
         Assert.Equal(100, initial[0].Count);
+
+        async Task<Dictionary<string, string>[]> ReadTogether()
+        {
+            int before = loads;
+            var readers = Enumerable.Range(0, 40).Select(_ => cache.GetSnapshotAsync()).ToArray();
+            try
+            {
+                Assert.Equal(before + 1, loads);
+                Assert.All(readers, reader => Assert.False(reader.IsCompleted));
+            }
+            finally
+            {
+                release.TrySetResult();
+            }
+            return await Task.WhenAll(readers);
+        }
     }
 
     [Fact]
@@ -202,7 +221,7 @@ public class SettingsSnapshotCacheTests
     }
 
     [Fact]
-    public void MappingFailureAfterFirstRowDoesNotPublishPartialSnapshot()
+    public async Task MappingFailureAfterFirstRowDoesNotPublishPartialSnapshot()
     {
         var clock = new ManualClock();
         var rows = new List<ReminderSettingRow>
@@ -211,19 +230,19 @@ public class SettingsSnapshotCacheTests
         };
         bool failAfterFirstRow = false;
         var cache = new SettingsSnapshotCache<Dictionary<string, NotificationServiceData.ReminderSetting>>(
-            () => NotificationServiceSetting.BuildReminderSettings(failAfterFirstRow ? RowsThenThrow(rows[0]) : rows), new(), NullLogger.Instance, "reminders", clock);
-        var original = cache.GetSnapshot();
+            _ => Task.FromResult(NotificationServiceSetting.BuildReminderSettings(failAfterFirstRow ? RowsThenThrow(rows[0]) : rows)), new(), NullLogger.Instance, "reminders", clock);
+        var original = await cache.GetSnapshotAsync();
         rows[0] = new() { EventCode = "new", EventName = "new name", ReminderType = "reminder", NotificationSubType = "sub", AlternativeText = "text", EventNotificationType = "offtamper" };
         failAfterFirstRow = true;
         clock.Advance(TimeSpan.FromMinutes(5));
-        Assert.Same(original, cache.GetSnapshot());
+        Assert.Same(original, await cache.GetSnapshotAsync());
         Assert.Single(original);
         Assert.True(original.ContainsKey("old"));
         Assert.False(original.ContainsKey("new"));
         Assert.Equal("old name", original["old"].EventName);
         failAfterFirstRow = false;
         clock.Advance(TimeSpan.FromSeconds(30));
-        var recovered = cache.GetSnapshot();
+        var recovered = await cache.GetSnapshotAsync();
         Assert.NotSame(original, recovered);
         Assert.Single(recovered);
         Assert.True(recovered.ContainsKey("new"));
@@ -233,7 +252,7 @@ public class SettingsSnapshotCacheTests
         Assert.Equal("old name", original["old"].EventName);
     }
 
-    private static SettingsSnapshotCache<Dictionary<string, string>> Create(Func<Dictionary<string, string>> loader, TimeProvider clock)
+    private static SettingsSnapshotCache<Dictionary<string, string>> Create(Func<CancellationToken, Task<Dictionary<string, string>>> loader, TimeProvider clock)
         => new(loader, new(), NullLogger.Instance, "test", clock);
 
     private static IEnumerable<ReminderSettingRow> RowsThenThrow(ReminderSettingRow first)

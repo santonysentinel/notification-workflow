@@ -2,6 +2,7 @@
 [Bb]in/
 [Oo]bj/
 [Aa]rtifacts/
+.test-output/
 
 # Visual Studio user settings and caches
 .vs/

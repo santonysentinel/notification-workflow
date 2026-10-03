@@ -3,7 +3,7 @@
 
     using System;
     using System.Collections.Generic;
-    using System.Data;
+    using System.Data.Common;
     using Microsoft.Data.SqlClient;
     using System.Globalization;
     using System.Linq;
@@ -97,17 +97,21 @@
         /// </summary>
         /// <param name="platform">The platform<see cref="String"/>.</param>
         /// <returns>The <see cref="bool"/>.</returns>
-        public bool setUpParser(string platform)
+        public async Task<bool> setUpParserAsync(string platform, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             platForm = platform;
             pendingReferenceData = new WorkflowReferenceData();
             try
             {
-                if (!SetUpReferenceData())
+                if (!await SetUpReferenceDataAsync(cancellationToken).ConfigureAwait(false))
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     return false;
                 }
+                cancellationToken.ThrowIfCancellationRequested();
                 PublishReferenceData(pendingReferenceData);
+                cancellationToken.ThrowIfCancellationRequested();
                 return true;
             }
             finally
@@ -116,38 +120,46 @@
             }
         }
 
-        private bool SetUpReferenceData()
+        private async Task<bool> SetUpReferenceDataAsync(CancellationToken cancellationToken = default)
         {
-            if (!FetchClientProfile(0))
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!await FetchClientProfileAsync(0, cancellationToken).ConfigureAwait(false))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 return false;
             }
 
-            if (!FetchClientProfile(1))
+            if (!await FetchClientProfileAsync(1, cancellationToken).ConfigureAwait(false))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 return false;
             }
 
-            if (!readAllProfiles())
+            if (!await readAllProfilesAsync(cancellationToken).ConfigureAwait(false))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 return false;
             }
 
-            if (!readAllHolidays())
+            if (!await readAllHolidaysAsync(cancellationToken).ConfigureAwait(false))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 return false;
             }
 
-            if (!readAllRoles())
+            if (!await readAllRolesAsync(cancellationToken).ConfigureAwait(false))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 return false;
             }
 
-            if (!readVictims())
+            if (!await readVictimsAsync(cancellationToken).ConfigureAwait(false))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 return false;
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             return true;
         }
 
@@ -197,8 +209,9 @@
         /// </summary>
         /// <param name="profileType">The profileType<see cref="int"/>.</param>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool FetchClientProfile(int profileType)
+        private async Task<bool> FetchClientProfileAsync(int profileType, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
             Console.ForegroundColor = ConsoleColor.White;
             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " Refreshing Client Profiles");
@@ -206,7 +219,7 @@
             //Create a connection to the SQL Server;
             try
             {
-                using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareFetchClientProfile(profileType)))
+                await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareFetchClientProfile(profileType)))
                 {
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
@@ -214,12 +227,13 @@
                         int retries = 5;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                result = WorkflowReferenceDataBuilders.BuildClientProfiles(MyDataReader, profileType);
+                                result = await WorkflowReferenceDataBuilders.BuildClientProfilesAsync(MyDataReader, profileType, cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 break;
                             }
@@ -235,7 +249,7 @@
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(10000);
+                                        await Task.Delay(10000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -244,8 +258,10 @@
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE CLIENT PROFILES ");
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -253,7 +269,7 @@
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(10000);
+                                    await Task.Delay(10000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -265,13 +281,16 @@
                     }
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception e)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 success = false;
                 log.LogInformation("[" + platForm + "] " + "FAILED TO RETRIEVE CLIENT PROFILES " + e);
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE CLIENT PROFILES " + e);
             }
+            cancellationToken.ThrowIfCancellationRequested();
             if (success)
             {
                 if (profileType == 0)
@@ -286,6 +305,7 @@
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -293,8 +313,9 @@
         /// Creates in memory a full dictionary of all the active profiles that the active alarms are used against.
         /// </summary>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool readAllProfiles()
+        private async Task<bool> readAllProfilesAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
             Console.ForegroundColor = ConsoleColor.White;
             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " Refreshing Client Profiles");
@@ -303,7 +324,7 @@
             //Create a connection to the SQL Server;
             try
             {
-                using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAllProfiles()))
+                await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAllProfiles()))
                 {
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
@@ -311,12 +332,13 @@
                         int retries = 5;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                result = WorkflowReferenceDataBuilders.BuildProfiles(MyDataReader);
+                                result = await WorkflowReferenceDataBuilders.BuildProfilesAsync(MyDataReader, cancellationToken).ConfigureAwait(false);
 
                                 success = true;
                                 break;
@@ -333,7 +355,7 @@
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(10000);
+                                        await Task.Delay(10000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -343,8 +365,10 @@
 
                                 //System.Environment.Exit(1);
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE PROFILES ");
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -352,7 +376,7 @@
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(10000);
+                                    await Task.Delay(10000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -364,19 +388,23 @@
                     }
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception e)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 success = false;
                 log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE PROFILES ");
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE PROFILES IN PARSER " + e);
             }
+            cancellationToken.ThrowIfCancellationRequested();
             if (success)
             {
                 if (pendingReferenceData != null) StageReferenceData(profiles: result);
                 else activeProfiles = result;
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -384,8 +412,9 @@
         /// Creates in memory a full dictionary of all the active profiles that the active alarms are used against.
         /// </summary>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool readAllHolidays()
+        private async Task<bool> readAllHolidaysAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
             Console.ForegroundColor = ConsoleColor.White;
             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " Refreshing PO GRoup Holidays");
@@ -394,7 +423,7 @@
             //Create a connection to the SQL Server;
             try
             {
-                using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAllHolidays()))
+                await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAllHolidays()))
                 {
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
@@ -402,12 +431,13 @@
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                result = WorkflowReferenceDataBuilders.BuildHolidays(MyDataReader);
+                                result = await WorkflowReferenceDataBuilders.BuildHolidaysAsync(MyDataReader, cancellationToken).ConfigureAwait(false);
 
                                 success = true;
                                 break;
@@ -424,7 +454,7 @@
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(5000);
+                                        await Task.Delay(5000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -432,8 +462,10 @@
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE HOLIDAYS ");
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -441,7 +473,7 @@
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(5000);
+                                    await Task.Delay(5000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -453,18 +485,22 @@
                     }
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception e)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 success = false;
                 log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE HOLIDAYS ");
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE HOLIDAYS IN PARSER " + e);
             }
+            cancellationToken.ThrowIfCancellationRequested();
             if (success)
             {
                 if (pendingReferenceData != null) StageReferenceData(holidays: result);
                 else activeHolidays = result;
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -472,8 +508,9 @@
         /// Reads in the list of all POGroup Roles.
         /// </summary>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool readAllRoles()
+        private async Task<bool> readAllRolesAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
 
             Console.ForegroundColor = ConsoleColor.White;
@@ -483,7 +520,7 @@
             //Create a connection to the SQL Server;
             try
             {
-                using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAllRoles()))
+                await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAllRoles()))
                 {
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
@@ -491,12 +528,13 @@
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                result = WorkflowReferenceDataBuilders.BuildRoles(MyDataReader);
+                                result = await WorkflowReferenceDataBuilders.BuildRolesAsync(MyDataReader, cancellationToken: cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 break;
                             }
@@ -512,7 +550,7 @@
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(3000);
+                                        await Task.Delay(3000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -520,8 +558,10 @@
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE ROLES ");
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -529,7 +569,7 @@
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(3000);
+                                    await Task.Delay(3000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -541,18 +581,22 @@
                     }
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception e)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 success = false;
                 log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ROLES ");
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ROLES IN PARSER " + e);
             }
+            cancellationToken.ThrowIfCancellationRequested();
             if (success)
             {
                 if (pendingReferenceData != null) StageReferenceData(roleNames: result);
                 else roles = result;
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -560,13 +604,14 @@
         /// Gets the active alarms that have expired from the CurrentNotificationState Table and processes their next state.
         /// </summary>
         /// <returns>.</returns>
-        public bool getExpiredAlarms()
+        public async Task<bool> getExpiredAlarmsAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             log.LogInformation(String.Format("StepParser::getExpiredAlarms::DBCall"));
             bool success = true;
             activeAlarms = new List<ActiveAlarm>();
 
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareGetExpiredAlarms(DateTime.UtcNow)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareGetExpiredAlarms(DateTime.UtcNow)))
             {
                 try
                 {
@@ -576,13 +621,15 @@
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                while (MyDataReader.Read())
+                                while (await MyDataReader.ReadAsync(cancellationToken).ConfigureAwait(false))
                                 {
+                                    cancellationToken.ThrowIfCancellationRequested();
                                     ActiveAlarm a = new ActiveAlarm()
                                     {
                                         HistoryID = (int)MyDataReader["HistoryID"],
@@ -616,7 +663,7 @@
                                     a.CurrentLoopNumber = Convert.ToInt32(MyDataReader["CurrentLoopNo"]);
                                     activeAlarms.Add(a);
                                 }
-                                getPriorityAndEmail(ref activeAlarms);
+                                await getPriorityAndEmailAsync(activeAlarms, cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 break;
                             }
@@ -632,7 +679,7 @@
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(3000);
+                                        await Task.Delay(3000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -640,8 +687,10 @@
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "FAILED TO RUN REMOVE_EXPIRED_NOTIFICATION_ALARMS IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -649,7 +698,7 @@
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(3000);
+                                    await Task.Delay(3000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -659,14 +708,17 @@
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogInformation("[" + platForm + "] " + "FAILED TO RUN REMOVE_EXPIRED_NOTIFICATION_ALARMS IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN REMOVE_EXPIRED_NOTIFICATION_ALARMS IN STEP PARSER " + e);
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -674,12 +726,14 @@
         /// Sets the priority, emails, email join, and State Numbers for each of the active alarms.
         /// </summary>
         /// <param name="activeAlarms">.</param>
-        private void getPriorityAndEmail(ref List<ActiveAlarm> activeAlarms)
+        private async Task getPriorityAndEmailAsync(List<ActiveAlarm> activeAlarms, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             List<int> toRemove = new List<int>();
             log.LogInformation(String.Format("StepParser::getPriorityAndEmail::ActiveAlarmsCount::{0}", activeAlarms.Count));
             foreach (ActiveAlarm a in activeAlarms)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 log.LogInformation(String.Format("StepParser::getPriorityAndEmail::AlarmSystemID::{0}", a.SystemID));
                 TimeZoneInfo zoneInfo = TimeZoneInfo.FindSystemTimeZoneById(a.ClientTZ);
 
@@ -728,7 +782,7 @@
                                     && item.EndTime.TimeOfDay > current.TimeOfDay);
                                 if (roleSource.Action == 12)
                                 {
-                                    readRoles(a, pi.RoleID, pi.RoleAction);
+                                    await readRolesAsync(a, pi.RoleID, pi.RoleAction, cancellationToken).ConfigureAwait(false);
                                 }
                             }
                         }
@@ -746,15 +800,18 @@
 
             foreach (int indice in toRemove.OrderByDescending(v => v))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 activeAlarms.RemoveAt(indice);
             }
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         /// <summary>
         /// The Main active loop of the step parser, loops through all the activeAlarms and performs the necessary actions.
         /// </summary>
-        public void parseAlarms()
+        public async Task parseAlarmsAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Dictionary<int, String> PriorityMapping = new Dictionary<int, string>();
 
             PriorityMapping.Add(0, "Do Nothing");
@@ -782,6 +839,7 @@
             log.LogInformation(String.Format("StepParser::parseAlarms::activeAlarmsCount{0}", activeAlarms.Count));
             foreach (ActiveAlarm a in activeAlarms)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
                     bool insert = true;
@@ -798,24 +856,24 @@
                         , insert.ToString()
                         ));
 
-                    WorkflowActionResult result = WorkflowActionExecutor.Execute(a,
+                    WorkflowActionResult result = await WorkflowActionExecutor.ExecuteAsync(a,
                         new WorkflowActionContext(WorkflowActionMode.Step, platForm, log,
-                            new ActionOperations(this), RoleActionMapping, roles, victims));
+                            new ActionOperations(this), RoleActionMapping, roles, victims), cancellationToken).ConfigureAwait(false);
                     insert = result.Insert;
                     sb.Append(result.Summary);
 
-                    CreateAlarmAudit(14, sb.ToString(), a.HistoryID, a.CurrentStateNo);
+                    await CreateAlarmAuditAsync(14, sb.ToString(), a.HistoryID, a.CurrentStateNo, cancellationToken).ConfigureAwait(false);
 
-                    insertIntoAlarmNotification(a.SystemID, a.CurrentStateNo, DateTime.UtcNow.AddMinutes(a.StateTime), PriorityMapping[a.Priority]);
+                    await insertIntoAlarmNotificationAsync(a.SystemID, a.CurrentStateNo, DateTime.UtcNow.AddMinutes(a.StateTime), PriorityMapping[a.Priority], cancellationToken).ConfigureAwait(false);
 
                     log.LogInformation(String.Format("StepParserAfterCheck::AlarmSystemID::{0}::CurrentStateNo::{1}::NextStateNo::{2}::ProcessNextStep::{3}::StateTime::{4}::CurrentLoopNumber::{5}::insert::{6}", a.SystemID, a.CurrentStateNo, a.NextStateNo, a.ProcessNextStep, a.StateTime, a.CurrentStateNo, insert.ToString()));
                     if (a.NextStateNo != -1 && insert)
                     {
-                        insertIntoCurrentAlarmNotification(a.SystemID, a.NextStateNo, DateTime.UtcNow.AddMinutes(a.StateTime), a.CurrentStateNo, a.CurrentLoopNumber, a.ProcessNextStep);
+                        await insertIntoCurrentAlarmNotificationAsync(a.SystemID, a.NextStateNo, DateTime.UtcNow.AddMinutes(a.StateTime), a.CurrentStateNo, a.CurrentLoopNumber, a.ProcessNextStep, cancellationToken).ConfigureAwait(false);
                     }
                     else if (insert)
                     {
-                        insertIntoCurrentAlarmNotification(a.SystemID, a.CurrentStateNo + 1, DateTime.UtcNow.AddMinutes(a.StateTime), a.CurrentStateNo, 0, 1);
+                        await insertIntoCurrentAlarmNotificationAsync(a.SystemID, a.CurrentStateNo + 1, DateTime.UtcNow.AddMinutes(a.StateTime), a.CurrentStateNo, 0, 1, cancellationToken).ConfigureAwait(false);
                     }
 
                     //DateTime ExpiryTime = DateTime.Parse(a.ExpiryTime);
@@ -850,25 +908,28 @@
                     //    insertIntoCurrentAlarmNotification(a.SystemID, a.CurrentStateNo + 1, ExpiryTimeApplied, a.CurrentStateNo, 0, 1);
                     //}
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception ex)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     log.LogError(ex, "Step Parser Parse Error");
                 }
 
             }
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         private sealed class ActionOperations(WorkFlowSteps parser) : IWorkflowActionOperations
         {
-            public void SendNotificationsToOfficersInSameGroup(ActiveAlarm a) => parser.SendNotificationsToOfficersInSameGroup(a);
-            public bool PushAlertToMcApp(ActiveAlarm a) => parser.PushAlertToMcApp(a);
-            public bool AddToNotificationQueue(ActiveAlarm a, int insertType) => parser.AddToNotificationQueue(a, insertType);
-            public void CreateAlarmAudit(int type, string action, int historyID, int StepNo) => parser.CreateAlarmAudit(type, action, historyID, StepNo);
-            public void AddActiveAlarmActionToActivity(int historyID, string email, int type) => parser.AddActiveAlarmActionToActivity(historyID, email, type);
-            public bool insertNotificationQueueVictim(ActiveAlarm a, int insertType, string victimsEmails, bool isVictimNotification = false) => parser.insertNotificationQueueVictim(a, insertType, victimsEmails, isVictimNotification);
-            public string getInsertEmails(ActiveAlarm a) => parser.getInsertEmails(a);
-            public string getClientEmail(ActiveAlarm a) => parser.getClientEmail(a);
-            public string getClientText(ActiveAlarm a) => parser.getClientText(a);
+            public Task SendNotificationsToOfficersInSameGroupAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.SendNotificationsToOfficersInSameGroupAsync(a, cancellationToken);
+            public Task<bool> PushAlertToMcAppAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.PushAlertToMcAppAsync(a, cancellationToken);
+            public Task<bool> AddToNotificationQueueAsync(ActiveAlarm a, int insertType, CancellationToken cancellationToken = default) => parser.AddToNotificationQueueAsync(a, insertType, cancellationToken);
+            public async Task CreateAlarmAuditAsync(int type, string action, int historyID, int StepNo, CancellationToken cancellationToken = default) => await parser.CreateAlarmAuditAsync(type, action, historyID, StepNo, cancellationToken).ConfigureAwait(false);
+            public async Task AddActiveAlarmActionToActivityAsync(int historyID, string email, int type, CancellationToken cancellationToken = default) => await parser.AddActiveAlarmActionToActivityAsync(historyID, email, type, cancellationToken).ConfigureAwait(false);
+            public Task<bool> insertNotificationQueueVictimAsync(ActiveAlarm a, int insertType, string victimsEmails, bool isVictimNotification = false, CancellationToken cancellationToken = default) => parser.insertNotificationQueueVictimAsync(a, insertType, victimsEmails, isVictimNotification, cancellationToken);
+            public Task<string> getInsertEmailsAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.getInsertEmailsAsync(a, cancellationToken);
+            public Task<string> getClientEmailAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.getClientEmailAsync(a, cancellationToken);
+            public Task<string> getClientTextAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.getClientTextAsync(a, cancellationToken);
         }
 
         /// <summary>
@@ -879,11 +940,12 @@
         /// <param name="historyID">.</param>
         /// <param name="StepNo">The StepNo<see cref="int"/>.</param>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool CreateAlarmAudit(int type, String action, int historyID, int StepNo)
+        private async Task<bool> CreateAlarmAuditAsync(int type, String action, int historyID, int StepNo, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareCreateAlarmAudit(type, action, historyID, StepNo)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareCreateAlarmAudit(type, action, historyID, StepNo)))
             {
                 try
                 {
@@ -893,10 +955,11 @@
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                cmd.ExecuteNonQuery();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 break;
                             }
@@ -912,7 +975,7 @@
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -920,8 +983,10 @@
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "FAILED TO RUN MCAPP_CREATEAUDIT IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -929,7 +994,7 @@
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -939,14 +1004,17 @@
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogInformation("[" + platForm + "] " + "FAILED TO RUN MCAPP_CREATEAUDIT IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN MCAPP_CREATEAUDIT IN STEP PARSER " + e);
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -955,11 +1023,12 @@
         /// </summary>
         /// <param name="a">.</param>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool PushAlertToMcApp(ActiveAlarm a)
+        private async Task<bool> PushAlertToMcAppAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PreparePushAlertToMcApp(a)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PreparePushAlertToMcApp(a)))
             {
                 try
                 {
@@ -969,10 +1038,11 @@
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                cmd.ExecuteNonQuery();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 break;
                             }
@@ -988,7 +1058,7 @@
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -996,8 +1066,10 @@
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -1005,7 +1077,7 @@
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1015,8 +1087,10 @@
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
@@ -1024,6 +1098,7 @@
                     throw;
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -1034,11 +1109,12 @@
         /// <param name="email">The email<see cref="String"/>.</param>
         /// <param name="type">.</param>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool AddActiveAlarmActionToActivity(int historyID, string email, int type)
+        private async Task<bool> AddActiveAlarmActionToActivityAsync(int historyID, string email, int type, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareAddActiveAlarmActionToActivity(historyID, email, type)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareAddActiveAlarmActionToActivity(historyID, email, type)))
             {
                 try
                 {
@@ -1048,10 +1124,11 @@
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                cmd.ExecuteNonQuery();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 break;
                             }
@@ -1067,7 +1144,7 @@
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -1075,8 +1152,10 @@
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_HISTORY IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -1084,7 +1163,7 @@
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1094,14 +1173,17 @@
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_HISTORY IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_INTO_HISTORY IN STEP PARSER " + e);
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -1113,10 +1195,11 @@
         /// <param name="ExpiryTime">.</param>
         /// <param name="Action">.</param>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool insertIntoAlarmNotification(int AlarmSystemID, int CurentStateNo, DateTime ExpiryTime, String Action)
+        private async Task<bool> insertIntoAlarmNotificationAsync(int AlarmSystemID, int CurentStateNo, DateTime ExpiryTime, String Action, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertIntoAlarmNotification(AlarmSystemID, CurentStateNo, ExpiryTime, Action)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertIntoAlarmNotification(AlarmSystemID, CurentStateNo, ExpiryTime, Action)))
             {
                 try
                 {
@@ -1126,10 +1209,11 @@
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                cmd.ExecuteNonQuery();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 break;
                             }
@@ -1145,7 +1229,7 @@
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -1153,8 +1237,10 @@
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -1162,7 +1248,7 @@
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1172,8 +1258,10 @@
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
@@ -1181,6 +1269,7 @@
                     throw;
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -1195,11 +1284,12 @@
         /// <param name="currentLoopNumber">The currentLoopNumber<see cref="int"/>.</param>
         /// <param name="processNext">The processNext<see cref="int"/>.</param>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool insertIntoCurrentAlarmNotification(int AlarmSystemID, int CurentStateNo, DateTime ExpiryTime, int DisplayStateNo, int currentLoopNumber, int processNext)
+        private async Task<bool> insertIntoCurrentAlarmNotificationAsync(int AlarmSystemID, int CurentStateNo, DateTime ExpiryTime, int DisplayStateNo, int currentLoopNumber, int processNext, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertIntoCurrentAlarmNotification(AlarmSystemID, CurentStateNo, ExpiryTime, DisplayStateNo, currentLoopNumber, processNext)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertIntoCurrentAlarmNotification(AlarmSystemID, CurentStateNo, ExpiryTime, DisplayStateNo, currentLoopNumber, processNext)))
             {
                 try
                 {
@@ -1209,10 +1299,11 @@
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                cmd.ExecuteNonQuery();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 break;
                             }
@@ -1228,7 +1319,7 @@
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -1236,8 +1327,10 @@
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -1245,7 +1338,7 @@
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1255,8 +1348,10 @@
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
@@ -1264,6 +1359,7 @@
                     throw;
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -1271,25 +1367,27 @@
         /// Runs the email join logic if the active alarm state has the email join flag set.
         /// </summary>
         /// <param name="a">.</param>
-        protected void SendNotificationsToOfficersInSameGroup(ActiveAlarm a)
+        protected async Task SendNotificationsToOfficersInSameGroupAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (a.EmailJoin == 1)
             {
-                if (AddToNotificationQueue(a, 2))
+                if (await AddToNotificationQueueAsync(a, 2, cancellationToken).ConfigureAwait(false))
                 {
-                    string emails = "Email also sent to: " + getInsertEmails(a);
+                    string emails = "Email also sent to: " + await getInsertEmailsAsync(a, cancellationToken).ConfigureAwait(false);
                     if (emails.Length > 4096)
                     {
                         emails = emails.Substring(0, 4096);
                     }
-                    CreateAlarmAudit(3, emails, a.HistoryID, a.CurrentStateNo);
-                    AddActiveAlarmActionToActivity(a.HistoryID, getInsertEmails(a), 0);
+                    await CreateAlarmAuditAsync(3, emails, a.HistoryID, a.CurrentStateNo, cancellationToken).ConfigureAwait(false);
+                    await AddActiveAlarmActionToActivityAsync(a.HistoryID, await getInsertEmailsAsync(a, cancellationToken).ConfigureAwait(false), 0, cancellationToken).ConfigureAwait(false);
                 }
                 else
                 {
                     log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: Notify to all officers in group failed");
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         /// <summary>
@@ -1297,10 +1395,11 @@
         /// </summary>
         /// <param name="a">The a<see cref="ActiveAlarm"/>.</param>
         /// <returns>.</returns>
-        private string getInsertEmails(ActiveAlarm a)
+        private async Task<string> getInsertEmailsAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             StringBuilder sb = new StringBuilder();
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareGetInsertEmails(a)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareGetInsertEmails(a)))
             {
                 try
                 {
@@ -1310,12 +1409,13 @@
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                while (MyDataReader.Read())
+                                while (await MyDataReader.ReadAsync(cancellationToken).ConfigureAwait(false))
                                 {
                                     sb.Append(MyDataReader["POMSGAddress"].ToString());
                                     sb.Append(",");
@@ -1333,7 +1433,7 @@
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -1341,15 +1441,17 @@
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Audit and History Emails in Step Parser " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Audit and History Emails in Step Parser " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1359,8 +1461,10 @@
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Audit and History Emails in Step Parser " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Audit and History Emails in Step Parser " + e);
@@ -1368,6 +1472,7 @@
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             return sb.ToString().TrimEnd(',');
         }
 
@@ -1388,10 +1493,11 @@
         /// <param name="a">The a<see cref="ActiveAlarm"/>.</param>
         /// <param name="insertType">The insertType<see cref="int"/>.</param>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool AddToNotificationQueue(ActiveAlarm a, int insertType)
+        private async Task<bool> AddToNotificationQueueAsync(ActiveAlarm a, int insertType, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareAddToNotificationQueue(a, insertType)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareAddToNotificationQueue(a, insertType)))
             {
                 try
                 {
@@ -1401,10 +1507,11 @@
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                cmd.ExecuteNonQuery();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 break;
                             }
@@ -1420,7 +1527,7 @@
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -1428,8 +1535,10 @@
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -1437,7 +1546,7 @@
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1447,8 +1556,10 @@
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
@@ -1456,6 +1567,7 @@
                     throw;
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -1467,11 +1579,12 @@
         /// <param name="victimsEmails">The victimsEmails<see cref="String"/>.</param>
         /// /// <param name="isVictimNotification">The isVictimNotification<see cref="bool"/>.</param>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool insertNotificationQueueVictim(ActiveAlarm a, int insertType, String victimsEmails, bool isVictimNotification = false)
+        private async Task<bool> insertNotificationQueueVictimAsync(ActiveAlarm a, int insertType, String victimsEmails, bool isVictimNotification = false, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
 
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertNotificationQueueVictim(a, insertType, victimsEmails, isVictimNotification)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertNotificationQueueVictim(a, insertType, victimsEmails, isVictimNotification)))
             {
                 try
                 {
@@ -1481,10 +1594,11 @@
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                cmd.ExecuteNonQuery();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 break;
                             }
@@ -1500,7 +1614,7 @@
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(3000);
+                                        await Task.Delay(3000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -1508,8 +1622,10 @@
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -1517,7 +1633,7 @@
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(3000);
+                                    await Task.Delay(3000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1527,8 +1643,10 @@
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
@@ -1537,6 +1655,7 @@
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -1547,11 +1666,12 @@
         /// <param name="RoleID">The RoleID<see cref="int"/>.</param>
         /// <param name="RoleAction">The RoleAction<see cref="int"/>.</param>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool readRoles(ActiveAlarm a, int RoleID, int RoleAction)
+        private async Task<bool> readRolesAsync(ActiveAlarm a, int RoleID, int RoleAction, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadRoles(a, RoleID, RoleAction)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadRoles(a, RoleID, RoleAction)))
             {
                 try
                 {
@@ -1561,12 +1681,13 @@
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                while (MyDataReader.Read())
+                                while (await MyDataReader.ReadAsync(cancellationToken).ConfigureAwait(false))
                                 {
 
                                     if (RoleAction == 2)
@@ -1598,7 +1719,7 @@
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -1606,8 +1727,10 @@
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -1615,7 +1738,7 @@
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1625,8 +1748,10 @@
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogInformation("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
@@ -1634,6 +1759,7 @@
                     throw;
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -1641,8 +1767,9 @@
         /// The readVictims.
         /// </summary>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool readVictims()
+        private async Task<bool> readVictimsAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
             bool disposing = false;
 
@@ -1650,7 +1777,7 @@
             //Create a connection to the SQL Server;
             try
             {
-                using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadVictims()))
+                await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadVictims()))
                 {
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
@@ -1658,12 +1785,13 @@
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                result = WorkflowReferenceDataBuilders.BuildVictims(MyDataReader, step: true);
+                                result = await WorkflowReferenceDataBuilders.BuildVictimsAsync(MyDataReader, step: true, cancellationToken: cancellationToken).ConfigureAwait(false);
 
                                 success = true;
                                 break;
@@ -1680,7 +1808,7 @@
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -1688,8 +1816,10 @@
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER ");
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -1697,7 +1827,7 @@
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1709,26 +1839,33 @@
                     disposing = true;
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception e) when (disposing)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER ");
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER " + e);
+                cancellationToken.ThrowIfCancellationRequested();
                 return false;
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception e)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 success = false;
                 log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER ");
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER " + e);
                 throw;
             }
+            cancellationToken.ThrowIfCancellationRequested();
             if (success)
             {
                 if (pendingReferenceData != null) StageReferenceData(victimData: result);
                 else victims = result.Victims;
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -1737,10 +1874,11 @@
         /// </summary>
         /// <param name="a">The a<see cref="ActiveAlarm"/>.</param>
         /// <returns>.</returns>
-        private string getClientEmail(ActiveAlarm a)
+        private async Task<string> getClientEmailAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             StringBuilder sb = new StringBuilder();
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareGetClientEmail(a)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareGetClientEmail(a)))
             {
                 try
                 {
@@ -1750,12 +1888,13 @@
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                while (MyDataReader.Read())
+                                while (await MyDataReader.ReadAsync(cancellationToken).ConfigureAwait(false))
                                 {
                                     sb.Append(MyDataReader["EmailAddress"].ToString());
                                 }
@@ -1772,7 +1911,7 @@
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -1780,15 +1919,17 @@
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Client Email IN PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Email IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1798,8 +1939,10 @@
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Client Email IN PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Email IN PARSER " + e);
@@ -1807,6 +1950,7 @@
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             return sb.ToString();
         }
 
@@ -1815,10 +1959,11 @@
         /// </summary>
         /// <param name="a">The a<see cref="ActiveAlarm"/>.</param>
         /// <returns>.</returns>
-        private string getClientText(ActiveAlarm a)
+        private async Task<string> getClientTextAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             StringBuilder sb = new StringBuilder();
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareGetClientText(a)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareGetClientText(a)))
             {
                 try
                 {
@@ -1828,12 +1973,13 @@
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                while (MyDataReader.Read())
+                                while (await MyDataReader.ReadAsync(cancellationToken).ConfigureAwait(false))
                                 {
                                     sb.Append(MyDataReader["Cell"].ToString());
                                 }
@@ -1850,7 +1996,7 @@
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(3000);
+                                        await Task.Delay(3000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -1858,15 +2004,17 @@
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Client Text IN PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Text IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(1000);
+                                    await Task.Delay(1000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1876,8 +2024,10 @@
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Client Text IN PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Text IN PARSER " + e);
@@ -1885,6 +2035,7 @@
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             return sb.ToString();
         }
     }

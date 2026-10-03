@@ -68,11 +68,11 @@ public class WorkflowActionExecutorTests
 
     [Theory]
     [MemberData(nameof(Cases))]
-    public void EveryPriorityAndRole_ExactArgumentsOrderSummaryInsertAndMutationTiming(bool step, int priority, int role)
+    public async Task EveryPriorityAndRole_ExactArgumentsOrderSummaryInsertAndMutationTimingAsync(bool step, int priority, int role)
     {
         var fixture = new Fixture(step, priority, role);
         Scenario scenario = Find(priority, role);
-        WorkflowActionResult result = fixture.Execute();
+        WorkflowActionResult result = await fixture.ExecuteAsync();
         AssertResult(scenario, step, result);
         Assert.Equal(Expected(scenario, fixture.Alarm, step), fixture.Operations.Calls);
         Assert.Equal(scenario.Stops ? 0 : InitialProcessNext, fixture.Alarm.ProcessNextStep);
@@ -88,12 +88,12 @@ public class WorkflowActionExecutorTests
 
     [Theory]
     [MemberData(nameof(Cases))]
-    public void FalseBooleanReturns_AreIgnoredAndOfficerOperationIsNotExpanded(bool step, int priority, int role)
+    public async Task FalseBooleanReturns_AreIgnoredAndOfficerOperationIsNotExpandedAsync(bool step, int priority, int role)
     {
         var fixture = new Fixture(step, priority, role);
         fixture.Operations.BooleanResult = false;
         Scenario scenario = Find(priority, role);
-        AssertResult(scenario, step, fixture.Execute());
+        AssertResult(scenario, step, await fixture.ExecuteAsync());
         Assert.Equal(Expected(scenario, fixture.Alarm, step), fixture.Operations.Calls);
         Assert.Equal(scenario.Stops ? 0 : InitialProcessNext, fixture.Alarm.ProcessNextStep);
         Assert.Empty(fixture.Logger.Errors);
@@ -101,7 +101,7 @@ public class WorkflowActionExecutorTests
 
     [Theory]
     [MemberData(nameof(FailurePositions))]
-    public void FailureAtEveryRecordedPosition_PropagatesOrLocallyClearsAndHasNoUnexpectedLaterEffects(
+    public async Task FailureAtEveryRecordedPosition_PropagatesOrLocallyClearsAndHasNoUnexpectedLaterEffectsAsync(
         bool step, int priority, int role, int index)
     {
         var fixture = new Fixture(step, priority, role);
@@ -112,7 +112,7 @@ public class WorkflowActionExecutorTests
             expected[index].Name is "victimQueue" or "clientEmail" or "clientText";
         if (localCatch)
         {
-            AssertResult(scenario, step, fixture.Execute());
+            AssertResult(scenario, step, await fixture.ExecuteAsync());
             string emptyMessage = priority == 17 ? "Text sent to: " : "Pages sent to: ";
             Assert.Equal(expected.Take(index + 1).Concat(new[]
             {
@@ -130,7 +130,7 @@ public class WorkflowActionExecutorTests
         }
         else
         {
-            Exception thrown = Assert.Throws<InvalidOperationException>(() => fixture.Execute());
+            Exception thrown = await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.ExecuteAsync());
             Assert.Same(fixture.Operations.Failure, thrown);
             Assert.Equal(expected.Take(index + 1), fixture.Operations.Calls);
             Assert.Empty(fixture.Logger.Errors);
@@ -141,12 +141,12 @@ public class WorkflowActionExecutorTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void Priority3_McAppThrowOccursBeforeProcessNextAssignment(bool step)
+    public async Task Priority3_McAppThrowOccursBeforeProcessNextAssignmentAsync(bool step)
     {
         var fixture = new Fixture(step, 3);
         fixture.Alarm.ProcessNextStep = 19;
         fixture.Operations.ThrowAt = 1;
-        Assert.Same(fixture.Operations.Failure, Assert.Throws<InvalidOperationException>(() => fixture.Execute()));
+        Assert.Same(fixture.Operations.Failure, await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.ExecuteAsync()));
         Assert.Equal(new[] { "officers", "mcapp" }, fixture.Operations.Calls.Select(c => c.Name));
         Assert.All(fixture.Operations.Calls, c => Assert.Equal(19, c.ProcessNext));
         Assert.Equal(19, fixture.Alarm.ProcessNextStep);
@@ -162,13 +162,13 @@ public class WorkflowActionExecutorTests
 
     [Theory]
     [MemberData(nameof(RoleInputs))]
-    public void RoleGuards_AreLiteralEmptyChecksNotWhitespaceOrNullChecks(bool step, int role, string? input)
+    public async Task RoleGuards_AreLiteralEmptyChecksNotWhitespaceOrNullChecksAsync(bool step, int role, string? input)
     {
         var fixture = new Fixture(step, 12, role);
         if (role == 1) fixture.Alarm.Instruction = input!;
         else fixture.Alarm.EmailAddresses = input!;
         Scenario scenario = Find(12, role);
-        AssertResult(scenario, step, fixture.Execute());
+        AssertResult(scenario, step, await fixture.ExecuteAsync());
         Call[] expected = input == "" ? [] : role == 1 ? [Operation("mcapp", fixture.Alarm)] :
         [
             Queue(fixture.Alarm, 3), Audit(fixture.Alarm, 14, "Pages sent to: " + input, step ? 47 : 1),
@@ -183,12 +183,12 @@ public class WorkflowActionExecutorTests
     [InlineData(false, true)]
     [InlineData(true, false)]
     [InlineData(true, true)]
-    public void MissingRoleLookup_ThrowsBeforeAnyOperation(bool step, bool missingRoleAction)
+    public async Task MissingRoleLookup_ThrowsBeforeAnyOperationAsync(bool step, bool missingRoleAction)
     {
         var fixture = new Fixture(step, 12, 1);
         if (missingRoleAction) fixture.RoleActions.Clear();
         else fixture.Roles.Clear();
-        Assert.Throws<KeyNotFoundException>(() => fixture.Execute());
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => fixture.ExecuteAsync());
         Assert.Empty(fixture.Operations.Calls);
         Assert.Equal(InitialProcessNext, fixture.Alarm.ProcessNextStep);
     }
@@ -196,11 +196,11 @@ public class WorkflowActionExecutorTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void UnknownRoleAction_WithLookupEntryHasSummaryButNoOperations(bool step)
+    public async Task UnknownRoleAction_WithLookupEntryHasSummaryButNoOperationsAsync(bool step)
     {
         var fixture = new Fixture(step, 12, 4);
         fixture.RoleActions[4] = "Unknown";
-        Assert.Equal(new WorkflowActionResult(true, "Role Based - Unknown Supervisor"), fixture.Execute());
+        Assert.Equal(new WorkflowActionResult(true, "Role Based - Unknown Supervisor"), await fixture.ExecuteAsync());
         Assert.Empty(fixture.Operations.Calls);
         Assert.Equal(InitialProcessNext, fixture.Alarm.ProcessNextStep);
     }
@@ -215,7 +215,7 @@ public class WorkflowActionExecutorTests
 
     [Theory]
     [MemberData(nameof(RecipientInputs))]
-    public void RecipientEdges_EmptyClientsDoNotQueueButVictimsDoAndAllStillAudit(bool step, int priority, string variant)
+    public async Task RecipientEdges_EmptyClientsDoNotQueueButVictimsDoAndAllStillAuditAsync(bool step, int priority, string variant)
     {
         var fixture = new Fixture(step, priority);
         bool victims = priority is 13 or 17;
@@ -238,7 +238,7 @@ public class WorkflowActionExecutorTests
             if (priority == 15) fixture.Operations.ClientEmail = input!;
             else fixture.Operations.ClientText = input!;
         }
-        AssertResult(Find(priority, 0), step, fixture.Execute());
+        AssertResult(Find(priority, 0), step, await fixture.ExecuteAsync());
         string message = (priority == 17 ? "Text sent to: " : "Pages sent to: ") + recipients;
         var expected = new List<Call>();
         if (victims && !error) expected.Add(VictimQueue(fixture.Alarm, priority == 13 ? 3 : 4, recipients, true));
@@ -255,11 +255,11 @@ public class WorkflowActionExecutorTests
     [InlineData(true, 13)]
     [InlineData(false, 17)]
     [InlineData(true, 17)]
-    public void NullVictimElement_DiscardsPartialJoinAndDoesNotQueue(bool step, int priority)
+    public async Task NullVictimElement_DiscardsPartialJoinAndDoesNotQueueAsync(bool step, int priority)
     {
         var fixture = new Fixture(step, priority);
         fixture.Victims[fixture.Alarm.ClientID].Insert(1, null!);
-        AssertResult(Find(priority, 0), step, fixture.Execute());
+        AssertResult(Find(priority, 0), step, await fixture.ExecuteAsync());
         string message = priority == 13 ? "Pages sent to: " : "Text sent to: ";
         Assert.Equal(new[] { Audit(fixture.Alarm, 14, message, 1), History(fixture.Alarm, message, 1) }, fixture.Operations.Calls);
         Assert.IsType<NullReferenceException>(Assert.Single(fixture.Logger.Errors).Exception);
@@ -275,7 +275,7 @@ public class WorkflowActionExecutorTests
 
     [Theory]
     [MemberData(nameof(TruncationCases))]
-    public void PageMessages_TruncateOnlyAuditAndApplicableHistoryNotQueueRecipients(bool step, int priority, int length)
+    public async Task PageMessages_TruncateOnlyAuditAndApplicableHistoryNotQueueRecipientsAsync(bool step, int priority, int length)
     {
         int role = priority == 12 ? 3 : 0;
         var fixture = new Fixture(step, priority, role);
@@ -285,7 +285,7 @@ public class WorkflowActionExecutorTests
         fixture.Operations.ClientEmail = " " + recipients + " ";
         fixture.Operations.ClientText = " " + recipients + " ";
         fixture.Victims[fixture.Alarm.ClientID] = [new Victim { Email = recipients, CellPhone = "" }];
-        AssertResult(Find(priority, role), step, fixture.Execute());
+        AssertResult(Find(priority, role), step, await fixture.ExecuteAsync());
         string joined = priority == 13 ? recipients + ";" : recipients;
         string full = "Pages sent to: " + joined;
         string message = full[..Math.Min(4096, full.Length)];
@@ -313,7 +313,7 @@ public class WorkflowActionExecutorTests
 
     [Theory]
     [MemberData(nameof(VictimTextLengths))]
-    public void VictimText_NormalRetainsUnusedSubstringBugWhileStepTruncates(bool step, int joinedLength)
+    public async Task VictimText_NormalRetainsUnusedSubstringBugWhileStepTruncatesAsync(bool step, int joinedLength)
     {
         var fixture = new Fixture(step, 17);
         string recipients = new string('9', joinedLength - 1) + ";";
@@ -321,14 +321,14 @@ public class WorkflowActionExecutorTests
         string full = "Text sent to: " + recipients;
         if (!step && joinedLength is > 4082 and < 4096)
         {
-            Assert.Throws<ArgumentOutOfRangeException>(() => fixture.Execute());
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => fixture.ExecuteAsync());
             Assert.Equal(new[] { VictimQueue(fixture.Alarm, 4, recipients, true) }, fixture.Operations.Calls);
             // The buggy substring is outside the local catch; no audit/history follows.
             Assert.Empty(fixture.Logger.Errors);
         }
         else
         {
-            AssertResult(Find(17, 0), step, fixture.Execute());
+            AssertResult(Find(17, 0), step, await fixture.ExecuteAsync());
             string message = step && full.Length > 4096 ? full[..4096] : full;
             Assert.Equal(new[] { VictimQueue(fixture.Alarm, 4, recipients, true),
                 Audit(fixture.Alarm, 14, message, 1), History(fixture.Alarm, message, 1) }, fixture.Operations.Calls);
@@ -416,7 +416,7 @@ public class WorkflowActionExecutorTests
                 "offline", Logger, Operations, RoleActions, Roles, Victims);
         }
 
-        public WorkflowActionResult Execute() => WorkflowActionExecutor.Execute(Alarm, context);
+        public Task<WorkflowActionResult> ExecuteAsync() => WorkflowActionExecutor.ExecuteAsync(Alarm, context);
     }
 
     private sealed class RecordingOperations(ActiveAlarm alarm) : IWorkflowActionOperations
@@ -435,18 +435,24 @@ public class WorkflowActionExecutorTests
             if (Calls.Count - 1 == ThrowAt) throw Failure;
         }
 
-        public void SendNotificationsToOfficersInSameGroup(ActiveAlarm a) => Record(Operation("officers", a));
-        public bool PushAlertToMcApp(ActiveAlarm a) { Record(Operation("mcapp", a)); return BooleanResult; }
-        public bool AddToNotificationQueue(ActiveAlarm a, int insertType) { Record(Queue(a, insertType)); return BooleanResult; }
-        public void CreateAlarmAudit(int type, string action, int historyID, int StepNo) =>
-            Record(new Call("audit", Type: type, Text: action, HistoryID: historyID, StepNo: StepNo));
-        public void AddActiveAlarmActionToActivity(int historyID, string email, int type) =>
-            Record(new Call("history", Type: type, Text: email, HistoryID: historyID));
-        public bool insertNotificationQueueVictim(ActiveAlarm a, int insertType, string victimsEmails, bool isVictimNotification = false)
-        { Record(VictimQueue(a, insertType, victimsEmails, isVictimNotification)); return BooleanResult; }
-        public string getInsertEmails(ActiveAlarm a) { Record(Operation("insertEmails", a)); return InsertEmails; }
-        public string getClientEmail(ActiveAlarm a) { Record(Operation("clientEmail", a)); return ClientEmail; }
-        public string getClientText(ActiveAlarm a) { Record(Operation("clientText", a)); return ClientText; }
+        public Task SendNotificationsToOfficersInSameGroupAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
+        { Record(Operation("officers", a)); return Task.CompletedTask; }
+        public Task<bool> PushAlertToMcAppAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
+        { Record(Operation("mcapp", a)); return Task.FromResult(BooleanResult); }
+        public Task<bool> AddToNotificationQueueAsync(ActiveAlarm a, int insertType, CancellationToken cancellationToken = default)
+        { Record(Queue(a, insertType)); return Task.FromResult(BooleanResult); }
+        public Task CreateAlarmAuditAsync(int type, string action, int historyID, int StepNo, CancellationToken cancellationToken = default)
+        { Record(new Call("audit", Type: type, Text: action, HistoryID: historyID, StepNo: StepNo)); return Task.CompletedTask; }
+        public Task AddActiveAlarmActionToActivityAsync(int historyID, string email, int type, CancellationToken cancellationToken = default)
+        { Record(new Call("history", Type: type, Text: email, HistoryID: historyID)); return Task.CompletedTask; }
+        public Task<bool> insertNotificationQueueVictimAsync(ActiveAlarm a, int insertType, string victimsEmails, bool isVictimNotification = false, CancellationToken cancellationToken = default)
+        { Record(VictimQueue(a, insertType, victimsEmails, isVictimNotification)); return Task.FromResult(BooleanResult); }
+        public Task<string> getInsertEmailsAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
+        { Record(Operation("insertEmails", a)); return Task.FromResult(InsertEmails); }
+        public Task<string> getClientEmailAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
+        { Record(Operation("clientEmail", a)); return Task.FromResult(ClientEmail); }
+        public Task<string> getClientTextAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
+        { Record(Operation("clientText", a)); return Task.FromResult(ClientText); }
     }
 
     private sealed class RecordingLogger : ILogger

@@ -1,4 +1,4 @@
-using System.Data;
+using System.Data.Common;
 using System.Globalization;
 using NotificationWorkflowService.Entity;
 
@@ -10,10 +10,11 @@ namespace NotificationWorkflowService.Parser.ReferenceData;
 /// </summary>
 internal static class WorkflowReferenceDataBuilders
 {
-    public static Dictionary<string, int> BuildClientProfiles(IDataReader reader, int profileType)
+    public static async Task<Dictionary<string, int>> BuildClientProfilesAsync(DbDataReader reader, int profileType, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var result = new Dictionary<string, int>();
-        while (reader.Read())
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             // Legacy invalid types still consume rows, but never access columns.
             if (profileType == 0 || profileType == 1)
@@ -24,13 +25,15 @@ internal static class WorkflowReferenceDataBuilders
                 }
             }
         }
+        cancellationToken.ThrowIfCancellationRequested();
         return result;
     }
 
-    public static Dictionary<int, Profile> BuildProfiles(IDataReader reader)
+    public static async Task<Dictionary<int, Profile>> BuildProfilesAsync(DbDataReader reader, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var result = new Dictionary<int, Profile>();
-        while (reader.Read())
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             int profileId = (int)reader["ProfileID"];
             string profileName = reader["ProfileName"].ToString()!;
@@ -86,15 +89,17 @@ internal static class WorkflowReferenceDataBuilders
             // First profile name wins; items (including duplicates) retain reader order.
             items.Add(item);
         }
+        cancellationToken.ThrowIfCancellationRequested();
         return result;
     }
 
-    public static Dictionary<string, List<Holiday>> BuildHolidays(IDataReader reader)
+    public static async Task<Dictionary<string, List<Holiday>>> BuildHolidaysAsync(DbDataReader reader, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var result = new Dictionary<string, List<Holiday>>();
         var holidays = new List<Holiday>();
         string currentGroup = "";
-        while (reader.Read())
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             if (currentGroup != reader["POGroup"].ToString())
             {
@@ -113,6 +118,7 @@ internal static class WorkflowReferenceDataBuilders
             string name = reader["HolidayName"].ToString()!;
             holidays.Add(new Holiday { HolidayName = name, StartDate = start, EndDate = end });
         }
+        cancellationToken.ThrowIfCancellationRequested();
         if (holidays.Count > 0)
         {
             result.Add(currentGroup, holidays);
@@ -125,16 +131,18 @@ internal static class WorkflowReferenceDataBuilders
     /// Omit the seed for that behavior; an explicit seed is copied, never mutated,
     /// and duplicate keys against it also throw.
     /// </summary>
-    public static Dictionary<string, string> BuildRoles(
-        IDataReader reader, IReadOnlyDictionary<string, string>? existingRoles = null)
+    public static async Task<Dictionary<string, string>> BuildRolesAsync(
+        DbDataReader reader, IReadOnlyDictionary<string, string>? existingRoles = null, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var result = existingRoles == null
             ? new Dictionary<string, string>()
             : new Dictionary<string, string>(existingRoles);
-        while (reader.Read())
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             result.Add(reader["SystemID"].ToString()!, reader["RoleName"].ToString()!);
         }
+        cancellationToken.ThrowIfCancellationRequested();
         return result;
     }
 
@@ -143,11 +151,12 @@ internal static class WorkflowReferenceDataBuilders
     /// Steps rebuild only victims and never access the VictimType column, leaving
     /// Victim.VictimType at its legacy null default. Offenders need not be contiguous.
     /// </summary>
-    public static WorkflowVictimReferenceData BuildVictims(IDataReader reader, bool step = false)
+    public static async Task<WorkflowVictimReferenceData> BuildVictimsAsync(DbDataReader reader, bool step = false, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var victims = new Dictionary<string, List<Victim>>();
         var types = new Dictionary<string, string>();
-        while (reader.Read())
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             var victim = new Victim
             {
@@ -171,13 +180,15 @@ internal static class WorkflowReferenceDataBuilders
             }
             list.Add(victim);
         }
+        cancellationToken.ThrowIfCancellationRequested();
         return new WorkflowVictimReferenceData(victims, types);
     }
 
-    public static Dictionary<string, HashSet<string>> BuildMezVictims(IDataReader reader)
+    public static async Task<Dictionary<string, HashSet<string>>> BuildMezVictimsAsync(DbDataReader reader, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var result = new Dictionary<string, HashSet<string>>();
-        while (reader.Read())
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             string offender = reader["Offender"].ToString()!;
             string victim = reader["Victim"].ToString()!;
@@ -188,13 +199,15 @@ internal static class WorkflowReferenceDataBuilders
             }
             victims.Add(victim);
         }
+        cancellationToken.ThrowIfCancellationRequested();
         return result;
     }
 
-    public static Dictionary<string, Dictionary<string, HashSet<string>>> BuildAttachedVictimZones(IDataReader reader)
+    public static async Task<Dictionary<string, Dictionary<string, HashSet<string>>>> BuildAttachedVictimZonesAsync(DbDataReader reader, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var result = new Dictionary<string, Dictionary<string, HashSet<string>>>();
-        while (reader.Read())
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             string zoneId = reader["ZoneID"].ToString()!;
             string category = reader["ZoneCategory"].ToString()!;
@@ -213,13 +226,15 @@ internal static class WorkflowReferenceDataBuilders
             }
             victims.Add(victim);
         }
+        cancellationToken.ThrowIfCancellationRequested();
         return result;
     }
 
-    public static Dictionary<int, List<ProfileItemClear>> BuildClearEvents(IDataReader reader)
+    public static async Task<Dictionary<int, List<ProfileItemClear>>> BuildClearEventsAsync(DbDataReader reader, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var result = new Dictionary<int, List<ProfileItemClear>>();
-        while (reader.Read())
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             int profileId = Convert.ToInt32(reader["ProfileID"]);
             string clearingEvent = reader["ClearingEvent"].ToString()!;
@@ -232,6 +247,7 @@ internal static class WorkflowReferenceDataBuilders
             }
             items.Add(item);
         }
+        cancellationToken.ThrowIfCancellationRequested();
         return result;
     }
 }

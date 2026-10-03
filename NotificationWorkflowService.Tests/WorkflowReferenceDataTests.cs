@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Data;
+using System.Data.Common;
 using System.Reflection;
 using ActiveAlarmsParser;
 using Microsoft.Extensions.Configuration;
@@ -41,14 +42,14 @@ public class WorkflowReferenceDataTests
 
     [Theory]
     [MemberData(nameof(RefreshPositions))]
-    public void PreparationFailureAtEverySetupPositionKeepsEntireLiveSnapshot(int kind, int position)
+    public async Task PreparationFailureAtEverySetupPositionKeepsEntireLiveSnapshotAsync(int kind, int position)
     {
         var spy = ReferenceRepository.Create();
         object parser = Parser(kind, spy);
         var old = Seed(parser, kind);
         spy.FailPrepareAt = position;
         bool? result = null;
-        Exception? failure = Record.Exception(() => result = Setup(parser));
+        Exception? failure = await Record.ExceptionAsync(async () => result = await SetupAsync(parser));
 
         // Check rollback even when the legacy step victim preparation path rethrows.
         AssertSnapshot(parser, old);
@@ -56,13 +57,12 @@ public class WorkflowReferenceDataTests
         Assert.Equal(ExpectedCalls(kind).Take(position + 1), spy.Calls.Select(c => c.Key));
         Assert.Null(spy.Calls[position].Operation);
         AssertLifetimes(spy);
-        AssertDirectLoaderPublishes(parser, kind, spy, old);
+        await AssertDirectLoaderPublishesAsync(parser, kind, spy, old);
         if (kind == 2 && position == 5)
         {
             // Preserve the step victim loader's existing preparation rethrow;
             // setup must discard staging and clean up in either failure contract.
-            var invocation = Assert.IsType<TargetInvocationException>(failure);
-            Assert.IsType<ReferenceFailure>(invocation.InnerException);
+            Assert.IsType<ReferenceFailure>(failure);
             Assert.Null(result);
         }
         else
@@ -74,7 +74,7 @@ public class WorkflowReferenceDataTests
 
     [Theory]
     [MemberData(nameof(RefreshPositions))]
-    public void DisposalFailureAtEverySetupPositionDiscardsEarlierStaging(int kind, int position)
+    public async Task DisposalFailureAtEverySetupPositionDiscardsEarlierStagingAsync(int kind, int position)
     {
         var spy = ReferenceRepository.Create();
         object parser = Parser(kind, spy);
@@ -82,19 +82,19 @@ public class WorkflowReferenceDataTests
         spy.FailDisposeAt = position;
         ObserveLiveSnapshot(spy, parser, old);
 
-        Assert.False(Setup(parser));
+        Assert.False(await SetupAsync(parser));
 
         AssertSnapshot(parser, old);
         Assert.Null(Value(parser, "pendingReferenceData"));
         Assert.Equal(ExpectedCalls(kind).Take(position + 1), spy.Calls.Select(c => c.Key));
         AssertLifetimes(spy);
         Assert.Equal((position + 1) * 2, spy.ReadObservations);
-        AssertDirectLoaderPublishes(parser, kind, spy, old);
+        await AssertDirectLoaderPublishesAsync(parser, kind, spy, old);
     }
 
     [Theory]
     [MemberData(nameof(RefreshPositions))]
-    public void DirectLoaderDisposalFailureNeverPublishesEvenAfterFullyMappingRows(int kind, int position)
+    public async Task DirectLoaderDisposalFailureNeverPublishesEvenAfterFullyMappingRowsAsync(int kind, int position)
     {
         var spy = ReferenceRepository.Create();
         object parser = Parser(kind, spy);
@@ -102,7 +102,7 @@ public class WorkflowReferenceDataTests
         spy.FailDisposeAt = 0;
         ObserveLiveSnapshot(spy, parser, old, pending: false);
 
-        Assert.Equal(false, Load(parser, Loaders[position]));
+        Assert.Equal(false, await LoadAsync(parser, Loaders[position]));
 
         AssertSnapshot(parser, old);
         Assert.Null(Value(parser, "pendingReferenceData"));
@@ -118,7 +118,7 @@ public class WorkflowReferenceDataTests
     [InlineData(0, true)]
     [InlineData(1, true)]
     [InlineData(2, true)]
-    public void SuccessfulSetupPublishesAllFreshDictionariesOnlyAfterAllReadersAndDisposals(int kind, bool empty)
+    public async Task SuccessfulSetupPublishesAllFreshDictionariesOnlyAfterAllReadersAndDisposalsAsync(int kind, bool empty)
     {
         var spy = ReferenceRepository.Create();
         spy.Empty = empty;
@@ -126,7 +126,7 @@ public class WorkflowReferenceDataTests
         var old = Seed(parser, kind);
         ObserveLiveSnapshot(spy, parser, old);
 
-        Assert.True(Setup(parser));
+        Assert.True(await SetupAsync(parser));
 
         Assert.Equal(ExpectedCalls(kind), spy.Calls.Select(c => c.Key));
         Assert.Equal(Count(kind) * (empty ? 1 : 2), spy.ReadObservations);
@@ -156,25 +156,25 @@ public class WorkflowReferenceDataTests
             }
         }
         var published = Snapshot(parser, kind);
-        AssertDirectLoaderPublishes(parser, kind, spy, published);
+        await AssertDirectLoaderPublishesAsync(parser, kind, spy, published);
     }
 
     [Theory]
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
-    public void SuccessfulRefreshAfterLateFailureCannotReuseAbandonedStaging(int kind)
+    public async Task SuccessfulRefreshAfterLateFailureCannotReuseAbandonedStagingAsync(int kind)
     {
         var spy = ReferenceRepository.Create();
         object parser = Parser(kind, spy);
         var old = Seed(parser, kind);
         spy.FailDisposeAt = Count(kind) - 1;
-        Assert.False(Setup(parser));
+        Assert.False(await SetupAsync(parser));
         AssertSnapshot(parser, old);
         spy.FailDisposeAt = null;
         spy.Empty = true;
 
-        Assert.True(Setup(parser));
+        Assert.True(await SetupAsync(parser));
 
         foreach (string name in Fields(kind))
         {
@@ -194,14 +194,14 @@ public class WorkflowReferenceDataTests
 
     [Theory]
     [MemberData(nameof(BuilderCases))]
-    public void EveryBuilderReturnsFreshEmptyCollectionsAndDoesNotOwnReader(string builder)
+    public async Task EveryBuilderReturnsFreshEmptyCollectionsAndDoesNotOwnReaderAsync(string builder)
     {
         using var table = BuilderTable(builder);
         table.Clear();
-        using var first = table.CreateDataReader();
-        using var second = table.CreateDataReader();
-        object a = Build(builder, first);
-        object b = Build(builder, second);
+        await using var first = table.CreateDataReader();
+        await using var second = table.CreateDataReader();
+        object a = await BuildAsync(builder, first);
+        object b = await BuildAsync(builder, second);
         Assert.NotSame(a, b);
         foreach (var dict in Dictionaries(a)) Assert.Empty(dict);
         foreach (var dict in Dictionaries(b)) Assert.Empty(dict);
@@ -211,16 +211,16 @@ public class WorkflowReferenceDataTests
 
     [Theory]
     [MemberData(nameof(BuilderCases))]
-    public void EveryBuilderEscapesFailureAfterOneMappedRowWithoutReturningPartialResults(string builder)
+    public async Task EveryBuilderEscapesFailureAfterOneMappedRowWithoutReturningPartialResultsAsync(string builder)
     {
         using var table = BuilderTable(builder);
-        using var underlying = table.CreateDataReader();
+        await using var underlying = table.CreateDataReader();
         var reader = ReaderProxy.Create(underlying);
         var expected = new ReferenceFailure();
         reader.FailAfterFirst = expected;
         object? result = null;
 
-        Assert.Same(expected, Assert.Throws<ReferenceFailure>(() => result = Build(builder, (IDataReader)reader)));
+        Assert.Same(expected, await Assert.ThrowsAsync<ReferenceFailure>(async () => result = await BuildAsync(builder, reader)));
 
         Assert.Null(result);
         Assert.Equal(1, reader.RowsRead);
@@ -228,8 +228,8 @@ public class WorkflowReferenceDataTests
         Assert.Equal(2, reader.ReadCalls);
         Assert.Equal(0, reader.DisposeCalls);
         Assert.False(underlying.IsClosed);
-        using var retry = table.CreateDataReader();
-        var rebuilt = Dictionaries(Build(builder, retry)).ToArray();
+        await using var retry = table.CreateDataReader();
+        var rebuilt = Dictionaries(await BuildAsync(builder, retry)).ToArray();
         Assert.Single(rebuilt[0].Keys);
         if (rebuilt.Length == 2)
         {
@@ -241,11 +241,11 @@ public class WorkflowReferenceDataTests
     [Theory]
     [InlineData(0)]
     [InlineData(1)]
-    public void ClientBuilderPreservesCaseEmptyKeysConversionsAndFirstDuplicate(int type)
+    public async Task ClientBuilderPreservesCaseEmptyKeysConversionsAndFirstDuplicateAsync(int type)
     {
         using var table = Table(["OID", "ProfileID"], ["client", "10"], ["client", "not-an-int"], ["Client", "20"], [DBNull.Value, "30"]);
-        using var reader = table.CreateDataReader();
-        var actual = WorkflowReferenceDataBuilders.BuildClientProfiles(reader, type);
+        await using var reader = table.CreateDataReader();
+        var actual = await WorkflowReferenceDataBuilders.BuildClientProfilesAsync(reader, type);
         Assert.Equal(3, actual.Count);
         Assert.Equal(10, actual["client"]);
         Assert.Equal(20, actual["Client"]);
@@ -256,18 +256,18 @@ public class WorkflowReferenceDataTests
     [InlineData(-1)]
     [InlineData(2)]
     [InlineData(int.MaxValue)]
-    public void InvalidClientProfileTypeConsumesRowsWithoutReadingColumns(int type)
+    public async Task InvalidClientProfileTypeConsumesRowsWithoutReadingColumnsAsync(int type)
     {
         using var table = Table(["unrelated"], ["one"], ["two"]);
-        using var underlying = table.CreateDataReader();
+        await using var underlying = table.CreateDataReader();
         var reader = ReaderProxy.Create(underlying);
-        Assert.Empty(WorkflowReferenceDataBuilders.BuildClientProfiles((IDataReader)reader, type));
+        Assert.Empty(await WorkflowReferenceDataBuilders.BuildClientProfilesAsync(reader, type));
         Assert.Equal(2, reader.RowsRead);
         Assert.Equal(0, reader.ColumnReads);
     }
 
     [Fact]
-    public void ProfileBuilderMapsEveryFieldAndPreservesAllGroupingBranchesAndOrder()
+    public async Task ProfileBuilderMapsEveryFieldAndPreservesAllGroupingBranchesAndOrderAsync()
     {
         using var table = Profiles();
         object?[] first = table.Rows[0].ItemArray;
@@ -277,8 +277,8 @@ public class WorkflowReferenceDataTests
         object?[] otherProfile = (object?[])first.Clone(); otherProfile[0] = 20; otherProfile[1] = "other"; table.Rows.Add(otherProfile);
         table.Rows[1]["ProfileName"] = "ignored";
         table.Rows[1]["Instruction"] = "second";
-        using var reader = table.CreateDataReader();
-        var profiles = WorkflowReferenceDataBuilders.BuildProfiles(reader);
+        await using var reader = table.CreateDataReader();
+        var profiles = await WorkflowReferenceDataBuilders.BuildProfilesAsync(reader);
         Assert.Equal(2, profiles.Count);
         Assert.Equal(10, profiles[10].ProfileID);
         Assert.Equal("profile", profiles[10].ProfileName);
@@ -301,24 +301,24 @@ public class WorkflowReferenceDataTests
     [InlineData("StartTime", "8:00:00")]
     [InlineData("EndTime", "18:00")]
     [InlineData("Day", "invalid")]
-    public void ProfileBuilderRejectsMalformedLaterRowWithoutExposingFirstProfile(string column, string bad)
+    public async Task ProfileBuilderRejectsMalformedLaterRowWithoutExposingFirstProfileAsync(string column, string bad)
     {
         using var table = Profiles();
         table.Rows.Add(table.Rows[0].ItemArray);
         table.Rows[1][column] = bad;
-        using var reader = table.CreateDataReader();
-        Assert.Throws<FormatException>(() => WorkflowReferenceDataBuilders.BuildProfiles(reader));
+        await using var reader = table.CreateDataReader();
+        await Assert.ThrowsAsync<FormatException>(() => WorkflowReferenceDataBuilders.BuildProfilesAsync(reader));
         Assert.False(reader.IsClosed);
     }
 
     [Fact]
-    public void HolidayBuilderPreservesContiguousOrderDatesDuplicatesAndEmptyGroupSentinel()
+    public async Task HolidayBuilderPreservesContiguousOrderDatesDuplicatesAndEmptyGroupSentinelAsync()
     {
         using var table = Table(["POGroup", "StartDate", "EndDate", "HolidayName"],
             ["", Day, Day.AddDays(1), "empty"], ["group", Day.AddHours(23), Day.AddDays(2).AddHours(1), "first"],
             ["group", Day, Day, "duplicate"], ["Group", Day, Day, "case"]);
-        using var reader = table.CreateDataReader();
-        var result = WorkflowReferenceDataBuilders.BuildHolidays(reader);
+        await using var reader = table.CreateDataReader();
+        var result = await WorkflowReferenceDataBuilders.BuildHolidaysAsync(reader);
         Assert.Equal(2, result.Count);
         Assert.Equal(new[] { "empty", "first", "duplicate" }, result["group"].Select(h => h.HolidayName));
         Assert.Equal(Day.AddHours(23), result["group"][1].StartDate);
@@ -327,26 +327,26 @@ public class WorkflowReferenceDataTests
     }
 
     [Fact]
-    public void HolidayBuilderRejectsRevisitedFlushedGroup()
+    public async Task HolidayBuilderRejectsRevisitedFlushedGroupAsync()
     {
         using var table = Table(["POGroup", "StartDate", "EndDate", "HolidayName"],
             ["a", Day, Day, "first"], ["b", Day, Day, "second"], ["a", Day, Day, "third"]);
-        using var reader = table.CreateDataReader();
-        Assert.Throws<ArgumentException>(() => WorkflowReferenceDataBuilders.BuildHolidays(reader));
+        await using var reader = table.CreateDataReader();
+        await Assert.ThrowsAsync<ArgumentException>(() => WorkflowReferenceDataBuilders.BuildHolidaysAsync(reader));
     }
 
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void RolesSeedIsCopiedAndNeverMutatedOnSuccessOrLaterDuplicateFailure(bool fail)
+    public async Task RolesSeedIsCopiedAndNeverMutatedOnSuccessOrLaterDuplicateFailureAsync(bool fail)
     {
         var seed = new Dictionary<string, string> { ["old"] = "original" };
         using var table = Table(["SystemID", "RoleName"], ["new", "first"], [fail ? "old" : "NEW", "second"]);
-        using var reader = table.CreateDataReader();
-        if (fail) Assert.Throws<ArgumentException>(() => WorkflowReferenceDataBuilders.BuildRoles(reader, seed));
+        await using var reader = table.CreateDataReader();
+        if (fail) await Assert.ThrowsAsync<ArgumentException>(() => WorkflowReferenceDataBuilders.BuildRolesAsync(reader, seed));
         else
         {
-            var built = WorkflowReferenceDataBuilders.BuildRoles(reader, seed);
+            var built = await WorkflowReferenceDataBuilders.BuildRolesAsync(reader, seed);
             Assert.NotSame(seed, built);
             Assert.Equal(3, built.Count);
             built["old"] = "changed";
@@ -357,27 +357,27 @@ public class WorkflowReferenceDataTests
     }
 
     [Fact]
-    public void RolesSeedIsUnchangedAfterPartialReaderFailure()
+    public async Task RolesSeedIsUnchangedAfterPartialReaderFailureAsync()
     {
         var seed = new Dictionary<string, string> { ["old"] = "original" };
         using var table = BuilderTable("roles");
-        using var underlying = table.CreateDataReader();
+        await using var underlying = table.CreateDataReader();
         var reader = ReaderProxy.Create(underlying);
         reader.FailAfterFirst = new ReferenceFailure();
-        Assert.Throws<ReferenceFailure>(() => WorkflowReferenceDataBuilders.BuildRoles((IDataReader)reader, seed));
+        await Assert.ThrowsAsync<ReferenceFailure>(() => WorkflowReferenceDataBuilders.BuildRolesAsync(reader, seed));
         Assert.Equal("original", Assert.Single(seed).Value);
         Assert.Equal(1, reader.RowsRead);
         Assert.Equal(0, reader.DisposeCalls);
     }
 
     [Fact]
-    public void VictimBuilderRetainsDuplicatesNoncontiguousOffendersAndFirstTypeAcrossOffenders()
+    public async Task VictimBuilderRetainsDuplicatesNoncontiguousOffendersAndFirstTypeAcrossOffendersAsync()
     {
         using var table = Table(["Offender", "Victim", "EmailAddress", "CellPhone", "VictimType"],
             ["a", "victim", "first", "111", "VAPP"], ["b", "victim", "second", "222", "OTHER"],
             ["a", "victim", "third", "333", "OTHER"]);
-        using var reader = table.CreateDataReader();
-        var result = WorkflowReferenceDataBuilders.BuildVictims(reader);
+        await using var reader = table.CreateDataReader();
+        var result = await WorkflowReferenceDataBuilders.BuildVictimsAsync(reader);
         Assert.Equal(new[] { "first", "third" }, result.Victims["a"].Select(v => v.Email));
         Assert.Equal(new[] { "111", "333" }, result.Victims["a"].Select(v => v.CellPhone));
         Assert.Equal("OTHER", Assert.Single(result.Victims["b"]).VictimType);
@@ -386,37 +386,37 @@ public class WorkflowReferenceDataTests
     }
 
     [Fact]
-    public void StepVictimBuilderDoesNotAccessVictimTypeColumn()
+    public async Task StepVictimBuilderDoesNotAccessVictimTypeColumnAsync()
     {
         using var table = Table(["Offender", "Victim", "EmailAddress", "CellPhone"], ["client", "victim", "email", "cell"]);
-        using var reader = table.CreateDataReader();
-        var result = WorkflowReferenceDataBuilders.BuildVictims(reader, step: true);
+        await using var reader = table.CreateDataReader();
+        var result = await WorkflowReferenceDataBuilders.BuildVictimsAsync(reader, step: true);
         Assert.Empty(result.VictimTypeDict);
         Assert.Null(Assert.Single(result.Victims["client"]).VictimType);
     }
 
     [Fact]
-    public void MezAndZoneBuildersDeduplicateOnlyExactKeysAndPreserveLegacyCompositeCollision()
+    public async Task MezAndZoneBuildersDeduplicateOnlyExactKeysAndPreserveLegacyCompositeCollisionAsync()
     {
         using var mez = Table(["Offender", "Victim"], ["a", "v"], ["b", "v"], ["a", "v"], ["a", "V"]);
-        using var mezReader = mez.CreateDataReader();
-        var victims = WorkflowReferenceDataBuilders.BuildMezVictims(mezReader);
+        await using var mezReader = mez.CreateDataReader();
+        var victims = await WorkflowReferenceDataBuilders.BuildMezVictimsAsync(mezReader);
         Assert.Equal(2, victims["a"].Count); Assert.Single(victims["b"]);
         using var zones = Table(["ZoneID", "ZoneCategory", "OffenderID", "VictimID"],
             ["z|c", "d", "a", "v"], ["z", "c|d", "a", "v"], ["z", "c|d", "a", "V"], ["z", "C|d", "a", "v"]);
-        using var zoneReader = zones.CreateDataReader();
-        var attached = WorkflowReferenceDataBuilders.BuildAttachedVictimZones(zoneReader);
+        await using var zoneReader = zones.CreateDataReader();
+        var attached = await WorkflowReferenceDataBuilders.BuildAttachedVictimZonesAsync(zoneReader);
         Assert.Equal(2, attached["a"].Count);
         Assert.Equal(2, attached["a"]["z|c|d"].Count);
         Assert.Single(attached["a"]["z|C|d"]);
     }
 
     [Fact]
-    public void ClearBuilderRetainsDuplicateRowsOrderAndConvertedProfileIds()
+    public async Task ClearBuilderRetainsDuplicateRowsOrderAndConvertedProfileIdsAsync()
     {
         using var table = Table(["ProfileID", "ClearingEvent", "EventCode"], ["10", "first", "event"], ["20", "other", "Event"], ["10", "first", "event"], ["10", "last", "Event"]);
-        using var reader = table.CreateDataReader();
-        var result = WorkflowReferenceDataBuilders.BuildClearEvents(reader);
+        await using var reader = table.CreateDataReader();
+        var result = await WorkflowReferenceDataBuilders.BuildClearEventsAsync(reader);
         Assert.Equal(2, result.Count);
         Assert.Equal(new[] { "first", "first", "last" }, result[10].Select(i => i.ClearingEvent));
         Assert.Equal(new[] { "event", "event", "Event" }, result[10].Select(i => i.EventCode));
@@ -600,19 +600,12 @@ public class WorkflowReferenceDataTests
         string[] parts = loader.Split(':');
         return "Prepare" + char.ToUpperInvariant(parts[0][0]) + parts[0][1..] + (parts.Length == 2 ? ":" + parts[1] : "");
     }
-    private static object? Load(object parser, string loader)
+    private static Task<object?> LoadAsync(object parser, string loader)
     {
         string[] parts = loader.Split(':');
-        return Call(parser, parts[0], parts.Length == 2 ? [int.Parse(parts[1])] : []);
+        return WorkflowRepositoryAdapterTests.CallAsync(parser, parts[0], parts.Length == 2 ? [int.Parse(parts[1])] : []);
     }
-    private static bool Setup(object parser) => (bool)Call(parser, "setUpParser", "Offline")!;
-    private static MethodInfo Method(object parser, string name)
-    {
-        for (Type? type = parser.GetType(); type != null; type = type.BaseType)
-            if (type.GetMethod(name, Instance | BindingFlags.DeclaredOnly) is { } method)
-                return method;
-        throw new MissingMethodException(parser.GetType().FullName, name);
-    }
+    private static async Task<bool> SetupAsync(object parser) => (bool)(await WorkflowRepositoryAdapterTests.CallAsync(parser, "setUpParser", "Offline"))!;
     private static FieldInfo FieldInfo(object parser, string name)
     {
         for (Type? type = parser.GetType(); type != null; type = type.BaseType)
@@ -620,7 +613,6 @@ public class WorkflowReferenceDataTests
                 return field;
         throw new MissingFieldException(parser.GetType().FullName, name);
     }
-    private static object? Call(object parser, string method, params object?[] args) => Method(parser, method).Invoke(parser, args);
     private static object? Value(object parser, string field) => FieldInfo(parser, field).GetValue(parser);
     private static T Field<T>(object parser, string field) => (T)Value(parser, field)!;
     private static object Parser(int kind, ReferenceRepository spy)
@@ -700,10 +692,10 @@ public class WorkflowReferenceDataTests
         spy.OnRead = Observe;
         spy.OnDispose = Observe;
     }
-    private static void AssertDirectLoaderPublishes(object parser, int kind, ReferenceRepository spy, Dictionary<string, IDictionary> before)
+    private static async Task AssertDirectLoaderPublishesAsync(object parser, int kind, ReferenceRepository spy, Dictionary<string, IDictionary> before)
     {
         spy.OnRead = null; spy.OnDispose = null; spy.FailPrepareAt = null; spy.FailDisposeAt = null; spy.Empty = false;
-        Assert.Equal(true, Load(parser, "FetchClientProfile:0"));
+        Assert.Equal(true, await LoadAsync(parser, "FetchClientProfile:0"));
         Assert.NotSame(before["clientProfileMapping"], Value(parser, "clientProfileMapping"));
         Assert.Equal(10, Assert.Single(Field<Dictionary<string, int>>(parser, "clientProfileMapping")).Value);
         foreach (string name in Fields(kind).Where(n => n != "clientProfileMapping")) Assert.Same(before[name], Value(parser, name));
@@ -726,18 +718,18 @@ public class WorkflowReferenceDataTests
     private static Dictionary<string, List<Holiday>> Holidays() => new() { ["group"] = [new() { StartDate = Day, EndDate = Day }] };
     private static IEnumerable<IDictionary> Dictionaries(object result) => result is WorkflowVictimReferenceData victims
         ? new IDictionary[] { victims.Victims, victims.VictimTypeDict } : [(IDictionary)result];
-    private static object Build(string builder, IDataReader reader) => builder switch
+    private static async Task<object> BuildAsync(string builder, DbDataReader reader) => builder switch
     {
-        "client:0" => WorkflowReferenceDataBuilders.BuildClientProfiles(reader, 0),
-        "client:1" => WorkflowReferenceDataBuilders.BuildClientProfiles(reader, 1),
-        "profiles" => WorkflowReferenceDataBuilders.BuildProfiles(reader),
-        "holidays" => WorkflowReferenceDataBuilders.BuildHolidays(reader),
-        "roles" => WorkflowReferenceDataBuilders.BuildRoles(reader),
-        "victims" => WorkflowReferenceDataBuilders.BuildVictims(reader),
-        "step-victims" => WorkflowReferenceDataBuilders.BuildVictims(reader, step: true),
-        "mez" => WorkflowReferenceDataBuilders.BuildMezVictims(reader),
-        "zones" => WorkflowReferenceDataBuilders.BuildAttachedVictimZones(reader),
-        "clear" => WorkflowReferenceDataBuilders.BuildClearEvents(reader),
+        "client:0" => await WorkflowReferenceDataBuilders.BuildClientProfilesAsync(reader, 0),
+        "client:1" => await WorkflowReferenceDataBuilders.BuildClientProfilesAsync(reader, 1),
+        "profiles" => await WorkflowReferenceDataBuilders.BuildProfilesAsync(reader),
+        "holidays" => await WorkflowReferenceDataBuilders.BuildHolidaysAsync(reader),
+        "roles" => await WorkflowReferenceDataBuilders.BuildRolesAsync(reader),
+        "victims" => await WorkflowReferenceDataBuilders.BuildVictimsAsync(reader),
+        "step-victims" => await WorkflowReferenceDataBuilders.BuildVictimsAsync(reader, step: true),
+        "mez" => await WorkflowReferenceDataBuilders.BuildMezVictimsAsync(reader),
+        "zones" => await WorkflowReferenceDataBuilders.BuildAttachedVictimZonesAsync(reader),
+        "clear" => await WorkflowReferenceDataBuilders.BuildClearEventsAsync(reader),
         _ => throw new InvalidOperationException(builder)
     };
     private static DataTable BuilderTable(string builder) => Rows(builder switch
@@ -807,59 +799,81 @@ public class WorkflowReferenceDataTests
         public List<string> Events { get; } = [];
         public DataTableReader? Reader { get; private set; }
         public int DisposeCalls { get; private set; }
-        public void Open() { Assert.Empty(Events); Track("Open"); }
-        public IDataReader ExecuteReader()
+        public Task OpenAsync(CancellationToken cancellationToken = default)
+        { cancellationToken.ThrowIfCancellationRequested(); Assert.Empty(Events); Track("Open"); return Task.CompletedTask; }
+        public Task<DbDataReader> ExecuteReaderAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Assert.Equal(new[] { "Open" }, Events); Track("ExecuteReader");
             Reader = table.CreateDataReader();
             var proxy = ReaderProxy.Create(Reader);
             proxy.OnRead = () => { spy.ReadObservations++; spy.OnRead?.Invoke(); };
-            return (IDataReader)proxy;
+            return Task.FromResult<DbDataReader>(proxy);
         }
-        public int ExecuteNonQuery() => throw new InvalidOperationException("Reference readers must not write");
-        public void Close() => throw new InvalidOperationException("Unexpected Close/retry");
-        public void Dispose()
+        public Task<int> ExecuteNonQueryAsync(CancellationToken cancellationToken = default) => throw new InvalidOperationException("Reference readers must not write");
+        public Task CloseAsync() => throw new InvalidOperationException("Unexpected Close/retry");
+        public async ValueTask DisposeAsync()
         {
             Assert.Equal(0, DisposeCalls++); Track("Dispose");
             // Observe old live dictionaries even after the last row has been consumed.
             try { spy.OnDispose?.Invoke(); }
-            finally { Reader?.Dispose(); table.Dispose(); }
+            finally { if (Reader is not null) await Reader.DisposeAsync(); table.Dispose(); }
             if (failDispose) throw new ReferenceFailure();
         }
         private void Track(string name) { Events.Add(name); spy.Events.Add(call.Key + ":" + name); }
     }
-    public class ReaderProxy : DispatchProxy
+    public sealed class ReaderProxy(DbDataReader inner) : DbDataReader
     {
-        public IDataReader Inner { get; set; } = null!;
         public Action? OnRead { get; set; }
         public Exception? FailAfterFirst { get; set; }
         public int RowsRead { get; private set; }
         public int ReadCalls { get; private set; }
         public int ColumnReads { get; private set; }
         public int DisposeCalls { get; private set; }
-        public static ReaderProxy Create(IDataReader reader)
+        public static ReaderProxy Create(DbDataReader reader) => new(reader);
+        public override async Task<bool> ReadAsync(CancellationToken cancellationToken)
         {
-            var proxy = (ReaderProxy)DispatchProxy.Create<IDataReader, ReaderProxy>();
-            proxy.Inner = reader; return proxy;
+            cancellationToken.ThrowIfCancellationRequested();
+            ReadCalls++; OnRead?.Invoke();
+            if (RowsRead == 1 && FailAfterFirst is { } failure) throw failure;
+            bool read = await inner.ReadAsync(cancellationToken);
+            if (read) RowsRead++;
+            return read;
         }
-        protected override object? Invoke(MethodInfo? method, object?[]? args)
-        {
-            Assert.NotNull(method);
-            if (method.Name == nameof(IDataReader.Read))
-            {
-                ReadCalls++; OnRead?.Invoke();
-                if (RowsRead == 1 && FailAfterFirst is { } failure) throw failure;
-                bool read = Inner.Read(); if (read) RowsRead++;
-                return read;
-            }
-            if (method.Name == "get_Item") ColumnReads++;
-            if (method.Name is "Dispose" or "Close") DisposeCalls++;
-            try { return method.Invoke(Inner, args); }
-            catch (TargetInvocationException ex) when (ex.InnerException != null)
-            {
-                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex.InnerException).Throw();
-                throw;
-            }
-        }
+        public override bool Read() => throw new InvalidOperationException("Builders must read asynchronously");
+        public override object this[int ordinal] { get { ColumnReads++; return inner[ordinal]; } }
+        public override object this[string name] { get { ColumnReads++; return inner[name]; } }
+        public override int Depth => inner.Depth;
+        public override int FieldCount => inner.FieldCount;
+        public override bool HasRows => inner.HasRows;
+        public override bool IsClosed => inner.IsClosed;
+        public override int RecordsAffected => inner.RecordsAffected;
+        public override bool GetBoolean(int ordinal) => inner.GetBoolean(ordinal);
+        public override byte GetByte(int ordinal) => inner.GetByte(ordinal);
+        public override long GetBytes(int ordinal, long offset, byte[]? buffer, int bufferOffset, int length) => inner.GetBytes(ordinal, offset, buffer, bufferOffset, length);
+        public override char GetChar(int ordinal) => inner.GetChar(ordinal);
+        public override long GetChars(int ordinal, long offset, char[]? buffer, int bufferOffset, int length) => inner.GetChars(ordinal, offset, buffer, bufferOffset, length);
+        public override string GetDataTypeName(int ordinal) => inner.GetDataTypeName(ordinal);
+        public override DateTime GetDateTime(int ordinal) => inner.GetDateTime(ordinal);
+        public override decimal GetDecimal(int ordinal) => inner.GetDecimal(ordinal);
+        public override double GetDouble(int ordinal) => inner.GetDouble(ordinal);
+        public override IEnumerator GetEnumerator() => ((IEnumerable)inner).GetEnumerator();
+        public override Type GetFieldType(int ordinal) => inner.GetFieldType(ordinal);
+        public override float GetFloat(int ordinal) => inner.GetFloat(ordinal);
+        public override Guid GetGuid(int ordinal) => inner.GetGuid(ordinal);
+        public override short GetInt16(int ordinal) => inner.GetInt16(ordinal);
+        public override int GetInt32(int ordinal) => inner.GetInt32(ordinal);
+        public override long GetInt64(int ordinal) => inner.GetInt64(ordinal);
+        public override string GetName(int ordinal) => inner.GetName(ordinal);
+        public override int GetOrdinal(string name) => inner.GetOrdinal(name);
+        public override string GetString(int ordinal) => inner.GetString(ordinal);
+        public override object GetValue(int ordinal) => inner.GetValue(ordinal);
+        public override int GetValues(object[] values) => inner.GetValues(values);
+        public override bool IsDBNull(int ordinal) => inner.IsDBNull(ordinal);
+        public override bool NextResult() => inner.NextResult();
+        public override Task<bool> NextResultAsync(CancellationToken cancellationToken) => inner.NextResultAsync(cancellationToken);
+        public override DataTable? GetSchemaTable() => inner.GetSchemaTable();
+        public override void Close() { DisposeCalls++; inner.Close(); }
+        public override async ValueTask DisposeAsync() { DisposeCalls++; await inner.DisposeAsync(); }
     }
 }

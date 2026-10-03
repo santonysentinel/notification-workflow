@@ -44,28 +44,28 @@ public class WorkflowActionSourceCharacterizationTests
     public void SourceContract_FinalAuditThenArchiveThenConditionalStateWritesThenNormalCheckpoint(string file)
     {
         string parse = Method(ReadSource(file), "parseAlarms");
-        int execute = parse.IndexOf("WorkflowActionResult result = WorkflowActionExecutor.Execute", StringComparison.Ordinal);
+        int execute = parse.IndexOf("WorkflowActionResult result = await WorkflowActionExecutor.ExecuteAsync", StringComparison.Ordinal);
         Assert.True(execute >= 0);
         bool steps = IsSteps(file);
         string step = steps ? "a.CurrentStateNo" : "1";
-        Assert.Equal(steps ? Array.Empty<string>() : new[] { "CreateAlarmAudit(15,\"\",a.HistoryID,1)" },
+        Assert.Equal(steps ? Array.Empty<string>() : new[] { "CreateAlarmAuditAsync(15,\"\",a.HistoryID,1,cancellationToken)" },
             Calls(parse[..execute], ActionTargets));
 
-        Assert.Equal(new[] { $"WorkflowActionExecutor.Execute(a,newWorkflowActionContext(WorkflowActionMode.{(steps ? "Step" : "Normal")},platForm,log,newActionOperations(this),RoleActionMapping,roles,victims))" },
+        Assert.Equal(new[] { $"WorkflowActionExecutor.ExecuteAsync(a,newWorkflowActionContext(WorkflowActionMode.{(steps ? "Step" : "Normal")},platForm,log,newActionOperations(this),RoleActionMapping,roles,victims),cancellationToken)" },
             Calls(parse, "WorkflowActionExecutor\\.Execute"));
         Assert.DoesNotMatch(@"\bswitch\s*\(", CodeMask(parse));
         AssertOrdered(parse, "sb.Append(\"Action as per the profile assigned:\");",
-            "WorkflowActionExecutor.Execute", "insert = result.Insert;", "sb.Append(result.Summary);",
-            "CreateAlarmAudit(14, sb.ToString()", "insertIntoAlarmNotification", "if (a.NextStateNo != -1 && insert)");
+            "await WorkflowActionExecutor.ExecuteAsync", "insert = result.Insert;", "sb.Append(result.Summary);",
+            "await CreateAlarmAuditAsync(14, sb.ToString()", "await insertIntoAlarmNotificationAsync", "if (a.NextStateNo != -1 && insert)");
         if (steps)
         {
             Assert.Empty(Calls(parse[..execute], "PushAlertsToVictims|PushNotificationToVictim|ClearMcAppAlarm"));
         }
         else
         {
-            AssertOrdered(parse, "curr = a;", "PushAlertsToVictims(a);", "PushNotificationToVictim(a);",
-                "CreateAlarmAudit(15,", "if (a.IsAlarmClearingEnabled)", "ClearMcAppAlarm(clearEvents, a.ClientID);",
-                "WorkflowActionExecutor.Execute");
+            AssertOrdered(parse, "curr = a;", "await PushAlertsToVictimsAsync(a, cancellationToken)", "await PushNotificationToVictimAsync(a, cancellationToken)",
+                "await CreateAlarmAuditAsync(15,", "if (a.IsAlarmClearingEnabled)", "await ClearMcAppAlarmAsync(clearEvents, a.ClientID, cancellationToken)",
+                "await WorkflowActionExecutor.ExecuteAsync");
             foreach (string message in new[] { "PushAlertsToVictims Error", "PushNotificationToVictim Error" })
             {
                 string local = CatchContaining(parse, message);
@@ -81,13 +81,13 @@ public class WorkflowActionSourceCharacterizationTests
         string fallback = steps ? "a.CurrentStateNo+1" : "a.StateNo+1";
         var expected = new List<string>
         {
-            $"CreateAlarmAudit(14,sb.ToString(),a.HistoryID,{step})",
-            $"insertIntoAlarmNotification(a.SystemID,{step},{expiry},PriorityMapping[a.Priority])",
-            $"insertIntoCurrentAlarmNotification(a.SystemID,a.NextStateNo,{expiry},{display},{loop},a.ProcessNextStep)",
-            $"insertIntoCurrentAlarmNotification(a.SystemID,{fallback},{expiry},{display},0,1)"
+            $"CreateAlarmAuditAsync(14,sb.ToString(),a.HistoryID,{step},cancellationToken)",
+            $"insertIntoAlarmNotificationAsync(a.SystemID,{step},{expiry},PriorityMapping[a.Priority],cancellationToken)",
+            $"insertIntoCurrentAlarmNotificationAsync(a.SystemID,a.NextStateNo,{expiry},{display},{loop},a.ProcessNextStep,cancellationToken)",
+            $"insertIntoCurrentAlarmNotificationAsync(a.SystemID,{fallback},{expiry},{display},0,1,cancellationToken)"
         };
         if (!steps)
-            expected.Add("updateParserActivty(sysID)");
+            expected.Add("updateParserActivtyAsync(sysID,cancellationToken)");
         Assert.Equal(expected, Calls(tail,
             "CreateAlarmAudit|insertIntoAlarmNotification|insertIntoCurrentAlarmNotification|updateParserActivty"));
         Assert.Contains("if (a.NextStateNo != -1 && insert)", tail);
@@ -95,8 +95,8 @@ public class WorkflowActionSourceCharacterizationTests
         if (!steps)
         {
             Assert.Contains("int? sysID = null;", parse);
-            AssertOrdered(tail, "insertIntoCurrentAlarmNotification", "sysID = a.SystemID;",
-                "Error processing alarm", "if (sysID != null)", "updateParserActivty(sysID)");
+            AssertOrdered(tail, "await insertIntoCurrentAlarmNotificationAsync", "sysID = a.SystemID;",
+                "Error processing alarm", "if (sysID != null)", "await updateParserActivtyAsync(sysID, cancellationToken)");
         }
     }
 
@@ -183,11 +183,11 @@ public class WorkflowActionSourceCharacterizationTests
     {
         string body = Method(ReadSource(file), "SendNotificationsToOfficersInSameGroup");
         Assert.Contains("if (a.EmailJoin == 1)", body);
-        Assert.Contains("if (AddToNotificationQueue(a, 2))", body);
+        Assert.Contains("if (await AddToNotificationQueueAsync(a, 2, cancellationToken).ConfigureAwait(false))", body);
         // Lexical direct-call order: nested getInsertEmails is NOT an extra history write.
-        Assert.Equal(new[] { "AddToNotificationQueue(a,2)", "getInsertEmails(a)",
-            "CreateAlarmAudit(3,emails,a.HistoryID,a.CurrentStateNo)",
-            "AddActiveAlarmActionToActivity(a.HistoryID,getInsertEmails(a),0)", "getInsertEmails(a)" },
+        Assert.Equal(new[] { "AddToNotificationQueueAsync(a,2,cancellationToken)", "getInsertEmailsAsync(a,cancellationToken)",
+            "CreateAlarmAuditAsync(3,emails,a.HistoryID,a.CurrentStateNo,cancellationToken)",
+            "AddActiveAlarmActionToActivityAsync(a.HistoryID,getInsertEmailsAsync(a,cancellationToken),0,cancellationToken)", "getInsertEmailsAsync(a,cancellationToken)" },
             Calls(body, ActionTargets));
     }
 
@@ -284,7 +284,8 @@ public class WorkflowActionSourceCharacterizationTests
     private static string Method(string source, string name)
     {
         var matches = Regex.Matches(CodeMask(source),
-            @"\b(?:public|private|protected)\s+(?:void|bool|string|String)\s+" + Regex.Escape(name) + @"\s*\([^)]*\)\s*\{");
+            @"\b(?:public|private|protected)\s+async\s+Task(?:\s*<\s*(?:bool|int|string|String)\s*>)?\s+" +
+            Regex.Escape(name) + @"Async\s*\([^)]*\)\s*\{");
         Match signature = Assert.Single(matches.Cast<Match>());
         int open = signature.Index + signature.Length - 1;
         int close = MatchingDelimiter(CodeMask(source), open, '{', '}');
@@ -294,18 +295,26 @@ public class WorkflowActionSourceCharacterizationTests
     private static string[] Calls(string source, string targets)
     {
         string code = CodeMask(source);
-        return Regex.Matches(code, @"(?<![\w.])(?<name>" + targets + @")\s*\(")
+        return Regex.Matches(code, @"(?<![\w.])(?<name>" + targets + @")(?:Async)?\s*\(")
             .Cast<Match>().Select(match =>
             {
+            // Every direct I/O call (including nested reads) must actually be awaited.
+            Assert.Matches(@"\bawait\s*$", code[..match.Index]);
                 int open = match.Index + match.Length - 1;
                 int close = MatchingDelimiter(code, open, '(', ')');
-                return Regex.Replace(source[match.Index..(close + 1)], @"\s+", "");
+            string call = source[match.Index..(close + 1)];
+            // Remove only await/configuration syntax inside arguments; retain async
+            // method names and final tokens so exact mode/argument contracts stay strict.
+            call = Regex.Replace(call, @"\bawait\s+", "");
+            call = call.Replace(".ConfigureAwait(false)", "", StringComparison.Ordinal);
+            return Regex.Replace(call, @"\s+", "");
             }).ToArray();
     }
 
     private static IEnumerable<string> CatchBodies(string source)
     {
         string code = CodeMask(source);
+        // Cancellation catches intentionally precede these general legacy catches.
         foreach (Match match in Regex.Matches(code, @"\bcatch\s*\(Exception\s+\w+\)\s*\{"))
         {
             int open = match.Index + match.Length - 1;

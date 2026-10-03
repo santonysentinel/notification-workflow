@@ -1,11 +1,11 @@
-using System.Data;
+using System.Data.Common;
 
 namespace NotificationWorkflowService.Repository;
 
 /// <summary>
 /// Keeps preparation and argument evaluation inside the caller's original setup catch,
-/// but owns the operation until after that catch, including explicit Close calls.
-/// Preparation happens once before retries; Open never prepares or resets.
+/// but owns the operation until after that catch, including explicit CloseAsync calls.
+/// Preparation happens once before retries; OpenAsync never prepares or resets.
 /// </summary>
 internal sealed class DeferredWorkflowOperation(Func<IWorkflowOperation> prepare) : IWorkflowOperation
 {
@@ -13,9 +13,12 @@ internal sealed class DeferredWorkflowOperation(Func<IWorkflowOperation> prepare
 
     internal IWorkflowOperation Prepare() => operation ??= prepare();
 
-    public void Open() => (operation ?? throw new InvalidOperationException("Operation has not been prepared.")).Open();
-    public IDataReader ExecuteReader() => (operation ?? throw new InvalidOperationException("Operation has not been prepared.")).ExecuteReader();
-    public int ExecuteNonQuery() => (operation ?? throw new InvalidOperationException("Operation has not been prepared.")).ExecuteNonQuery();
-    public void Close() => operation?.Close();
-    public void Dispose() => operation?.Dispose();
+    public Task OpenAsync(CancellationToken cancellationToken = default) =>
+        (operation ?? throw new InvalidOperationException("Operation has not been prepared.")).OpenAsync(cancellationToken);
+    public Task<DbDataReader> ExecuteReaderAsync(CancellationToken cancellationToken = default) =>
+        (operation ?? throw new InvalidOperationException("Operation has not been prepared.")).ExecuteReaderAsync(cancellationToken);
+    public Task<int> ExecuteNonQueryAsync(CancellationToken cancellationToken = default) =>
+        (operation ?? throw new InvalidOperationException("Operation has not been prepared.")).ExecuteNonQueryAsync(cancellationToken);
+    public Task CloseAsync() => operation?.CloseAsync() ?? Task.CompletedTask;
+    public ValueTask DisposeAsync() => operation?.DisposeAsync() ?? ValueTask.CompletedTask;
 }

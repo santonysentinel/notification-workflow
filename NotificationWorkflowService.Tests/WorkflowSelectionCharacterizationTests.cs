@@ -151,7 +151,7 @@ public class WorkflowSelectionCharacterizationTests
     [InlineData(1, true)]
     [InlineData(2, false)]
     [InlineData(2, true)]
-    public void PrioritySelectionUsesNormalOrHolidayMappingAndCopiesSelectedFields(int kind, bool holiday)
+    public async Task PrioritySelectionUsesNormalOrHolidayMappingAndCopiesSelectedFieldsAsync(int kind, bool holiday)
     {
         var parser = Parser(kind);
         var alarm = Alarm();
@@ -168,7 +168,7 @@ public class WorkflowSelectionCharacterizationTests
         }
         List<ActiveAlarm> alarms = [alarm];
 
-        Populate(parser, alarms);
+        await PopulateAsync(parser, alarms);
 
         Assert.Same(alarm, Assert.Single(alarms));
         AssertSelection(alarm, holiday ? special : normal, holiday ? 20 : 10);
@@ -179,7 +179,7 @@ public class WorkflowSelectionCharacterizationTests
     [InlineData(false, "1", 3)]
     [InlineData(true, "0", 1)]
     [InlineData(true, "1", 3)]
-    public void NormalMissingProfileRetainsAlarmAndUsesConfiguredDefault(bool common, string flag, int priority)
+    public async Task NormalMissingProfileRetainsAlarmAndUsesConfiguredDefaultAsync(bool common, string flag, int priority)
     {
         var parser = NormalParser(common);
         SetField(parser, "configuration", new ConfigurationBuilder()
@@ -189,7 +189,7 @@ public class WorkflowSelectionCharacterizationTests
         alarm.Instruction = "previous instruction";
         List<ActiveAlarm> alarms = [alarm];
 
-        Populate(parser, alarms);
+        await PopulateAsync(parser, alarms);
 
         Assert.Same(alarm, Assert.Single(alarms));
         Assert.Equal(priority, alarm.Priority);
@@ -202,7 +202,7 @@ public class WorkflowSelectionCharacterizationTests
     [InlineData(0, 1, 1, -1, 4)]
     [InlineData(1, 1, 1, -1, 4)]
     [InlineData(1, -1, 5, 1, 2)]
-    public void StepsIncrementOnlyAtLoopStartAndTransitionAtOrAboveLoopLimit(
+    public async Task StepsIncrementOnlyAtLoopStartAndTransitionAtOrAboveLoopLimitAsync(
         int currentLoop, int loopStart, int limit, int expectedLoop, int expectedState)
     {
         var parser = NewParser<WorkFlowSteps>();
@@ -221,7 +221,7 @@ public class WorkflowSelectionCharacterizationTests
         AddProfile(parser, next, 10, false, ineligibleNext, current);
         List<ActiveAlarm> alarms = [alarm];
 
-        Populate(parser, alarms);
+        await PopulateAsync(parser, alarms);
 
         Assert.Same(alarm, Assert.Single(alarms));
         Assert.Equal(expectedLoop, alarm.CurrentLoopNumber);
@@ -230,7 +230,7 @@ public class WorkflowSelectionCharacterizationTests
     }
 
     [Fact]
-    public void StepsTransitionChoosesLowestEligibleStateAndFirstDuplicate()
+    public async Task StepsTransitionChoosesLowestEligibleStateAndFirstDuplicateAsync()
     {
         var parser = NewParser<WorkFlowSteps>();
         var alarm = Alarm();
@@ -250,7 +250,7 @@ public class WorkflowSelectionCharacterizationTests
         items.Insert(0, next);
         List<ActiveAlarm> alarms = [alarm];
 
-        Populate(parser, alarms);
+        await PopulateAsync(parser, alarms);
 
         Assert.Same(alarm, Assert.Single(alarms));
         AssertSelection(alarm, next, 10);
@@ -260,7 +260,7 @@ public class WorkflowSelectionCharacterizationTests
     [Theory]
     [InlineData(0)]
     [InlineData(1)]
-    public void StepsUseFirstDuplicateStateAndDoNotGateSelectionOnProcessNext(int processNext)
+    public async Task StepsUseFirstDuplicateStateAndDoNotGateSelectionOnProcessNextAsync(int processNext)
     {
         var parser = NewParser<WorkFlowSteps>();
         var alarm = Alarm();
@@ -270,7 +270,7 @@ public class WorkflowSelectionCharacterizationTests
         AddProfile(parser, Item(1, "earlier-state"), 10, false, first, Item(2, "second"));
         List<ActiveAlarm> alarms = [alarm];
 
-        Populate(parser, alarms);
+        await PopulateAsync(parser, alarms);
 
         Assert.Same(alarm, Assert.Single(alarms));
         AssertSelection(alarm, first, 10);
@@ -286,7 +286,7 @@ public class WorkflowSelectionCharacterizationTests
     [InlineData("exhausted-loop")]
     [InlineData("zero-length")]
     [InlineData("inverted-window")]
-    public void StepsRemoveAlarmWhenNoEligibleProfileItemExists(string scenario)
+    public async Task StepsRemoveAlarmWhenNoEligibleProfileItemExistsAsync(string scenario)
     {
         var parser = NewParser<WorkFlowSteps>();
         var alarm = Alarm();
@@ -313,13 +313,13 @@ public class WorkflowSelectionCharacterizationTests
         if (scenario == "missing-day") Profiles(parser)[10].Events["event"].Clear();
         List<ActiveAlarm> alarms = [alarm];
 
-        Populate(parser, alarms);
+        await PopulateAsync(parser, alarms);
 
         Assert.Empty(alarms);
     }
 
     [Fact]
-    public void StepsRemoveMultipleUnmatchedAlarmsWithoutDroppingMatchedAlarm()
+    public async Task StepsRemoveMultipleUnmatchedAlarmsWithoutDroppingMatchedAlarmAsync()
     {
         var parser = NewParser<WorkFlowSteps>();
         var matched = Alarm();
@@ -327,7 +327,7 @@ public class WorkflowSelectionCharacterizationTests
         AddProfile(parser, Item(2, "matched"), 10, false);
         List<ActiveAlarm> alarms = [Alarm(), matched, Alarm()];
 
-        Populate(parser, alarms);
+        await PopulateAsync(parser, alarms);
 
         Assert.Same(matched, Assert.Single(alarms));
     }
@@ -407,11 +407,10 @@ public class WorkflowSelectionCharacterizationTests
         _ => throw new ArgumentException("Expected a normal parser", nameof(parser))
     };
 
-    private static void Populate(object parser, List<ActiveAlarm> alarms)
+    private static async Task PopulateAsync(object parser, List<ActiveAlarm> alarms)
     {
         object?[] arguments = parser is WorkFlowSteps ? [alarms] : [alarms, 0];
-        Method(parser, "getPriorityAndEmail")
-            .Invoke(parser, arguments);
+        await WorkflowRepositoryAdapterTests.CallAsync(parser, "getPriorityAndEmail", arguments);
         Assert.Same(alarms, arguments[0]);
     }
 

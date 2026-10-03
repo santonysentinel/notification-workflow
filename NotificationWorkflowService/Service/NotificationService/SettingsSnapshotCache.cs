@@ -10,8 +10,8 @@ internal sealed class SettingsSnapshotCache<T> where T : class
 {
     internal static readonly TimeSpan Lifetime = TimeSpan.FromMinutes(5);
     internal static readonly TimeSpan FailureRetryInterval = TimeSpan.FromSeconds(30);
-    private readonly object gate = new();
-    private readonly Func<T> load;
+    private readonly SemaphoreSlim gate = new(1, 1);
+    private readonly Func<CancellationToken, Task<T>> load;
     private readonly ILogger logger;
     private readonly string name;
     private readonly TimeProvider clock;
@@ -21,7 +21,7 @@ internal sealed class SettingsSnapshotCache<T> where T : class
     private bool hasSuccessfulLoad;
     private bool failed;
 
-    internal SettingsSnapshotCache(Func<T> load, T emptySnapshot, ILogger logger, string name,
+    internal SettingsSnapshotCache(Func<CancellationToken, Task<T>> load, T emptySnapshot, ILogger logger, string name,
         TimeProvider? timeProvider = null)
     {
         this.load = load;
@@ -31,10 +31,12 @@ internal sealed class SettingsSnapshotCache<T> where T : class
         clock = timeProvider ?? TimeProvider.System;
     }
 
-    internal T GetSnapshot()
+    internal async Task<T> GetSnapshotAsync(CancellationToken cancellationToken = default)
     {
-        lock (gate)
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             long now = clock.GetTimestamp();
             if (failed && clock.GetElapsedTime(lastFailure, now) < FailureRetryInterval)
                 return snapshot;
@@ -43,15 +45,23 @@ internal sealed class SettingsSnapshotCache<T> where T : class
 
             try
             {
-                T next = load() ?? throw new InvalidOperationException("Settings loader returned a null snapshot.");
+                T next = await load(cancellationToken).ConfigureAwait(false)
+                    ?? throw new InvalidOperationException("Settings loader returned a null snapshot.");
+                cancellationToken.ThrowIfCancellationRequested();
                 // Publish only after every row has been mapped successfully, even if empty.
                 snapshot = next;
                 lastSuccessfulLoad = clock.GetTimestamp();
                 hasSuccessfulLoad = true;
                 failed = false;
             }
+            catch (OperationCanceledException)
+            {
+                // Cancellation neither publishes a snapshot nor starts the failure cooldown.
+                throw;
+            }
             catch (Exception exception)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 lastFailure = clock.GetTimestamp();
                 failed = true;
                 NotificationDiagnostics.Failure(logger, "SettingsRefresh", exception);
@@ -59,6 +69,10 @@ internal sealed class SettingsSnapshotCache<T> where T : class
                     name, FailureRetryInterval.TotalSeconds);
             }
             return snapshot;
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 }

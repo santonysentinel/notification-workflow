@@ -11,14 +11,30 @@ namespace NotificationWorkflowService.Tests;
 public class NotificationRepositoryTests
 {
     [Fact]
-    public void SettingsInitializeFromFakeRepositoryAndDoNotReloadImmediately()
+    public async Task SettingsInitializeFromFakeRepositoryAndDoNotReloadImmediately()
     {
         var repository = new FakeNotificationRepository();
         var config = new ConfigurationBuilder().Build();
         NotificationServiceSetting.Initialize(config, NullLogger.Instance, repository);
-        Assert.Equal("token", NotificationServiceSetting.GetNotificationServiceSetting("v", "e")!.PushNotificationToken);
-        var reminder = NotificationServiceSetting.GetAppReminderSetting("e");
-        Assert.True(NotificationServiceSetting.CheckVictimReminderSetting("o", reminder));
+        Assert.Equal(0, repository.AccountReads);
+        Assert.Equal(0, repository.ReminderReads);
+        Assert.Equal(0, repository.VictimReads);
+
+        using var cancellation = new CancellationTokenSource();
+        var account = await NotificationServiceSetting.GetNotificationServiceSettingAsync("v", "e", cancellation.Token);
+        Assert.Equal("token", account!.PushNotificationToken);
+        Assert.Equal(0, repository.ReminderReads);
+        Assert.Equal(0, repository.VictimReads);
+        var reminder = await NotificationServiceSetting.GetAppReminderSettingAsync("e", cancellation.Token);
+        Assert.Equal(0, repository.VictimReads);
+        Assert.True(await NotificationServiceSetting.CheckVictimReminderSettingAsync("o", reminder, cancellation.Token));
+        Assert.Equal(cancellation.Token, repository.AccountReadToken);
+        Assert.Equal(cancellation.Token, repository.ReminderReadToken);
+        Assert.Equal(cancellation.Token, repository.VictimReadToken);
+
+        Assert.Same(account, await NotificationServiceSetting.GetNotificationServiceSettingAsync("v", "e"));
+        Assert.Same(reminder, await NotificationServiceSetting.GetAppReminderSettingAsync("e"));
+        Assert.True(await NotificationServiceSetting.CheckVictimReminderSettingAsync("o", reminder));
         Assert.Equal(1, repository.AccountReads);
         Assert.Equal(1, repository.ReminderReads);
         Assert.Equal(1, repository.VictimReads);

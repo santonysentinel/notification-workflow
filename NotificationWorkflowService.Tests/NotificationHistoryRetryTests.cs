@@ -13,19 +13,19 @@ namespace NotificationWorkflowService.Tests;
 public class NotificationHistoryRetryTests
 {
     [Fact]
-    public void SuccessExecutesOnceWithoutDelay()
+    public async Task SuccessExecutesOnceWithoutDelay()
     {
         int attempts = 0;
-        ExecuteHistoryWithRetry(() => attempts++, _ => Assert.Fail("Unexpected delay"));
+        await ExecuteHistoryWithRetry(() => attempts++, _ => Assert.Fail("Unexpected delay"));
         Assert.Equal(1, attempts);
     }
 
     [Fact]
-    public void DeadlockCanRecoverOnThirdAttempt()
+    public async Task DeadlockCanRecoverOnThirdAttempt()
     {
         int attempts = 0;
         var delays = new List<TimeSpan>();
-        ExecuteHistoryWithRetry(() =>
+        await ExecuteHistoryWithRetry(() =>
         {
             if (++attempts < 3) throw CreateSqlException(1205);
         }, delays.Add);
@@ -34,12 +34,12 @@ public class NotificationHistoryRetryTests
     }
 
     [Fact]
-    public void PersistentDeadlockPropagatesAfterThreeAttempts()
+    public async Task PersistentDeadlockPropagatesAfterThreeAttempts()
     {
         int attempts = 0;
         int delays = 0;
         var failure = CreateSqlException(1205);
-        var thrown = Assert.Throws<SqlException>(() => ExecuteHistoryWithRetry(() =>
+        var thrown = await Assert.ThrowsAsync<SqlException>(() => ExecuteHistoryWithRetry(() =>
         {
             attempts++;
             throw failure;
@@ -53,12 +53,12 @@ public class NotificationHistoryRetryTests
     [InlineData(2627)] // Duplicate key: permanent failure.
     [InlineData(18456)] // Login failure.
     [InlineData(-2)] // Timeout: insert outcome may be unknown.
-    public void NonDeadlockSqlFailurePropagatesImmediately(int number)
+    public async Task NonDeadlockSqlFailurePropagatesImmediately(int number)
     {
         int attempts = 0;
         // Intentionally mentions deadlock: classification must use Number, not message text.
         var failure = CreateSqlException(number);
-        var thrown = Assert.Throws<SqlException>(() => ExecuteHistoryWithRetry(() =>
+        var thrown = await Assert.ThrowsAsync<SqlException>(() => ExecuteHistoryWithRetry(() =>
         {
             attempts++;
             throw failure;
@@ -69,11 +69,11 @@ public class NotificationHistoryRetryTests
     }
 
     [Fact]
-    public void NonSqlFailurePropagatesImmediately()
+    public async Task NonSqlFailurePropagatesImmediately()
     {
         int attempts = 0;
         var failure = new InvalidOperationException("failure");
-        var thrown = Assert.Throws<InvalidOperationException>(() => ExecuteHistoryWithRetry(() =>
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() => ExecuteHistoryWithRetry(() =>
         {
             attempts++;
             throw failure;
@@ -83,7 +83,7 @@ public class NotificationHistoryRetryTests
     }
 
     [Fact]
-    public void HistoryFailureDoesNotRequeueDeliveryOrStopOtherAcknowledgements()
+    public async Task HistoryFailureDoesNotRequeueDeliveryOrStopOtherAcknowledgements()
     {
         var queue = new NotificationArray();
         queue.BulkAdd(new ArrayList
@@ -91,7 +91,7 @@ public class NotificationHistoryRetryTests
             new Notification { oid = "o", victimid = "v", type = "push", activityid = "1-platform-v" },
             new Notification { oid = "o", victimid = "v", type = "reminder", activityid = "2-platform-v" }
         });
-        // Avoid constructor initialization; history writes use a failing fake repository.
+        // Avoid shared static initialization; history writes use a failing fake repository.
         var sender = (Sender)RuntimeHelpers.GetUninitializedObject(typeof(Sender));
         SetField(sender, "notifications", queue);
         SetField(sender, "logger", NullLogger<Sender>.Instance);
@@ -105,18 +105,18 @@ public class NotificationHistoryRetryTests
                 new() { oid = "o", victimid = "v", type = "reminder", activityid = "2-platform-v", isSuccessful = true }
             ]
         };
-        var handler = typeof(Sender).GetMethod("HandlePostNotificationResponse", BindingFlags.Instance | BindingFlags.NonPublic)!;
-        Assert.True((bool)handler.Invoke(sender, [response, queue.GetSnapshot()])!);
+        var handler = typeof(Sender).GetMethod("HandlePostNotificationResponseAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        Assert.True(await (Task<bool>)handler.Invoke(sender, [response, queue.GetSnapshot(), CancellationToken.None])!);
         Assert.Equal(0, queue.Count());
         Assert.Equal(2, repository.History.Count);
     }
 
-    private static void ExecuteHistoryWithRetry(Action execute, Action<TimeSpan> delay)
+    private static Task ExecuteHistoryWithRetry(Action execute, Action<TimeSpan> delay)
         => NotificationRepository.ExecuteHistoryWithRetryAsync(_ =>
         {
             execute();
             return Task.CompletedTask;
-        }, NullLogger.Instance, default, (duration, _) => { delay(duration); return Task.CompletedTask; }).GetAwaiter().GetResult();
+        }, NullLogger.Instance, default, (duration, _) => { delay(duration); return Task.CompletedTask; });
 
     private static SqlException CreateSqlException(int number)
     {

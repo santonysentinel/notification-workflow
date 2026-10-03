@@ -1,6 +1,6 @@
 # Common priority-action execution
 
-`WorkflowActionExecutor.Execute` owns the priority switch shared by both normal parsers
+`WorkflowActionExecutor.ExecuteAsync` owns the priority switch shared by both normal parsers
 and the step parser. `WorkflowActionContext` supplies the mode, platform, logger, role
 labels, reference dictionaries and `IWorkflowActionOperations` callbacks. The result
 contains the insertion flag and profile-action summary; the alarm retains its existing
@@ -8,7 +8,8 @@ contains the insertion flag and profile-action summary; the alarm retains its ex
 
 Private parser adapters delegate to the original action helpers. Their SQL operation
 ownership, Boolean results, retries, swallowed exceptions and rethrows remain unchanged.
-The executor does not open connections, start transactions, retry, or schedule delivery.
+The executor awaits callbacks sequentially with caller cancellation. It does not open
+connections, start transactions, retry, or schedule delivery.
 
 ## Ordering and mode boundaries
 

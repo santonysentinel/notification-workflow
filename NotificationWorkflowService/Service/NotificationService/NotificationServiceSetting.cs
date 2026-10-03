@@ -59,9 +59,8 @@ namespace ActiveAlarmsParser.Service.NotificationService
                 victimSettingsCache = new SettingsSnapshotCache<Dictionary<string, VictimSetting>>(
                     readVictimNotificationSettings, new Dictionary<string, VictimSetting>(),
                     logger, "readVictimNotificationSettings");
-                reminderSettingsCache.GetSnapshot();
-                accountSettingsCache.GetSnapshot();
-                victimSettingsCache.GetSnapshot();
+                // Configuration only: each cache loads lazily on its first awaited accessor.
+                // The former reminder/account/victim preload sequence intentionally no longer runs.
                 Volatile.Write(ref initialized, true);
             }
         }
@@ -81,25 +80,25 @@ namespace ActiveAlarmsParser.Service.NotificationService
             }
         }
 
-        public static AccountPushNotificationSetting? GetNotificationServiceSetting(String VictimID, String EventCode)
+        public static async Task<AccountPushNotificationSetting?> GetNotificationServiceSettingAsync(String VictimID, String EventCode, CancellationToken cancellationToken = default)
         {
             EnsureInitialized();
-            var snapshot = accountSettingsCache!.GetSnapshot();
+            var snapshot = await accountSettingsCache!.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
             return snapshot.TryGetValue(VictimID, out var settings) && settings.TryGetValue(EventCode, out var setting)
                 ? setting : null;
         }
 
-        public static ReminderSetting? GetAppReminderSetting(String EventCode)
+        public static async Task<ReminderSetting?> GetAppReminderSettingAsync(String EventCode, CancellationToken cancellationToken = default)
         {
             EnsureInitialized();
-            var snapshot = reminderSettingsCache!.GetSnapshot();
+            var snapshot = await reminderSettingsCache!.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
             return snapshot.TryGetValue(EventCode, out var setting) ? setting : null;
         }
 
-        public static bool CheckVictimReminderSetting(String OID, ReminderSetting? reminder)
+        public static async Task<bool> CheckVictimReminderSettingAsync(String OID, ReminderSetting? reminder, CancellationToken cancellationToken = default)
         {
             EnsureInitialized();
-            var snapshot = victimSettingsCache!.GetSnapshot();
+            var snapshot = await victimSettingsCache!.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
             if (reminder == null || !snapshot.TryGetValue(OID, out var setting))
             {
                 return false;
@@ -114,19 +113,19 @@ namespace ActiveAlarmsParser.Service.NotificationService
             };
         }
 
-        private static Dictionary<string, Dictionary<string, AccountPushNotificationSetting>> readAccountPushNotificationSettings()
+        private static async Task<Dictionary<string, Dictionary<string, AccountPushNotificationSetting>>> readAccountPushNotificationSettings(CancellationToken cancellationToken)
         {
-            return BuildAccountSettings(repository!.ReadAccountNotificationSettingsAsync().GetAwaiter().GetResult());
+            return BuildAccountSettings(await repository!.ReadAccountNotificationSettingsAsync(cancellationToken).ConfigureAwait(false));
         }
 
-        private static Dictionary<string, ReminderSetting> readAccountPushNotificationTypes()
+        private static async Task<Dictionary<string, ReminderSetting>> readAccountPushNotificationTypes(CancellationToken cancellationToken)
         {
-            return BuildReminderSettings(repository!.ReadReminderSettingsAsync().GetAwaiter().GetResult());
+            return BuildReminderSettings(await repository!.ReadReminderSettingsAsync(cancellationToken).ConfigureAwait(false));
         }
 
-        private static Dictionary<string, VictimSetting> readVictimNotificationSettings()
+        private static async Task<Dictionary<string, VictimSetting>> readVictimNotificationSettings(CancellationToken cancellationToken)
         {
-            return BuildVictimSettings(repository!.ReadVictimSettingsAsync().GetAwaiter().GetResult());
+            return BuildVictimSettings(await repository!.ReadVictimSettingsAsync(cancellationToken).ConfigureAwait(false));
         }
 
         internal static Dictionary<string, Dictionary<string, AccountPushNotificationSetting>> BuildAccountSettings(IEnumerable<AccountNotificationSettingRow> rows)

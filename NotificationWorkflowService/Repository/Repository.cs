@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Configuration;
 using NotificationWorkflowService.Entity;
 using System.Data;
+using System.Data.Common;
 
 namespace NotificationWorkflowService.Repository
 {
@@ -218,7 +219,7 @@ namespace NotificationWorkflowService.Repository
         internal sealed class WorkflowOperation : IWorkflowOperation
         {
             private readonly SqlConnection connection;
-            private readonly List<IDataReader> readers = new();
+            private readonly List<DbDataReader> readers = new();
             private bool disposed;
 
             internal WorkflowOperation(SqlConnection connection, SqlCommand command)
@@ -230,45 +231,64 @@ namespace NotificationWorkflowService.Repository
             // Offline contract-test seam; never expose connection strings or command snapshots publicly.
             internal SqlCommand Command { get; }
 
-            public void Open()
+            public async Task OpenAsync(CancellationToken cancellationToken = default)
             {
                 ObjectDisposedException.ThrowIf(disposed, this);
-                connection.Open();
+                cancellationToken.ThrowIfCancellationRequested();
+                await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            public IDataReader ExecuteReader()
+            public async Task<DbDataReader> ExecuteReaderAsync(CancellationToken cancellationToken = default)
             {
                 ObjectDisposedException.ThrowIf(disposed, this);
-                var reader = Command.ExecuteReader();
+                cancellationToken.ThrowIfCancellationRequested();
+                var reader = await Command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
                 readers.Add(reader);
                 return reader;
             }
 
-            public int ExecuteNonQuery()
+            public async Task<int> ExecuteNonQueryAsync(CancellationToken cancellationToken = default)
             {
                 ObjectDisposedException.ThrowIf(disposed, this);
-                return Command.ExecuteNonQuery();
+                cancellationToken.ThrowIfCancellationRequested();
+                return await Command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            public void Close()
+            public Task CloseAsync()
             {
                 ObjectDisposedException.ThrowIf(disposed, this);
                 // Caller-directed close only; do not dispose readers or reset command before a retry.
-                connection.Close();
+                return connection.CloseAsync();
             }
 
-            public void Dispose()
+            public async ValueTask DisposeAsync()
             {
                 if (disposed) return;
                 disposed = true;
                 try
                 {
-                    foreach (var reader in readers) reader.Dispose();
+                    Exception? readerDisposalException = null;
+                    foreach (var reader in readers)
+                    {
+                        try
+                        {
+                            await reader.DisposeAsync().ConfigureAwait(false);
+                        }
+                        catch (Exception exception)
+                        {
+                            // A failed reader cleanup must not skip the remaining readers.
+                            readerDisposalException ??= exception;
+                        }
+                    }
+                    if (readerDisposalException is not null)
+                    {
+                        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(readerDisposalException).Throw();
+                    }
                 }
                 finally
                 {
-                    try { Command.Dispose(); }
-                    finally { connection.Dispose(); }
+                    try { await Command.DisposeAsync().ConfigureAwait(false); }
+                    finally { await connection.DisposeAsync().ConfigureAwait(false); }
                 }
             }
         }

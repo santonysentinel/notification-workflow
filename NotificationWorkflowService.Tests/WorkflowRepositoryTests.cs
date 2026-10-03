@@ -179,7 +179,7 @@ public sealed class WorkflowRepositoryTests
     }
 
     [Fact]
-    public void ServiceCheckpointReadsReloadConnectionStringWhileParserReadsRetainSnapshot()
+    public async Task ServiceCheckpointReadsReloadConnectionStringWhileParserReadsRetainSnapshotAsync()
     {
         const string initial = "Server=offline.invalid;Database=Initial;Integrated Security=true";
         const string next = "Server=offline.invalid;Database=Next;Integrated Security=true";
@@ -187,18 +187,18 @@ public sealed class WorkflowRepositoryTests
         var repo = new WorkflowRepository(configuration);
         configuration["ConnectionStrings:connstr"] = next;
 
-        using var parserCurrent = Assert.IsType<WorkflowRepository.WorkflowOperation>(repo.PrepareReadCurrentActiveAlarmPoint());
-        using var parserLast = Assert.IsType<WorkflowRepository.WorkflowOperation>(repo.PrepareReadLastSuccessfulProcess(47));
-        using var serviceCurrent = Assert.IsType<WorkflowRepository.WorkflowOperation>(repo.PrepareReadCurrentActiveAlarmPoint(reloadConnectionString: true));
-        using var serviceLast = Assert.IsType<WorkflowRepository.WorkflowOperation>(repo.PrepareReadLastSuccessfulProcess(47, reloadConnectionString: true));
+        await using var parserCurrent = Assert.IsType<WorkflowRepository.WorkflowOperation>(repo.PrepareReadCurrentActiveAlarmPoint());
+        await using var parserLast = Assert.IsType<WorkflowRepository.WorkflowOperation>(repo.PrepareReadLastSuccessfulProcess(47));
+        await using var serviceCurrent = Assert.IsType<WorkflowRepository.WorkflowOperation>(repo.PrepareReadCurrentActiveAlarmPoint(reloadConnectionString: true));
+        await using var serviceLast = Assert.IsType<WorkflowRepository.WorkflowOperation>(repo.PrepareReadLastSuccessfulProcess(47, reloadConnectionString: true));
         Assert.Equal(initial, parserCurrent.Command.Connection!.ConnectionString);
         Assert.Equal(initial, parserLast.Command.Connection!.ConnectionString);
         Assert.Equal(next, serviceCurrent.Command.Connection!.ConnectionString);
         Assert.Equal(next, serviceLast.Command.Connection!.ConnectionString);
 
         configuration["ConnectionStrings:connstr"] = initial;
-        using var reloadedCurrent = Assert.IsType<WorkflowRepository.WorkflowOperation>(repo.PrepareReadCurrentActiveAlarmPoint(reloadConnectionString: true));
-        using var reloadedLast = Assert.IsType<WorkflowRepository.WorkflowOperation>(repo.PrepareReadLastSuccessfulProcess(47, reloadConnectionString: true));
+        await using var reloadedCurrent = Assert.IsType<WorkflowRepository.WorkflowOperation>(repo.PrepareReadCurrentActiveAlarmPoint(reloadConnectionString: true));
+        await using var reloadedLast = Assert.IsType<WorkflowRepository.WorkflowOperation>(repo.PrepareReadLastSuccessfulProcess(47, reloadConnectionString: true));
         Assert.Equal(initial, reloadedCurrent.Command.Connection!.ConnectionString);
         Assert.Equal(initial, reloadedLast.Command.Connection!.ConnectionString);
         Assert.Equal(next, serviceCurrent.Command.Connection!.ConnectionString);
@@ -206,7 +206,7 @@ public sealed class WorkflowRepositoryTests
     }
 
     [Fact]
-    public void MissingReloadedConnectionStringThrowsWhileParserSnapshotRemainsUsable()
+    public async Task MissingReloadedConnectionStringThrowsWhileParserSnapshotRemainsUsableAsync()
     {
         const string initial = "Server=offline.invalid;Database=Initial;Integrated Security=true";
         var configuration = Configuration(initial);
@@ -217,14 +217,14 @@ public sealed class WorkflowRepositoryTests
             Assert.Throws<InvalidOperationException>(() => repo.PrepareReadCurrentActiveAlarmPoint(reloadConnectionString: true)).Message);
         Assert.Equal("Connection string 'connstr' is not configured.",
             Assert.Throws<InvalidOperationException>(() => repo.PrepareReadLastSuccessfulProcess(47, reloadConnectionString: true)).Message);
-        using var parserCurrent = Assert.IsType<WorkflowRepository.WorkflowOperation>(repo.PrepareReadCurrentActiveAlarmPoint());
-        using var parserLast = Assert.IsType<WorkflowRepository.WorkflowOperation>(repo.PrepareReadLastSuccessfulProcess(47));
+        await using var parserCurrent = Assert.IsType<WorkflowRepository.WorkflowOperation>(repo.PrepareReadCurrentActiveAlarmPoint());
+        await using var parserLast = Assert.IsType<WorkflowRepository.WorkflowOperation>(repo.PrepareReadLastSuccessfulProcess(47));
         Assert.Equal(initial, parserCurrent.Command.Connection!.ConnectionString);
         Assert.Equal(initial, parserLast.Command.Connection!.ConnectionString);
     }
 
     [Fact]
-    public void EveryPrepareCreatesAClosedIndependentOperationWithoutExecutingSql()
+    public async Task EveryPrepareCreatesAClosedIndependentOperationWithoutExecutingSqlAsync()
     {
         var repo = new WorkflowRepository(Configuration("Server=localhost;Database=unused;Integrated Security=true"));
         var a = Alarm();
@@ -245,23 +245,23 @@ public sealed class WorkflowRepositoryTests
         ];
         foreach (var prepare in prepares)
         {
-            using var first = Assert.IsType<WorkflowRepository.WorkflowOperation>(prepare());
-            using var second = Assert.IsType<WorkflowRepository.WorkflowOperation>(prepare());
+            await using var first = Assert.IsType<WorkflowRepository.WorkflowOperation>(prepare());
+            await using var second = Assert.IsType<WorkflowRepository.WorkflowOperation>(prepare());
             Assert.NotSame(first.Command, second.Command);
             Assert.NotSame(first.Command.Connection, second.Command.Connection);
             Assert.Equal(ConnectionState.Closed, first.Command.Connection!.State);
             var command = first.Command;
             var connection = command.Connection;
-            Assert.Throws<InvalidOperationException>(() => first.ExecuteReader());
-            Assert.Throws<InvalidOperationException>(() => first.ExecuteNonQuery());
-            first.Close();
+            await Assert.ThrowsAsync<InvalidOperationException>(() => first.ExecuteReaderAsync());
+            await Assert.ThrowsAsync<InvalidOperationException>(() => first.ExecuteNonQueryAsync());
+            await first.CloseAsync();
             Assert.Same(command, first.Command);
             Assert.Same(connection, first.Command.Connection);
         }
     }
 
     [Fact]
-    public void PreparedValuesAreCapturedOnceAndDisposedOperationsCannotBeUsed()
+    public async Task PreparedValuesAreCapturedOnceAndDisposedOperationsCannotBeUsedAsync()
     {
         var repo = new WorkflowRepository(Configuration("Server=localhost;Database=unused;Integrated Security=true"));
         var a = Alarm();
@@ -270,11 +270,11 @@ public sealed class WorkflowRepositoryTests
         a.SystemID = 99;
         Assert.Equal("officer@example.test", operation.Command.Parameters["@MsgToAddress"].Value);
         Assert.Equal(11, operation.Command.Parameters["@AlarmID"].Value);
-        operation.Dispose();
-        operation.Dispose();
-        Assert.Throws<ObjectDisposedException>(() => operation.Open());
-        Assert.Throws<ObjectDisposedException>(() => operation.Close());
-        Assert.Throws<ObjectDisposedException>(() => operation.ExecuteReader());
-        Assert.Throws<ObjectDisposedException>(() => operation.ExecuteNonQuery());
+        await operation.DisposeAsync();
+        await operation.DisposeAsync();
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => operation.OpenAsync());
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => operation.CloseAsync());
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => operation.ExecuteReaderAsync());
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => operation.ExecuteNonQueryAsync());
     }
 }

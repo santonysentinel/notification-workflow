@@ -6,8 +6,9 @@ namespace NotificationWorkflowService.Parser.Actions;
 
 internal static class WorkflowActionExecutor
 {
-    internal static WorkflowActionResult Execute(ActiveAlarm alarm, WorkflowActionContext context)
+    internal static async Task<WorkflowActionResult> ExecuteAsync(ActiveAlarm alarm, WorkflowActionContext context, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ActiveAlarm a = alarm;
         var operations = context.Operations;
         bool step = context.Mode == WorkflowActionMode.Step;
@@ -24,60 +25,60 @@ internal static class WorkflowActionExecutor
             case 2:
                 sb.Append("Auto Email");
                 WriteAction(a, context, "Auto Email");
-                operations.SendNotificationsToOfficersInSameGroup(a);
-                operations.AddToNotificationQueue(a, 3);
+                await operations.SendNotificationsToOfficersInSameGroupAsync(a, cancellationToken).ConfigureAwait(false);
+                await operations.AddToNotificationQueueAsync(a, 3, cancellationToken).ConfigureAwait(false);
                 string emailAdresses = Truncate("Pages sent to: " + a.EmailAddresses);
-                operations.CreateAlarmAudit(1, emailAdresses, a.HistoryID, step ? a.CurrentStateNo : 1);
-                operations.AddActiveAlarmActionToActivity(a.HistoryID, a.EmailAddresses, 1);
+                await operations.CreateAlarmAuditAsync(1, emailAdresses, a.HistoryID, step ? a.CurrentStateNo : 1, cancellationToken).ConfigureAwait(false);
+                await operations.AddActiveAlarmActionToActivityAsync(a.HistoryID, a.EmailAddresses, 1, cancellationToken).ConfigureAwait(false);
                 break;
             case 3:
                 sb.Append("McApp");
                 WriteAction(a, context, "McApp");
-                operations.SendNotificationsToOfficersInSameGroup(a);
-                operations.PushAlertToMcApp(a);
+                await operations.SendNotificationsToOfficersInSameGroupAsync(a, cancellationToken).ConfigureAwait(false);
+                await operations.PushAlertToMcAppAsync(a, cancellationToken).ConfigureAwait(false);
                 a.ProcessNextStep = 0;
                 break;
             case 4:
                 sb.Append("Auto Fax");
                 WriteAction(a, context, "Auto Fax");
-                operations.SendNotificationsToOfficersInSameGroup(a);
+                await operations.SendNotificationsToOfficersInSameGroupAsync(a, cancellationToken).ConfigureAwait(false);
                 break;
             case 5:
                 sb.Append("Auto Page");
                 WriteAction(a, context, "Auto Page");
-                operations.SendNotificationsToOfficersInSameGroup(a);
-                operations.AddToNotificationQueue(a, 1);
-                string autoPageEmails = Truncate("Pages sent to: " + operations.getInsertEmails(a));
-                operations.CreateAlarmAudit(3, autoPageEmails, a.HistoryID, step ? a.CurrentStateNo : 1);
-                operations.AddActiveAlarmActionToActivity(a.HistoryID, autoPageEmails, 0);
+                await operations.SendNotificationsToOfficersInSameGroupAsync(a, cancellationToken).ConfigureAwait(false);
+                await operations.AddToNotificationQueueAsync(a, 1, cancellationToken).ConfigureAwait(false);
+                string autoPageEmails = Truncate("Pages sent to: " + await operations.getInsertEmailsAsync(a, cancellationToken).ConfigureAwait(false));
+                await operations.CreateAlarmAuditAsync(3, autoPageEmails, a.HistoryID, step ? a.CurrentStateNo : 1, cancellationToken).ConfigureAwait(false);
+                await operations.AddActiveAlarmActionToActivityAsync(a.HistoryID, autoPageEmails, 0, cancellationToken).ConfigureAwait(false);
                 break;
             case 6:
                 sb.Append("McApp and Auto Fax");
                 WriteAction(a, context, "McApp and Auto Fax");
-                operations.SendNotificationsToOfficersInSameGroup(a);
-                operations.PushAlertToMcApp(a);
+                await operations.SendNotificationsToOfficersInSameGroupAsync(a, cancellationToken).ConfigureAwait(false);
+                await operations.PushAlertToMcAppAsync(a, cancellationToken).ConfigureAwait(false);
                 a.ProcessNextStep = 0;
                 break;
             case 7:
                 sb.Append("McApp and Auto Email");
                 WriteAction(a, context, "McApp and Auto Email");
-                operations.PushAlertToMcApp(a);
-                operations.SendNotificationsToOfficersInSameGroup(a);
-                operations.AddToNotificationQueue(a, 3);
+                await operations.PushAlertToMcAppAsync(a, cancellationToken).ConfigureAwait(false);
+                await operations.SendNotificationsToOfficersInSameGroupAsync(a, cancellationToken).ConfigureAwait(false);
+                await operations.AddToNotificationQueueAsync(a, 3, cancellationToken).ConfigureAwait(false);
                 string emailAdresses7 = Truncate("Pages sent to: " + a.EmailAddresses);
-                operations.CreateAlarmAudit(step ? 3 : 1, emailAdresses7, a.HistoryID, step ? a.CurrentStateNo : 1);
-                operations.AddActiveAlarmActionToActivity(a.HistoryID, a.EmailAddresses, 1);
+                await operations.CreateAlarmAuditAsync(step ? 3 : 1, emailAdresses7, a.HistoryID, step ? a.CurrentStateNo : 1, cancellationToken).ConfigureAwait(false);
+                await operations.AddActiveAlarmActionToActivityAsync(a.HistoryID, a.EmailAddresses, 1, cancellationToken).ConfigureAwait(false);
                 a.ProcessNextStep = 0;
                 break;
             case 9:
                 sb.Append("McApp and Auto Page");
                 WriteAction(a, context, "McApp and Auto Page");
-                operations.SendNotificationsToOfficersInSameGroup(a);
-                operations.PushAlertToMcApp(a);
-                operations.AddToNotificationQueue(a, 1);
-                string autoPageMcAppEmails = Truncate("Pages sent to: " + operations.getInsertEmails(a));
-                operations.CreateAlarmAudit(3, autoPageMcAppEmails, a.HistoryID, step ? a.CurrentStateNo : 1);
-                operations.AddActiveAlarmActionToActivity(a.HistoryID, autoPageMcAppEmails, 0);
+                await operations.SendNotificationsToOfficersInSameGroupAsync(a, cancellationToken).ConfigureAwait(false);
+                await operations.PushAlertToMcAppAsync(a, cancellationToken).ConfigureAwait(false);
+                await operations.AddToNotificationQueueAsync(a, 1, cancellationToken).ConfigureAwait(false);
+                string autoPageMcAppEmails = Truncate("Pages sent to: " + await operations.getInsertEmailsAsync(a, cancellationToken).ConfigureAwait(false));
+                await operations.CreateAlarmAuditAsync(3, autoPageMcAppEmails, a.HistoryID, step ? a.CurrentStateNo : 1, cancellationToken).ConfigureAwait(false);
+                await operations.AddActiveAlarmActionToActivityAsync(a.HistoryID, autoPageMcAppEmails, 0, cancellationToken).ConfigureAwait(false);
                 a.ProcessNextStep = 0;
                 break;
             case 11:
@@ -94,7 +95,7 @@ internal static class WorkflowActionExecutor
                         if (a.Instruction != "")
                         {
                             WriteAction(a, context, step ? "McApp Call Officers" : "McApp - Call Officers");
-                            operations.PushAlertToMcApp(a);
+                            await operations.PushAlertToMcAppAsync(a, cancellationToken).ConfigureAwait(false);
                             a.ProcessNextStep = 0;
                         }
                         break;
@@ -103,10 +104,10 @@ internal static class WorkflowActionExecutor
                         if (a.EmailAddresses != "")
                         {
                             WriteAction(a, context, "Auto Email");
-                            operations.AddToNotificationQueue(a, 3);
+                            await operations.AddToNotificationQueueAsync(a, 3, cancellationToken).ConfigureAwait(false);
                             string emails = Truncate("Pages sent to: " + a.EmailAddresses);
-                            operations.CreateAlarmAudit(14, emails, a.HistoryID, step ? a.CurrentStateNo : 1);
-                            operations.AddActiveAlarmActionToActivity(a.HistoryID, a.EmailAddresses, 1);
+                            await operations.CreateAlarmAuditAsync(14, emails, a.HistoryID, step ? a.CurrentStateNo : 1, cancellationToken).ConfigureAwait(false);
+                            await operations.AddActiveAlarmActionToActivityAsync(a.HistoryID, a.EmailAddresses, 1, cancellationToken).ConfigureAwait(false);
                         }
                         break;
                 }
@@ -121,6 +122,7 @@ internal static class WorkflowActionExecutor
                     var victimEmail = new StringBuilder();
                     foreach (Victim vi in offenderVictims)
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
                         if (!string.IsNullOrEmpty(vi.Email))
                         {
                             victimEmail.Append(vi.Email);
@@ -128,22 +130,27 @@ internal static class WorkflowActionExecutor
                         }
                     }
                     victimsMail = victimEmail.ToString();
-                    operations.insertNotificationQueueVictim(a, 3, victimsMail, true);
+                    await operations.insertNotificationQueueVictimAsync(a, 3, victimsMail, true, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     context.Logger.LogError(ex, step ? "victimsMail" : "Read Victim Emails");
                     victimsMail = "";
                 }
                 string victimEmails = Truncate("Pages sent to: " + victimsMail);
-                operations.CreateAlarmAudit(14, victimEmails, a.HistoryID, 1);
-                operations.AddActiveAlarmActionToActivity(a.HistoryID, victimEmails, 1);
+                await operations.CreateAlarmAuditAsync(14, victimEmails, a.HistoryID, 1, cancellationToken).ConfigureAwait(false);
+                await operations.AddActiveAlarmActionToActivityAsync(a.HistoryID, victimEmails, 1, cancellationToken).ConfigureAwait(false);
                 break;
             case 14:
                 sb.Append(step ? "Contact Victim" : "Contact Victims");
                 WriteAction(a, context, "Contact Victim");
-                operations.SendNotificationsToOfficersInSameGroup(a);
-                operations.PushAlertToMcApp(a);
+                await operations.SendNotificationsToOfficersInSameGroupAsync(a, cancellationToken).ConfigureAwait(false);
+                await operations.PushAlertToMcAppAsync(a, cancellationToken).ConfigureAwait(false);
                 a.ProcessNextStep = 0;
                 break;
             case 15:
@@ -152,20 +159,25 @@ internal static class WorkflowActionExecutor
                 string clientMail = "";
                 try
                 {
-                    clientMail = operations.getClientEmail(a).Trim();
+                    clientMail = (await operations.getClientEmailAsync(a, cancellationToken).ConfigureAwait(false)).Trim();
                     if (clientMail != string.Empty)
                     {
-                        operations.insertNotificationQueueVictim(a, 3, clientMail);
+                        await operations.insertNotificationQueueVictimAsync(a, 3, clientMail, cancellationToken: cancellationToken).ConfigureAwait(false);
                     }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     context.Logger.LogError(ex, "clientMail");
                     clientMail = "";
                 }
                 string cMail = Truncate("Pages sent to: " + clientMail);
-                operations.CreateAlarmAudit(14, cMail, a.HistoryID, 1);
-                operations.AddActiveAlarmActionToActivity(a.HistoryID, cMail, 1);
+                await operations.CreateAlarmAuditAsync(14, cMail, a.HistoryID, 1, cancellationToken).ConfigureAwait(false);
+                await operations.AddActiveAlarmActionToActivityAsync(a.HistoryID, cMail, 1, cancellationToken).ConfigureAwait(false);
                 break;
             case 16:
                 if (!step) sb.Append("Alert Client - Text");
@@ -173,20 +185,25 @@ internal static class WorkflowActionExecutor
                 string clientText = "";
                 try
                 {
-                    clientText = operations.getClientText(a).Trim();
+                    clientText = (await operations.getClientTextAsync(a, cancellationToken).ConfigureAwait(false)).Trim();
                     if (clientText != string.Empty)
                     {
-                        operations.insertNotificationQueueVictim(a, 4, clientText);
+                        await operations.insertNotificationQueueVictimAsync(a, 4, clientText, cancellationToken: cancellationToken).ConfigureAwait(false);
                     }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     context.Logger.LogError(ex, step ? "clientText" : "getClientText");
                     clientText = "";
                 }
                 string cText = Truncate("Pages sent to: " + clientText);
-                operations.CreateAlarmAudit(14, cText, a.HistoryID, 1);
-                operations.AddActiveAlarmActionToActivity(a.HistoryID, cText, 1);
+                await operations.CreateAlarmAuditAsync(14, cText, a.HistoryID, 1, cancellationToken).ConfigureAwait(false);
+                await operations.AddActiveAlarmActionToActivityAsync(a.HistoryID, cText, 1, cancellationToken).ConfigureAwait(false);
                 break;
             case 17:
                 sb.Append("Text All Victims");
@@ -198,6 +215,7 @@ internal static class WorkflowActionExecutor
                     var victimText = new StringBuilder();
                     foreach (Victim vi in offenderVictims)
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
                         if (!string.IsNullOrEmpty(vi.CellPhone))
                         {
                             victimText.Append(vi.CellPhone);
@@ -205,10 +223,15 @@ internal static class WorkflowActionExecutor
                         }
                     }
                     victimsText = victimText.ToString();
-                    operations.insertNotificationQueueVictim(a, 4, victimsText, true);
+                    await operations.insertNotificationQueueVictimAsync(a, 4, victimsText, true, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     context.Logger.LogError(ex, "victimsText");
                     victimsText = "";
                 }
@@ -219,8 +242,8 @@ internal static class WorkflowActionExecutor
                     // Deliberately preserve the unused assignment and its possible exception.
                     else victimEmails = victimsText.Substring(0, 4096);
                 }
-                operations.CreateAlarmAudit(14, Msg, a.HistoryID, 1);
-                operations.AddActiveAlarmActionToActivity(a.HistoryID, Msg, 1);
+                await operations.CreateAlarmAuditAsync(14, Msg, a.HistoryID, 1, cancellationToken).ConfigureAwait(false);
+                await operations.AddActiveAlarmActionToActivityAsync(a.HistoryID, Msg, 1, cancellationToken).ConfigureAwait(false);
                 break;
             default:
                 sb.Append("Do Nothing");
@@ -232,6 +255,7 @@ internal static class WorkflowActionExecutor
                 break;
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         return new WorkflowActionResult(insert, sb.ToString());
     }
 

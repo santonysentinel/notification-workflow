@@ -8,7 +8,7 @@ using NotificationWorkflowService.Parser.Actions;
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Data;
+using System.Data.Common;
 using System.Globalization;
 using System.Text;
 using ActiveAlarmsParser.Service.NotificationService;
@@ -130,17 +130,21 @@ namespace NotificationWorkflowService.Parser
         /// </summary>
         /// <param name="platform">The platform<see cref="String"/>.</param>
         /// <returns>The <see cref="bool"/>.</returns>
-        public bool setUpParser(String platform)
+        public async Task<bool> setUpParserAsync(String platform, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             platForm = platform;
             pendingReferenceData = new WorkflowReferenceData();
             try
             {
-                if (!SetUpReferenceData())
+                if (!await SetUpReferenceDataAsync(cancellationToken).ConfigureAwait(false))
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     return false;
                 }
+                cancellationToken.ThrowIfCancellationRequested();
                 PublishReferenceData(pendingReferenceData);
+                cancellationToken.ThrowIfCancellationRequested();
                 return true;
             }
             finally
@@ -149,55 +153,66 @@ namespace NotificationWorkflowService.Parser
             }
         }
 
-        private bool SetUpReferenceData()
+        private async Task<bool> SetUpReferenceDataAsync(CancellationToken cancellationToken = default)
         {
-            if (!FetchClientProfile(0))
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!await FetchClientProfileAsync(0, cancellationToken).ConfigureAwait(false))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 return false;
             }
 
-            if (!FetchClientProfile(1))
+            if (!await FetchClientProfileAsync(1, cancellationToken).ConfigureAwait(false))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 return false;
             }
 
-            if (!readAllProfiles())
+            if (!await readAllProfilesAsync(cancellationToken).ConfigureAwait(false))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 return false;
             }
 
-            if (!readAllHolidays())
+            if (!await readAllHolidaysAsync(cancellationToken).ConfigureAwait(false))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 return false;
             }
 
-            if (!readAllRoles())
+            if (!await readAllRolesAsync(cancellationToken).ConfigureAwait(false))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 return false;
             }
 
-            if (!readVictims())
+            if (!await readVictimsAsync(cancellationToken).ConfigureAwait(false))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 return false;
             }
 
-            if (!readMEZVictims())
+            if (!await readMEZVictimsAsync(cancellationToken).ConfigureAwait(false))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 return false;
             }
 
-            if (!readAttachedVictimZones())
+            if (!await readAttachedVictimZonesAsync(cancellationToken).ConfigureAwait(false))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 return false;
             }
 
-            if (!readProfileItemsClear())
+            if (!await readProfileItemsClearAsync(cancellationToken).ConfigureAwait(false))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 return false;
             }
 
             //readPNSettings(); // We do not have push notifications now. (April 2021)
 
+            cancellationToken.ThrowIfCancellationRequested();
             return true;
         }
 
@@ -258,12 +273,13 @@ namespace NotificationWorkflowService.Parser
         /// list activeAlarms.
         /// </summary>
         /// <returns>The <see cref="bool"/>.</returns>
-        public bool readPoints()
+        public async Task<bool> readPointsAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
 
-            int LastProcessedPoint = readLastSuccessfulProcess(Convert.ToInt32(configuration[platForm + "ParserID"]));
-            int pointsBehind = ReadCurrentActiveAlarmPoint() - LastProcessedPoint;
+            int LastProcessedPoint = await readLastSuccessfulProcessAsync(Convert.ToInt32(configuration[platForm + "ParserID"]), cancellationToken).ConfigureAwait(false);
+            int pointsBehind = await ReadCurrentActiveAlarmPointAsync(cancellationToken).ConfigureAwait(false) - LastProcessedPoint;
 
             int replaceIndex = Console.Title.IndexOf(platForm + " Parser Acvity");
 
@@ -283,25 +299,29 @@ namespace NotificationWorkflowService.Parser
 
 
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadPoints(configuration["NumberOfProcessPoints"], readLastSuccessfulProcess(Convert.ToInt32(configuration[platForm + "ParserID"])))))
+                int readPointsCheckpoint = 0;
+                await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadPoints(configuration["NumberOfProcessPoints"], readPointsCheckpoint)))
             {
                 try
                 {
+                    readPointsCheckpoint = await readLastSuccessfulProcessAsync(Convert.ToInt32(configuration[platForm + "ParserID"]), cancellationToken).ConfigureAwait(false);
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
 
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             activeAlarms = new List<ActiveAlarm>();
 
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                while (MyDataReader.Read())
+                                while (await MyDataReader.ReadAsync(cancellationToken).ConfigureAwait(false))
                                 {
+                                    cancellationToken.ThrowIfCancellationRequested();
                                     ActiveAlarm a = new ActiveAlarm()
                                     {
                                         HistoryID = (int)MyDataReader["HistoryID"],
@@ -334,7 +354,7 @@ namespace NotificationWorkflowService.Parser
 
                                     activeAlarms.Add(a);
                                 }
-                                getPriorityAndEmail(ref activeAlarms, 0);
+                                await getPriorityAndEmailAsync(activeAlarms, 0, cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 break;
                             }
@@ -350,7 +370,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -358,8 +378,13 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                            {
+                                throw;
+                            }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM POINTS IN PARSER ");
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -367,7 +392,7 @@ namespace NotificationWorkflowService.Parser
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -378,8 +403,13 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM POINTS IN PARSER ");
                     Console.ForegroundColor = ConsoleColor.Red;
@@ -388,6 +418,7 @@ namespace NotificationWorkflowService.Parser
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -396,10 +427,12 @@ namespace NotificationWorkflowService.Parser
         /// </summary>
         /// <param name="activeAlarms">.</param>
         /// <param name="currentState">The currentState<see cref="int"/>.</param>
-        private void getPriorityAndEmail(ref List<ActiveAlarm> activeAlarms, int currentState)
+        private async Task getPriorityAndEmailAsync(List<ActiveAlarm> activeAlarms, int currentState, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             foreach (ActiveAlarm a in activeAlarms)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 TimeZoneInfo zoneInfo = TimeZoneInfo.FindSystemTimeZoneById(a.ClientTZ);
 
                 DateTime nowUTC = DateTime.UtcNow;
@@ -471,7 +504,7 @@ namespace NotificationWorkflowService.Parser
 
                                 if (pi.Action == 12)
                                 {
-                                    readRoles(a, pi.RoleID, pi.RoleAction);
+                                    await readRolesAsync(a, pi.RoleID, pi.RoleAction, cancellationToken).ConfigureAwait(false);
                                 }
                             }
                             else
@@ -480,9 +513,13 @@ namespace NotificationWorkflowService.Parser
                                 {
                                     log.LogInformation(String.Format("FindStepOneProfileItem: No Profile found meet current time AlarmSysID::{0}", a.SystemID));
                                 }
+                                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                                {
+                                    throw;
+                                }
                                 catch (Exception exx)
                                 {
-
+                                    cancellationToken.ThrowIfCancellationRequested();
                                 }
                             }
                         }
@@ -494,9 +531,13 @@ namespace NotificationWorkflowService.Parser
                     {
                         log.LogInformation(String.Format("getPriorityAndEmail: No Profile found meet current time AlarmSysID::{0}", a.SystemID));
                     }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
                     catch (Exception exx)
                     {
-
+                        cancellationToken.ThrowIfCancellationRequested();
                     }
 
                 }
@@ -510,8 +551,13 @@ namespace NotificationWorkflowService.Parser
                             //log.Info(String.Format("getPriorityAndEmailPriorityIssuePI::AlarmSystemID::{0}::ProfileID::{1}::AlarmID = 102 OR GPS11:found::false", a.SystemID, a.ProfileID));
                         }
                     }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
                     catch (Exception e)
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
                         log.LogError(e, "Error getPriorityAndEmail: ");
                     }
 
@@ -527,6 +573,7 @@ namespace NotificationWorkflowService.Parser
                     }
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
         }
         public ProfileItem? FindStepOneProfileItem(List<ProfileItem> profileItems, DateTime current)
         {
@@ -534,6 +581,7 @@ namespace NotificationWorkflowService.Parser
             {
                 return WorkflowProfileResolver.FindInitialProfileItem(profileItems, current);
             }
+            catch (OperationCanceledException) { throw; }
             catch (Exception e)
             {
                 log.LogError(e, "FindStepOneProfileItem Error");
@@ -544,8 +592,9 @@ namespace NotificationWorkflowService.Parser
         /// <summary>
         /// The Main active loop of the step parser, loops through all the activeAlarms and performs the necessary actions.
         /// </summary>
-        public void parseAlarms()
+        public async Task parseAlarmsAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             //NotificationService.NotificationServiceSetting.GetAlarmVAPPTexT("", "", "9999");
             ActiveAlarm? curr = null;
 
@@ -580,6 +629,7 @@ namespace NotificationWorkflowService.Parser
                 log.LogInformation(String.Format("ParseAlarm::CurrentNumberOfActiveAlarms::{0}", activeAlarms.Count));
                 foreach (ActiveAlarm a in activeAlarms)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     log.LogInformation(String.Format("ParseAlarm::AlarmSystemID::{0}", a.SystemID));
                     try
                     {
@@ -587,10 +637,12 @@ namespace NotificationWorkflowService.Parser
 
                         try
                         {
-                            PushAlertsToVictims(a);
+                            await PushAlertsToVictimsAsync(a, cancellationToken).ConfigureAwait(false);
                         }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                         catch (Exception ex)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             log.LogError(ex, "PushAlertsToVictims Error");
                         }
 
@@ -602,17 +654,19 @@ namespace NotificationWorkflowService.Parser
                             //    PushNotificationToVictim(a);
                             //}
 
-                            PushNotificationToVictim(a);
+                            await PushNotificationToVictimAsync(a, cancellationToken).ConfigureAwait(false);
                         }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                         catch (Exception ex)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             log.LogError(ex, "PushNotificationToVictim Error");
                         }
 
 
                         Boolean insert = true;
 
-                        CreateAlarmAudit(15, "", a.HistoryID, 1);
+                        await CreateAlarmAuditAsync(15, "", a.HistoryID, 1, cancellationToken).ConfigureAwait(false);
 
                         StringBuilder sb = new StringBuilder();
                         sb.Append("Action as per the profile assigned:");
@@ -636,18 +690,18 @@ namespace NotificationWorkflowService.Parser
 
                             String clearEvents = listEvents.ToString().TrimEnd(';');
 
-                            ClearMcAppAlarm(clearEvents, a.ClientID);
+                            await ClearMcAppAlarmAsync(clearEvents, a.ClientID, cancellationToken).ConfigureAwait(false);
                         }
                         log.LogInformation(String.Format("ParserBeforeCheck::AlarmSystemID::{0}::Priority::{1}", a.SystemID, a.Priority));
                         log.LogInformation(String.Format("ParserBeforeCheck::AlarmSystemID::{0}::CurrentStateNo::{1}::NextStateNo::{2}::ProcessNextStep::{3}::StateTime::{4}::CurrentLoopNumber::{5}::insert::{6}", a.SystemID, a.CurrentStateNo, a.NextStateNo, a.ProcessNextStep, a.StateTime, a.CurrentStateNo, insert.ToString()));
 
-                        WorkflowActionResult result = WorkflowActionExecutor.Execute(a,
+                        WorkflowActionResult result = await WorkflowActionExecutor.ExecuteAsync(a,
                             new WorkflowActionContext(WorkflowActionMode.Normal, platForm, log,
-                                new ActionOperations(this), RoleActionMapping, roles, victims));
+                                new ActionOperations(this), RoleActionMapping, roles, victims), cancellationToken).ConfigureAwait(false);
                         insert = result.Insert;
                         sb.Append(result.Summary);
 
-                        CreateAlarmAudit(14, sb.ToString(), a.HistoryID, 1);
+                        await CreateAlarmAuditAsync(14, sb.ToString(), a.HistoryID, 1, cancellationToken).ConfigureAwait(false);
 
                         DateTime EventDateTime = DateTime.Parse(a.EventRecievedDateTime());
                         DateTime ReceivedDateTime = DateTime.Parse(a.MessageReceivedDateTime());
@@ -672,75 +726,84 @@ namespace NotificationWorkflowService.Parser
                                                 )
                         );
 
-                        insertIntoAlarmNotification(a.SystemID, 1, ExpiryTimeApplied, PriorityMapping[a.Priority]);
+                        await insertIntoAlarmNotificationAsync(a.SystemID, 1, ExpiryTimeApplied, PriorityMapping[a.Priority], cancellationToken).ConfigureAwait(false);
                         log.LogInformation(String.Format("ParserAfterCheck::AlarmSystemID::{0}::CurrentStateNo::{1}::NextStateNo::{2}::ProcessNextStep::{3}::StateTime::{4}::CurrentLoopNumber::{5}::insert::{6}", a.SystemID, a.CurrentStateNo, a.NextStateNo, a.ProcessNextStep, a.StateTime, a.CurrentStateNo, insert.ToString()));
 
                         if (a.NextStateNo != -1 && insert)
                         {
-                            insertIntoCurrentAlarmNotification(a.SystemID, a.NextStateNo, ExpiryTimeApplied, a.StateNo + 1, 0, a.ProcessNextStep);
+                            await insertIntoCurrentAlarmNotificationAsync(a.SystemID, a.NextStateNo, ExpiryTimeApplied, a.StateNo + 1, 0, a.ProcessNextStep, cancellationToken).ConfigureAwait(false);
                         }
                         else if (insert)
                         {
-                            insertIntoCurrentAlarmNotification(a.SystemID, a.StateNo + 1, ExpiryTimeApplied, a.StateNo + 1, 0, 1);
+                            await insertIntoCurrentAlarmNotificationAsync(a.SystemID, a.StateNo + 1, ExpiryTimeApplied, a.StateNo + 1, 0, 1, cancellationToken).ConfigureAwait(false);
                         }
 
+                        cancellationToken.ThrowIfCancellationRequested();
                         sysID = a.SystemID;
                     }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                     catch (Exception e)
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
                         log.LogError(e, "Error processing alarm");
                         break;
                     }
                 }
                 if (sysID != null)
                 {
-                    updateParserActivty(sysID);
+                    await updateParserActivtyAsync(sysID, cancellationToken).ConfigureAwait(false);
                 }
 
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception ex)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 log.LogInformation("FAILED TO PARSE ALARMS " + ex);
                 if (curr != null)
                 {
                     log.LogInformation("ERROR @ ActiveAlarmID - " + curr.SystemID);
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         private sealed class ActionOperations(WorkFlowCommon parser) : IWorkflowActionOperations
         {
-            public void SendNotificationsToOfficersInSameGroup(ActiveAlarm a) => parser.SendNotificationsToOfficersInSameGroup(a);
-            public bool PushAlertToMcApp(ActiveAlarm a) => parser.PushAlertToMcApp(a);
-            public bool AddToNotificationQueue(ActiveAlarm a, int insertType) => parser.AddToNotificationQueue(a, insertType);
-            public void CreateAlarmAudit(int type, string action, int historyID, int StepNo) => parser.CreateAlarmAudit(type, action, historyID, StepNo);
-            public void AddActiveAlarmActionToActivity(int historyID, string email, int type) => parser.AddActiveAlarmActionToActivity(historyID, email, type);
-            public bool insertNotificationQueueVictim(ActiveAlarm a, int insertType, string victimsEmails, bool isVictimNotification = false) => parser.insertNotificationQueueVictim(a, insertType, victimsEmails, isVictimNotification);
-            public string getInsertEmails(ActiveAlarm a) => parser.getInsertEmails(a);
-            public string getClientEmail(ActiveAlarm a) => parser.getClientEmail(a);
-            public string getClientText(ActiveAlarm a) => parser.getClientText(a);
+            public Task SendNotificationsToOfficersInSameGroupAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.SendNotificationsToOfficersInSameGroupAsync(a, cancellationToken);
+            public Task<bool> PushAlertToMcAppAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.PushAlertToMcAppAsync(a, cancellationToken);
+            public Task<bool> AddToNotificationQueueAsync(ActiveAlarm a, int insertType, CancellationToken cancellationToken = default) => parser.AddToNotificationQueueAsync(a, insertType, cancellationToken);
+            public Task CreateAlarmAuditAsync(int type, string action, int historyID, int StepNo, CancellationToken cancellationToken = default) => parser.CreateAlarmAuditAsync(type, action, historyID, StepNo, cancellationToken);
+            public Task AddActiveAlarmActionToActivityAsync(int historyID, string email, int type, CancellationToken cancellationToken = default) => parser.AddActiveAlarmActionToActivityAsync(historyID, email, type, cancellationToken);
+            public Task<bool> insertNotificationQueueVictimAsync(ActiveAlarm a, int insertType, string victimsEmails, bool isVictimNotification = false, CancellationToken cancellationToken = default) => parser.insertNotificationQueueVictimAsync(a, insertType, victimsEmails, isVictimNotification, cancellationToken);
+            public Task<string> getInsertEmailsAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.getInsertEmailsAsync(a, cancellationToken);
+            public Task<string> getClientEmailAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.getClientEmailAsync(a, cancellationToken);
+            public Task<string> getClientTextAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.getClientTextAsync(a, cancellationToken);
         }
 
         /// <summary>
         /// When a valid alert is recieved from an offender alert all associated victims.
         /// </summary>
         /// <param name="a">The a<see cref="ActiveAlarm"/>.</param>
-        public void PushAlertsToVictims(ActiveAlarm a)
+        public async Task PushAlertsToVictimsAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (MEZVictims.ContainsKey(a.ClientID))
             {
                 List<String> victims = MEZVictims[a.ClientID].ToList();
                 foreach (String v in victims)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     if (pnAlarms.ContainsKey(v) && pnAlarms[v].Contains(a.AlarmID))
                     {
                         String victim = "Push notification sent to: " + v;
-                        CreateAlarmAudit(3, victim, a.HistoryID, 1);
+                        await CreateAlarmAuditAsync(3, victim, a.HistoryID, 1, cancellationToken).ConfigureAwait(false);
 
-                        insertPushNotificationQueue(a, v, a.ClientID);
+                        await insertPushNotificationQueueAsync(a, v, a.ClientID, cancellationToken).ConfigureAwait(false);
                     }
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         /// <summary>
@@ -748,8 +811,9 @@ namespace NotificationWorkflowService.Parser
         /// </summary>
         /// <param name="profileType">The profileType<see cref="int"/>.</param>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool FetchClientProfile(int profileType)
+        private async Task<bool> FetchClientProfileAsync(int profileType, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
             Console.ForegroundColor = ConsoleColor.White;
             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " Refreshing Client Profiles");
@@ -757,7 +821,7 @@ namespace NotificationWorkflowService.Parser
             //Create a connection to the SQL Server;
             try
             {
-                using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareFetchClientProfile(profileType)))
+                await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareFetchClientProfile(profileType)))
                 {
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
@@ -765,12 +829,13 @@ namespace NotificationWorkflowService.Parser
                         int retries = 5;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                result = WorkflowReferenceDataBuilders.BuildClientProfiles(MyDataReader, profileType);
+                                result = await WorkflowReferenceDataBuilders.BuildClientProfilesAsync(MyDataReader, profileType, cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 break;
                             }
@@ -786,7 +851,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(10000);
+                                        await Task.Delay(10000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -795,8 +860,10 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE CLIENT PROFILES ");
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -804,7 +871,7 @@ namespace NotificationWorkflowService.Parser
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(10000);
+                                    await Task.Delay(10000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -816,14 +883,17 @@ namespace NotificationWorkflowService.Parser
                     }
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception e)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 success = false;
                 log.LogInformation("[" + platForm + "] " + "FAILED TO RETRIEVE CLIENT PROFILES " + e);
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE CLIENT PROFILES " + e);
 
             }
+            cancellationToken.ThrowIfCancellationRequested();
             if (success)
             {
                 if (profileType == 0)
@@ -838,6 +908,7 @@ namespace NotificationWorkflowService.Parser
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -845,8 +916,9 @@ namespace NotificationWorkflowService.Parser
         /// Creates in memory a full dictionary of all the active profiles that the active alarms are used against.
         /// </summary>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool readAllProfiles()
+        private async Task<bool> readAllProfilesAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
             Console.ForegroundColor = ConsoleColor.White;
             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " Refreshing Client Profiles");
@@ -855,7 +927,7 @@ namespace NotificationWorkflowService.Parser
             //Create a connection to the SQL Server;
             try
             {
-                using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAllProfiles()))
+                await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAllProfiles()))
                 {
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
@@ -863,12 +935,13 @@ namespace NotificationWorkflowService.Parser
                         int retries = 5;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                result = WorkflowReferenceDataBuilders.BuildProfiles(MyDataReader);
+                                result = await WorkflowReferenceDataBuilders.BuildProfilesAsync(MyDataReader, cancellationToken).ConfigureAwait(false);
 
                                 success = true;
                                 break;
@@ -885,7 +958,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(10000);
+                                        await Task.Delay(10000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -895,8 +968,10 @@ namespace NotificationWorkflowService.Parser
 
                                 //System.Environment.Exit(1);
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE PROFILES ");
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -904,7 +979,7 @@ namespace NotificationWorkflowService.Parser
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(10000);
+                                    await Task.Delay(10000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -916,8 +991,10 @@ namespace NotificationWorkflowService.Parser
                     }
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception e)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 success = false;
                 log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE PROFILES ");
                 Console.ForegroundColor = ConsoleColor.Red;
@@ -926,12 +1003,14 @@ namespace NotificationWorkflowService.Parser
 
                 //System.Environment.Exit(1);
             }
+            cancellationToken.ThrowIfCancellationRequested();
             if (success)
             {
                 if (pendingReferenceData != null) StageReferenceData(profiles: result);
                 else activeProfiles = result;
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -939,8 +1018,9 @@ namespace NotificationWorkflowService.Parser
         /// Creates in memory a full dictionary of all the active profiles that the active alarms are used against.
         /// </summary>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool readAllHolidays()
+        private async Task<bool> readAllHolidaysAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
             Console.ForegroundColor = ConsoleColor.White;
             Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " Refreshing PO GRoup Holidays");
@@ -949,7 +1029,7 @@ namespace NotificationWorkflowService.Parser
             //Create a connection to the SQL Server;
             try
             {
-                using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAllHolidays()))
+                await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAllHolidays()))
                 {
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
@@ -957,12 +1037,13 @@ namespace NotificationWorkflowService.Parser
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                result = WorkflowReferenceDataBuilders.BuildHolidays(MyDataReader);
+                                result = await WorkflowReferenceDataBuilders.BuildHolidaysAsync(MyDataReader, cancellationToken).ConfigureAwait(false);
 
                                 success = true;
                                 break;
@@ -979,7 +1060,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(5000);
+                                        await Task.Delay(5000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -987,8 +1068,10 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE HOLIDAYS ");
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -996,7 +1079,7 @@ namespace NotificationWorkflowService.Parser
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(5000);
+                                    await Task.Delay(5000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1008,19 +1091,23 @@ namespace NotificationWorkflowService.Parser
                     }
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception e)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 success = false;
                 log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE HOLIDAYS ");
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE HOLIDAYS IN PARSER " + e);
 
             }
+            cancellationToken.ThrowIfCancellationRequested();
             if (success)
             {
                 if (pendingReferenceData != null) StageReferenceData(holidays: result);
                 else activeHolidays = result;
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -1028,8 +1115,9 @@ namespace NotificationWorkflowService.Parser
         /// Reads in the list of all POGroup Roles.
         /// </summary>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool readAllRoles()
+        private async Task<bool> readAllRolesAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
 
             Console.ForegroundColor = ConsoleColor.White;
@@ -1039,7 +1127,7 @@ namespace NotificationWorkflowService.Parser
             //Create a connection to the SQL Server;
             try
             {
-                using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAllRoles()))
+                await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAllRoles()))
                 {
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
@@ -1047,12 +1135,13 @@ namespace NotificationWorkflowService.Parser
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                result = WorkflowReferenceDataBuilders.BuildRoles(MyDataReader);
+                                result = await WorkflowReferenceDataBuilders.BuildRolesAsync(MyDataReader, cancellationToken: cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 break;
                             }
@@ -1068,7 +1157,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(3000);
+                                        await Task.Delay(3000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -1076,8 +1165,10 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE ROLES ");
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -1085,7 +1176,7 @@ namespace NotificationWorkflowService.Parser
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(3000);
+                                    await Task.Delay(3000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1097,19 +1188,23 @@ namespace NotificationWorkflowService.Parser
                     }
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception e)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 success = false;
                 log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ROLES ");
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ROLES IN PARSER " + e);
 
             }
+            cancellationToken.ThrowIfCancellationRequested();
             if (success)
             {
                 if (pendingReferenceData != null) StageReferenceData(roleNames: result);
                 else roles = result;
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -1118,11 +1213,12 @@ namespace NotificationWorkflowService.Parser
         /// </summary>
         /// <param name="a">.</param>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool PushAlertToMcApp(ActiveAlarm a)
+        private async Task<bool> PushAlertToMcAppAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PreparePushAlertToMcApp(a)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PreparePushAlertToMcApp(a)))
             {
                 try
                 {
@@ -1132,10 +1228,11 @@ namespace NotificationWorkflowService.Parser
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                cmd.ExecuteNonQuery();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 break;
                             }
@@ -1151,7 +1248,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -1159,8 +1256,10 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -1168,7 +1267,7 @@ namespace NotificationWorkflowService.Parser
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1178,8 +1277,10 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
@@ -1187,6 +1288,7 @@ namespace NotificationWorkflowService.Parser
                     throw;
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -1196,10 +1298,11 @@ namespace NotificationWorkflowService.Parser
         /// <param name="a">The a<see cref="ActiveAlarm"/>.</param>
         /// <param name="insertType">The insertType<see cref="int"/>.</param>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool AddToNotificationQueue(ActiveAlarm a, int insertType)
+        private async Task<bool> AddToNotificationQueueAsync(ActiveAlarm a, int insertType, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareAddToNotificationQueue(a, insertType)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareAddToNotificationQueue(a, insertType)))
             {
                 try
                 {
@@ -1209,10 +1312,11 @@ namespace NotificationWorkflowService.Parser
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                cmd.ExecuteNonQuery();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 break;
                             }
@@ -1228,7 +1332,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -1236,8 +1340,10 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -1245,7 +1351,7 @@ namespace NotificationWorkflowService.Parser
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1255,8 +1361,10 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
@@ -1264,6 +1372,7 @@ namespace NotificationWorkflowService.Parser
                     throw;
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -1273,10 +1382,11 @@ namespace NotificationWorkflowService.Parser
         /// <param name="a">The a<see cref="ActiveAlarm"/>.</param>
         /// <param name="VictimID">The VictimID<see cref="String"/>.</param>
         /// <param name="OffenderID">The OffenderID<see cref="String"/>.</param>
-        private void insertPushNotificationQueue(ActiveAlarm a, String VictimID, String OffenderID)
+        private async Task insertPushNotificationQueueAsync(ActiveAlarm a, String VictimID, String OffenderID, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertPushNotificationQueue(a, VictimID, OffenderID)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertPushNotificationQueue(a, VictimID, OffenderID)))
             {
                 try
                 {
@@ -1286,10 +1396,11 @@ namespace NotificationWorkflowService.Parser
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                cmd.ExecuteNonQuery();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                                 break;
                             }
                             catch (SqlException ex)
@@ -1310,8 +1421,10 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RUN INSERT_PUSH_NOTIFICATIONQUEUE ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_PUSH_NOTIFICATIONQUEUE " + exc);
@@ -1322,14 +1435,17 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     log.LogError(e, "[" + platForm + "] " + "FAILED TO RUN INSERT_PUSH_NOTIFICATIONQUEUE ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_PUSH_NOTIFICATIONQUEUE " + e);
 
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         /// <summary>
@@ -1340,11 +1456,12 @@ namespace NotificationWorkflowService.Parser
         /// <param name="victimsEmails">The victimsEmails<see cref="String"/>.</param>
         /// <param name="isVictimNotification">The isVictimNotification<see cref="bool"/>.</param>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool insertNotificationQueueVictim(ActiveAlarm a, int insertType, String victimsEmails, bool isVictimNotification = false)
+        private async Task<bool> insertNotificationQueueVictimAsync(ActiveAlarm a, int insertType, String victimsEmails, bool isVictimNotification = false, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
 
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertNotificationQueueVictim(a, insertType, victimsEmails, isVictimNotification)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertNotificationQueueVictim(a, insertType, victimsEmails, isVictimNotification)))
             {
                 try
                 {
@@ -1355,10 +1472,11 @@ namespace NotificationWorkflowService.Parser
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                cmd.ExecuteNonQuery();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 break;
                             }
@@ -1374,7 +1492,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(3000);
+                                        await Task.Delay(3000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -1382,8 +1500,10 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -1391,7 +1511,7 @@ namespace NotificationWorkflowService.Parser
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(3000);
+                                    await Task.Delay(3000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1401,8 +1521,10 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
@@ -1411,6 +1533,7 @@ namespace NotificationWorkflowService.Parser
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -1419,11 +1542,12 @@ namespace NotificationWorkflowService.Parser
         /// </summary>
         /// <param name="systemID">The systemID<see cref="int?"/>.</param>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool updateParserActivty(int? systemID)
+        private async Task<bool> updateParserActivtyAsync(int? systemID, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = false;
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareUpdateParserActivty(systemID, configuration[platForm + "ParserID"])))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareUpdateParserActivty(systemID, configuration[platForm + "ParserID"])))
             {
                 try
                 {
@@ -1435,10 +1559,11 @@ namespace NotificationWorkflowService.Parser
                         int retries = 6;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                cmd.ExecuteNonQuery();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 log.LogInformation("Successfully updated AAID : " + systemID);
                                 break;
@@ -1455,7 +1580,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(5000);
+                                        await Task.Delay(5000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -1463,8 +1588,10 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RUN UPDATE_PARSER_ACTIVITY ");
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -1472,7 +1599,7 @@ namespace NotificationWorkflowService.Parser
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(5000);
+                                    await Task.Delay(5000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1483,8 +1610,10 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogError(e, "[" + platForm + "] " + "FAILED TO RUN UPDATE_PARSER_ACTIVITY IN PARSER ");
                     Console.ForegroundColor = ConsoleColor.Red;
@@ -1492,6 +1621,7 @@ namespace NotificationWorkflowService.Parser
                     throw;
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -1502,10 +1632,11 @@ namespace NotificationWorkflowService.Parser
         /// <param name="action">.</param>
         /// <param name="historyID">.</param>
         /// <param name="StepNo">The StepNo<see cref="int"/>.</param>
-        private void CreateAlarmAudit(int type, String action, int historyID, int StepNo)
+        private async Task CreateAlarmAuditAsync(int type, String action, int historyID, int StepNo, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareCreateAlarmAudit(type, action, historyID, StepNo)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareCreateAlarmAudit(type, action, historyID, StepNo)))
             {
                 try
                 {
@@ -1515,10 +1646,11 @@ namespace NotificationWorkflowService.Parser
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                cmd.ExecuteNonQuery();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                                 break;
                             }
                             catch (SqlException ex)
@@ -1532,7 +1664,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -1540,15 +1672,17 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RUN MCAPP_CREATEAUDIT IN PARSER ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN MCAPP_CREATEAUDIT IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1559,14 +1693,17 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     log.LogError(e, "[" + platForm + "] " + "FAILED TO RUN MCAPP_CREATEAUDIT IN PARSER ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN MCAPP_CREATEAUDIT IN PARSER " + e);
 
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         /// <summary>
@@ -1575,10 +1712,11 @@ namespace NotificationWorkflowService.Parser
         /// <param name="historyID">.</param>
         /// <param name="email">The email<see cref="String"/>.</param>
         /// <param name="type">.</param>
-        private void AddActiveAlarmActionToActivity(int historyID, String email, int type)
+        private async Task AddActiveAlarmActionToActivityAsync(int historyID, String email, int type, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareAddActiveAlarmActionToActivity(historyID, email, type)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareAddActiveAlarmActionToActivity(historyID, email, type)))
             {
                 try
                 {
@@ -1588,10 +1726,11 @@ namespace NotificationWorkflowService.Parser
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                cmd.ExecuteNonQuery();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                                 break;
                             }
                             catch (SqlException ex)
@@ -1605,7 +1744,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -1613,15 +1752,17 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RUN AddActiveAlarmActionToActivity IN PARSER ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN AddActiveAlarmActionToActivity IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1632,14 +1773,17 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     log.LogError(e, "[" + platForm + "] " + "FAILED TO RUN AddActiveAlarmActionToActivity IN PARSER ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN AddActiveAlarmActionToActivity IN PARSER " + e);
 
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         /// <summary>
@@ -1650,11 +1794,12 @@ namespace NotificationWorkflowService.Parser
         /// <param name="ExpiryTime">.</param>
         /// <param name="Action">.</param>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool insertIntoAlarmNotification(int AlarmSystemID, int CurentStateNo, DateTime ExpiryTime, String Action)
+        private async Task<bool> insertIntoAlarmNotificationAsync(int AlarmSystemID, int CurentStateNo, DateTime ExpiryTime, String Action, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertIntoAlarmNotification(AlarmSystemID, CurentStateNo, ExpiryTime, Action)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertIntoAlarmNotification(AlarmSystemID, CurentStateNo, ExpiryTime, Action)))
             {
                 try
                 {
@@ -1664,10 +1809,11 @@ namespace NotificationWorkflowService.Parser
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                cmd.ExecuteNonQuery();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 break;
                             }
@@ -1683,7 +1829,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -1691,8 +1837,10 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -1700,7 +1848,7 @@ namespace NotificationWorkflowService.Parser
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1710,8 +1858,10 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
@@ -1719,6 +1869,7 @@ namespace NotificationWorkflowService.Parser
                     throw;
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -1732,11 +1883,12 @@ namespace NotificationWorkflowService.Parser
         /// <param name="currentLoopNumber">The currentLoopNumber<see cref="int"/>.</param>
         /// <param name="processNext">The processNext<see cref="int"/>.</param>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool insertIntoCurrentAlarmNotification(int AlarmSystemID, int CurentStateNo, DateTime ExpiryTime, int DisplayStateNo, int currentLoopNumber, int processNext)
+        private async Task<bool> insertIntoCurrentAlarmNotificationAsync(int AlarmSystemID, int CurentStateNo, DateTime ExpiryTime, int DisplayStateNo, int currentLoopNumber, int processNext, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertIntoCurrentAlarmNotification(AlarmSystemID, CurentStateNo, ExpiryTime, DisplayStateNo, currentLoopNumber, processNext)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertIntoCurrentAlarmNotification(AlarmSystemID, CurentStateNo, ExpiryTime, DisplayStateNo, currentLoopNumber, processNext)))
             {
                 try
                 {
@@ -1746,10 +1898,11 @@ namespace NotificationWorkflowService.Parser
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                cmd.ExecuteNonQuery();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 log.LogInformation(String.Format("Parser::insertIntoCurrentAlarmNotification::AlarmSystemID::{0}::CurentStateNo::{1}::ExpiryTime::{2}::currentLoopNumber::{3}::processNext::{4}", AlarmSystemID, CurentStateNo, ExpiryTime, currentLoopNumber, processNext));
                                 break;
@@ -1766,7 +1919,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -1774,8 +1927,10 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -1783,7 +1938,7 @@ namespace NotificationWorkflowService.Parser
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1793,8 +1948,10 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
@@ -1802,6 +1959,7 @@ namespace NotificationWorkflowService.Parser
                     throw;
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -1809,25 +1967,27 @@ namespace NotificationWorkflowService.Parser
         /// Runs the email join logic if the active alarm state has the email join flag set.
         /// </summary>
         /// <param name="a">.</param>
-        protected void SendNotificationsToOfficersInSameGroup(ActiveAlarm a)
+        protected async Task SendNotificationsToOfficersInSameGroupAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (a.EmailJoin == 1)
             {
-                if (AddToNotificationQueue(a, 2))
+                if (await AddToNotificationQueueAsync(a, 2, cancellationToken).ConfigureAwait(false))
                 {
-                    string emails = "Email also sent to: " + getInsertEmails(a);
+                    string emails = "Email also sent to: " + await getInsertEmailsAsync(a, cancellationToken).ConfigureAwait(false);
                     if (emails.Length > 4096)
                     {
                         emails = emails.Substring(0, 4096);
                     }
-                    CreateAlarmAudit(3, emails, a.HistoryID, a.CurrentStateNo);
-                    AddActiveAlarmActionToActivity(a.HistoryID, getInsertEmails(a), 0);
+                    await CreateAlarmAuditAsync(3, emails, a.HistoryID, a.CurrentStateNo, cancellationToken).ConfigureAwait(false);
+                    await AddActiveAlarmActionToActivityAsync(a.HistoryID, await getInsertEmailsAsync(a, cancellationToken).ConfigureAwait(false), 0, cancellationToken).ConfigureAwait(false);
                 }
                 else
                 {
                     log.LogInformation(DateTime.UtcNow.ToString("HH:mm:ss") + " AAID:" + a.SystemID + " " + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]" + " Action: Notify to all officers in group failed");
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         /// <summary>
@@ -1835,10 +1995,11 @@ namespace NotificationWorkflowService.Parser
         /// </summary>
         /// <param name="a">The a<see cref="ActiveAlarm"/>.</param>
         /// <returns>.</returns>
-        private string getInsertEmails(ActiveAlarm a)
+        private async Task<string> getInsertEmailsAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             StringBuilder sb = new StringBuilder();
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareGetInsertEmails(a)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareGetInsertEmails(a)))
             {
                 try
                 {
@@ -1848,12 +2009,13 @@ namespace NotificationWorkflowService.Parser
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                while (MyDataReader.Read())
+                                while (await MyDataReader.ReadAsync(cancellationToken).ConfigureAwait(false))
                                 {
                                     sb.Append(MyDataReader["POMSGAddress"].ToString());
                                     sb.Append(",");
@@ -1871,7 +2033,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -1879,15 +2041,17 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Audit and History Emails in Step Parser " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Audit and History Emails in Step Parser " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1897,8 +2061,10 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Audit and History Emails in Step Parser " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Audit and History Emails in Step Parser " + e);
@@ -1906,6 +2072,7 @@ namespace NotificationWorkflowService.Parser
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             return sb.ToString().TrimEnd(',');
         }
 
@@ -1914,10 +2081,11 @@ namespace NotificationWorkflowService.Parser
         /// </summary>
         /// <param name="parserID">The parserID<see cref="int"/>.</param>
         /// <returns>.</returns>
-        private int readLastSuccessfulProcess(int parserID)
+        private async Task<int> readLastSuccessfulProcessAsync(int parserID, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             int SystemID = 0;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadLastSuccessfulProcess(parserID)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadLastSuccessfulProcess(parserID)))
             {
                 try
                 {
@@ -1926,12 +2094,13 @@ namespace NotificationWorkflowService.Parser
                         int retries = 5;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                while (MyDataReader.Read())
+                                while (await MyDataReader.ReadAsync(cancellationToken).ConfigureAwait(false))
                                 {
                                     SystemID = (int)MyDataReader["StatusID"];
                                 }
@@ -1952,7 +2121,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(3000);
+                                        await Task.Delay(3000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -1960,15 +2129,17 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 log.LogError(exc, "[" + platForm + "] " + "ERROR: Unable to Read Last successful processed ActiveAlarms point IN PARSER ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Last successful processed ActiveAlarms point IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(3000);
+                                    await Task.Delay(3000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -1979,8 +2150,10 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     log.LogError(e, "[" + platForm + "] " + "ERROR: Unable to Read Last successful processed ActiveAlarms point IN PARSER ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Last successful processed ActiveAlarms point IN PARSER " + e);
@@ -1988,6 +2161,7 @@ namespace NotificationWorkflowService.Parser
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             return SystemID;
         }
 
@@ -2009,11 +2183,12 @@ namespace NotificationWorkflowService.Parser
         /// <param name="RoleID">The RoleID<see cref="int"/>.</param>
         /// <param name="RoleAction">The RoleAction<see cref="int"/>.</param>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool readRoles(ActiveAlarm a, int RoleID, int RoleAction)
+        private async Task<bool> readRolesAsync(ActiveAlarm a, int RoleID, int RoleAction, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
             //Create a connection to the SQL Server;
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadRoles(a, RoleID, RoleAction)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadRoles(a, RoleID, RoleAction)))
             {
                 try
                 {
@@ -2023,12 +2198,13 @@ namespace NotificationWorkflowService.Parser
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                while (MyDataReader.Read())
+                                while (await MyDataReader.ReadAsync(cancellationToken).ConfigureAwait(false))
                                 {
 
                                     if (RoleAction == 2)
@@ -2060,7 +2236,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -2068,8 +2244,10 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -2077,7 +2255,7 @@ namespace NotificationWorkflowService.Parser
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -2087,8 +2265,10 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogInformation("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
@@ -2096,6 +2276,8 @@ namespace NotificationWorkflowService.Parser
                     throw;
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -2103,15 +2285,16 @@ namespace NotificationWorkflowService.Parser
         /// The readVictims.
         /// </summary>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool readVictims()
+        private async Task<bool> readVictimsAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
 
             WorkflowVictimReferenceData result = new(new(), new());
             //Create a connection to the SQL Server;
             try
             {
-                using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadVictims()))
+                await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadVictims()))
                 {
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
@@ -2119,12 +2302,13 @@ namespace NotificationWorkflowService.Parser
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                result = WorkflowReferenceDataBuilders.BuildVictims(MyDataReader);
+                                result = await WorkflowReferenceDataBuilders.BuildVictimsAsync(MyDataReader, cancellationToken: cancellationToken).ConfigureAwait(false);
 
                                 success = true;
                                 break;
@@ -2141,7 +2325,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -2149,8 +2333,10 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER ");
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -2158,7 +2344,7 @@ namespace NotificationWorkflowService.Parser
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -2169,14 +2355,17 @@ namespace NotificationWorkflowService.Parser
                     }
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception e)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 success = false;
                 log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER ");
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER " + e);
 
             }
+            cancellationToken.ThrowIfCancellationRequested();
             if (success)
             {
                 if (pendingReferenceData != null) StageReferenceData(victimData: result);
@@ -2186,6 +2375,7 @@ namespace NotificationWorkflowService.Parser
                     victimTypeDict = result.VictimTypeDict;
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -2194,15 +2384,16 @@ namespace NotificationWorkflowService.Parser
         /// The readMEZVictims.
         /// </summary>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool readMEZVictims()
+        private async Task<bool> readMEZVictimsAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
 
             Dictionary<string, HashSet<string>> result = new();
             //Create a connection to the SQL Server;
             try
             {
-                using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadMEZVictims()))
+                await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadMEZVictims()))
                 {
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
@@ -2210,12 +2401,13 @@ namespace NotificationWorkflowService.Parser
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                result = WorkflowReferenceDataBuilders.BuildMezVictims(MyDataReader);
+                                result = await WorkflowReferenceDataBuilders.BuildMezVictimsAsync(MyDataReader, cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 break;
                             }
@@ -2231,7 +2423,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -2239,8 +2431,10 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE MEZ VICTIMS IN PARSER ");
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -2248,7 +2442,7 @@ namespace NotificationWorkflowService.Parser
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -2260,19 +2454,23 @@ namespace NotificationWorkflowService.Parser
                     }
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception e)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 success = false;
                 log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE MEZ VICTIMS IN PARSER ");
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO MEZ VICTIMS IN PARSER " + e);
 
             }
+            cancellationToken.ThrowIfCancellationRequested();
             if (success)
             {
                 if (pendingReferenceData != null) StageReferenceData(mezVictims: result);
                 else MEZVictims = result;
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -2280,8 +2478,9 @@ namespace NotificationWorkflowService.Parser
         /// The readMEZVictims.
         /// </summary>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool readAttachedVictimZones()
+        private async Task<bool> readAttachedVictimZonesAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
 
             Dictionary<string, Dictionary<string, HashSet<string>>> result = new();
@@ -2289,7 +2488,7 @@ namespace NotificationWorkflowService.Parser
             //Create a connection to the SQL Server;
             try
             {
-                using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAttachedVictimZones()))
+                await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadAttachedVictimZones()))
                 {
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
@@ -2297,12 +2496,13 @@ namespace NotificationWorkflowService.Parser
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                result = WorkflowReferenceDataBuilders.BuildAttachedVictimZones(MyDataReader);
+                                result = await WorkflowReferenceDataBuilders.BuildAttachedVictimZonesAsync(MyDataReader, cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 break;
                             }
@@ -2318,7 +2518,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -2326,8 +2526,10 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO readAttachedVictimZonesIN PARSER ");
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -2335,7 +2537,7 @@ namespace NotificationWorkflowService.Parser
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -2347,19 +2549,23 @@ namespace NotificationWorkflowService.Parser
                     }
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception e)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 success = false;
                 log.LogError(e, "[" + platForm + "] " + "FAILED TO readAttachedVictimZones IN PARSER ");
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO readAttachedVictimZones IN PARSER " + e);
 
             }
+            cancellationToken.ThrowIfCancellationRequested();
             if (success)
             {
                 if (pendingReferenceData != null) StageReferenceData(attachedZones: result);
                 else AttachedVictimZones = result;
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return success;
         }
 
@@ -2367,14 +2573,15 @@ namespace NotificationWorkflowService.Parser
         /// The readProfileItemsClear.
         /// </summary>
         /// <returns>The <see cref="bool"/>.</returns>
-        private bool readProfileItemsClear()
+        private async Task<bool> readProfileItemsClearAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
             Dictionary<int, List<ProfileItemClear>> result = new();
             //Create a connection to the SQL Server;
             try
             {
-                using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadProfileItemsClear()))
+                await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadProfileItemsClear()))
                 {
                     {
                         IWorkflowOperation cmd = MyConnection.Prepare();
@@ -2382,12 +2589,13 @@ namespace NotificationWorkflowService.Parser
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                result = WorkflowReferenceDataBuilders.BuildClearEvents(MyDataReader);
+                                result = await WorkflowReferenceDataBuilders.BuildClearEventsAsync(MyDataReader, cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 break;
                             }
@@ -2403,7 +2611,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -2411,8 +2619,10 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE CLEARING EVENTS IN PARSER ");
                                 Console.ForegroundColor = ConsoleColor.Red;
@@ -2420,7 +2630,7 @@ namespace NotificationWorkflowService.Parser
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -2432,14 +2642,17 @@ namespace NotificationWorkflowService.Parser
                     }
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception e)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 success = false;
                 log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE CLEARING EVENTS IN PARSER ");
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE CLEARING EVENTS IN PARSER " + e);
 
             }
+            cancellationToken.ThrowIfCancellationRequested();
             if (success)
             {
                 if (pendingReferenceData != null) StageReferenceData(clearEvents: result);
@@ -2452,11 +2665,12 @@ namespace NotificationWorkflowService.Parser
         /// Returns the current ActiveAlarms point in the TRPT table.
         /// </summary>
         /// <returns>.</returns>
-        private int ReadCurrentActiveAlarmPoint()
+        private async Task<int> ReadCurrentActiveAlarmPointAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             int currentAlarmPoint = 0;
 
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadCurrentActiveAlarmPoint()))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadCurrentActiveAlarmPoint()))
             {
                 try
                 {
@@ -2466,12 +2680,13 @@ namespace NotificationWorkflowService.Parser
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                while (MyDataReader.Read())
+                                while (await MyDataReader.ReadAsync(cancellationToken).ConfigureAwait(false))
                                 {
                                     currentAlarmPoint = Convert.ToInt32(MyDataReader["SystemID"]);
                                 }
@@ -2485,7 +2700,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -2493,13 +2708,15 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 log.LogError(exc, "ReadCurrentActiveAlarmPoint");
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -2510,12 +2727,15 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception ex)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     log.LogError(ex, "ReadCurrentActiveAlarmPoint");
                     throw;
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return currentAlarmPoint;
         }
 
@@ -2524,9 +2744,10 @@ namespace NotificationWorkflowService.Parser
         /// </summary>
         /// <param name="alarms">The alarms<see cref="String"/>.</param>
         /// <param name="oid">The oid<see cref="String"/>.</param>
-        private void ClearMcAppAlarm(String alarms, String oid)
+        private async Task ClearMcAppAlarmAsync(String alarms, String oid, CancellationToken cancellationToken = default)
         {
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareClearMcAppAlarm(alarms, oid)))
+            cancellationToken.ThrowIfCancellationRequested();
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareClearMcAppAlarm(alarms, oid)))
             {
                 try
                 {
@@ -2536,10 +2757,11 @@ namespace NotificationWorkflowService.Parser
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                cmd.ExecuteNonQuery();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
                                 Console.ForegroundColor = ConsoleColor.Green;
                                 Console.WriteLine("[" + platForm + "] " + "Clearing Alerts For - " + oid);
@@ -2558,7 +2780,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -2566,15 +2788,17 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RUN MCAPP_CLEAR_ALARM IN PARSER ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN MCAPP_CLEAR_ALARM IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -2585,14 +2809,17 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     log.LogError(e, "[" + platForm + "] " + "FAILED TO RUN MCAPP_CLEAR_ALARM IN PARSER ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN MCAPP_CLEAR_ALARM IN PARSER " + e);
 
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         /// <summary>
@@ -2600,10 +2827,11 @@ namespace NotificationWorkflowService.Parser
         /// </summary>
         /// <param name="a">The a<see cref="ActiveAlarm"/>.</param>
         /// <returns>.</returns>
-        private string getClientEmail(ActiveAlarm a)
+        private async Task<string> getClientEmailAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             StringBuilder sb = new StringBuilder();
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareGetClientEmail(a)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareGetClientEmail(a)))
             {
                 try
                 {
@@ -2613,12 +2841,13 @@ namespace NotificationWorkflowService.Parser
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                while (MyDataReader.Read())
+                                while (await MyDataReader.ReadAsync(cancellationToken).ConfigureAwait(false))
                                 {
                                     sb.Append(MyDataReader["EmailAddress"].ToString());
                                 }
@@ -2635,7 +2864,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -2643,15 +2872,17 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Client Email IN PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Email IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -2661,8 +2892,10 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Client Email IN PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Email IN PARSER " + e);
@@ -2670,6 +2903,7 @@ namespace NotificationWorkflowService.Parser
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             return sb.ToString();
         }
 
@@ -2678,10 +2912,11 @@ namespace NotificationWorkflowService.Parser
         /// </summary>
         /// <param name="a">The a<see cref="ActiveAlarm"/>.</param>
         /// <returns>.</returns>
-        private string getClientText(ActiveAlarm a)
+        private async Task<string> getClientTextAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             StringBuilder sb = new StringBuilder();
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareGetClientText(a)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareGetClientText(a)))
             {
                 try
                 {
@@ -2691,12 +2926,13 @@ namespace NotificationWorkflowService.Parser
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                while (MyDataReader.Read())
+                                while (await MyDataReader.ReadAsync(cancellationToken).ConfigureAwait(false))
                                 {
                                     sb.Append(MyDataReader["Cell"].ToString());
                                 }
@@ -2713,7 +2949,7 @@ namespace NotificationWorkflowService.Parser
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(3000);
+                                        await Task.Delay(3000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -2721,15 +2957,17 @@ namespace NotificationWorkflowService.Parser
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Client Text IN PARSER " + exc);
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Text IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(1000);
+                                    await Task.Delay(1000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -2739,8 +2977,10 @@ namespace NotificationWorkflowService.Parser
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Client Text IN PARSER " + e);
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Text IN PARSER " + e);
@@ -2748,6 +2988,7 @@ namespace NotificationWorkflowService.Parser
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             return sb.ToString();
         }
 
@@ -2791,8 +3032,9 @@ namespace NotificationWorkflowService.Parser
         /// When a valid alert is recieved from an offender alert all associated victims.
         /// </summary>
         /// <param name="a">The a<see cref="ActiveAlarm"/>.</param>
-        public void PushNotificationToVictim(ActiveAlarm a)
+        public async Task PushNotificationToVictimAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             //if(a.ClientID == "ID902551")
             //{
             //    Console.WriteLine("adsa");
@@ -2805,6 +3047,7 @@ namespace NotificationWorkflowService.Parser
 
                 foreach (String victimID in victimList)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     //If not VAPP victim skip; else keep going
                     if (victimTypeDict.ContainsKey(victimID) && !victimTypeDict[victimID].Equals("VAPP"))
                     {
@@ -2841,10 +3084,10 @@ namespace NotificationWorkflowService.Parser
                             continue;
                         }
                     }
-                    var reminder = NotificationServiceSetting.GetAppReminderSetting(a.AlarmID);
-                    var setting = NotificationServiceSetting.GetNotificationServiceSetting(victimID, a.AlarmID);
+                    var reminder = await NotificationServiceSetting.GetAppReminderSettingAsync(a.AlarmID, cancellationToken).ConfigureAwait(false);
+                    var setting = await NotificationServiceSetting.GetNotificationServiceSettingAsync(victimID, a.AlarmID, cancellationToken).ConfigureAwait(false);
 
-                    bool reminderCheck = NotificationServiceSetting.CheckVictimReminderSetting(victimID, reminder);
+                    bool reminderCheck = await NotificationServiceSetting.CheckVictimReminderSettingAsync(victimID, reminder, cancellationToken).ConfigureAwait(false);
 
                     if (reminder != null && reminderCheck == true)
                     {
@@ -2912,8 +3155,9 @@ namespace NotificationWorkflowService.Parser
                 }
 
                 //Push Notification to the cloud
-                notificationService.PushNotification(notifications);
+                await notificationService.PushNotificationAsync(notifications, cancellationToken).ConfigureAwait(false);
             }
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         private string replaceAlarmsText(ActiveAlarm a, string alternativeText)

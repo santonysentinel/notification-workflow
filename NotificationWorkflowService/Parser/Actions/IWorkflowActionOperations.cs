@@ -5,13 +5,13 @@ namespace NotificationWorkflowService.Parser.Actions;
 // Adapters delegate to the original helpers, including their exception contracts.
 internal interface IWorkflowActionOperations
 {
-    void SendNotificationsToOfficersInSameGroup(ActiveAlarm a);
-    bool PushAlertToMcApp(ActiveAlarm a);
-    bool AddToNotificationQueue(ActiveAlarm a, int insertType);
-    void CreateAlarmAudit(int type, string action, int historyID, int StepNo);
-    void AddActiveAlarmActionToActivity(int historyID, string email, int type);
-    bool insertNotificationQueueVictim(ActiveAlarm a, int insertType, string victimsEmails, bool isVictimNotification = false);
-    string getInsertEmails(ActiveAlarm a);
-    string getClientEmail(ActiveAlarm a);
-    string getClientText(ActiveAlarm a);
+    Task SendNotificationsToOfficersInSameGroupAsync(ActiveAlarm a, CancellationToken cancellationToken = default);
+    Task<bool> PushAlertToMcAppAsync(ActiveAlarm a, CancellationToken cancellationToken = default);
+    Task<bool> AddToNotificationQueueAsync(ActiveAlarm a, int insertType, CancellationToken cancellationToken = default);
+    Task CreateAlarmAuditAsync(int type, string action, int historyID, int StepNo, CancellationToken cancellationToken = default);
+    Task AddActiveAlarmActionToActivityAsync(int historyID, string email, int type, CancellationToken cancellationToken = default);
+    Task<bool> insertNotificationQueueVictimAsync(ActiveAlarm a, int insertType, string victimsEmails, bool isVictimNotification = false, CancellationToken cancellationToken = default);
+    Task<string> getInsertEmailsAsync(ActiveAlarm a, CancellationToken cancellationToken = default);
+    Task<string> getClientEmailAsync(ActiveAlarm a, CancellationToken cancellationToken = default);
+    Task<string> getClientTextAsync(ActiveAlarm a, CancellationToken cancellationToken = default);
 }

@@ -3,7 +3,7 @@ using NotificationWorkflowService.Parser;
 using NotificationWorkflowService.Repository;
 using System;
 using System.Collections.Generic;
-using System.Data;
+using System.Data.Common;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Data.SqlClient;
@@ -47,50 +47,52 @@ namespace NotificationWorkflowService.Service
         /// </summary>
         /// <param name="platform">The platform name used for parser configuration.</param>
         /// <param name="cancellationToken">Signals host shutdown.</param>
-        public async Task startParse(string platform, CancellationToken cancellationToken)
+        public async Task startParse(string platform, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
             DateTime lastParserResetTime = DateTime.UtcNow;
             WorkFlowCommon p = parserFactory();
 
-            while (!p.setUpParser(platform))
+            while (!await p.setUpParserAsync(platform, cancellationToken).ConfigureAwait(false))
             {
-                await Task.Delay(2000, cancellationToken);
+                await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
             }
 
 
             while (!cancellationToken.IsCancellationRequested)
             {
-                int pointsBehind = ReadCurrentActiveAlarmPoint() - readLastSuccessfulProcess(Convert.ToInt32(configuration[platform + "ParserID"]));
+                cancellationToken.ThrowIfCancellationRequested();
+                int pointsBehind = await ReadCurrentActiveAlarmPointAsync(cancellationToken).ConfigureAwait(false) - await readLastSuccessfulProcessAsync(Convert.ToInt32(configuration[platform + "ParserID"]), cancellationToken).ConfigureAwait(false);
 
                 int sleepTime = returnWaitTime(pointsBehind);
 
                 if (DateTime.UtcNow > lastParserResetTime.AddMinutes(Convert.ToInt32(configuration["ParserRefreshTime"])))
                 {
 
-                    while (!p.setUpParser(platform))
+                    while (!await p.setUpParserAsync(platform, cancellationToken).ConfigureAwait(false))
                     {
-                        await Task.Delay(2000, cancellationToken);
+                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                     }
 
                     lastParserResetTime = DateTime.UtcNow;
                     Console.Title = "Active Alarms Parser: " + DateTime.UtcNow.ToString("D");
                 }
 
-                if (p.readPoints())
+                if (await p.readPointsAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    p.parseAlarms();
+                    await p.parseAlarmsAsync(cancellationToken).ConfigureAwait(false);
                 }
                 else
                 {
-                    await Task.Delay(3000, cancellationToken);
+                    await Task.Delay(3000, cancellationToken).ConfigureAwait(false);
                 }
 
                 if (processActiveAlarmsHoldQueue(pointsBehind, sleepTime))
                 {
-                    await Task.Delay(sleepTime, cancellationToken);
+                    await Task.Delay(sleepTime, cancellationToken).ConfigureAwait(false);
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         /// <summary>
@@ -98,58 +100,61 @@ namespace NotificationWorkflowService.Service
         /// </summary>
         /// <param name="platform">The platform name used for parser configuration.</param>
         /// <param name="cancellationToken">Signals host shutdown.</param>
-        public async Task startParseSteps(string platform, CancellationToken cancellationToken)
+        public async Task startParseSteps(string platform, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
             DateTime lastParserResetTime = DateTime.UtcNow;
             WorkFlowSteps p = new WorkFlowSteps(loggerFactory.CreateLogger<WorkFlowSteps>(), configuration, repository);
 
 
-            while (!p.setUpParser(platform))
+            while (!await p.setUpParserAsync(platform, cancellationToken).ConfigureAwait(false))
             {
-                await Task.Delay(2000, cancellationToken);
+                await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
             }
 
 
             while (!cancellationToken.IsCancellationRequested)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (DateTime.UtcNow > lastParserResetTime.AddMinutes(Convert.ToInt32(configuration["StepParserRefreshTime"])))
                 {
 
-                    while (!p.setUpParser(platform))
+                    while (!await p.setUpParserAsync(platform, cancellationToken).ConfigureAwait(false))
                     {
-                        await Task.Delay(2000, cancellationToken);
+                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                     }
 
                     lastParserResetTime = DateTime.UtcNow;
                 }
 
-                if (p.getExpiredAlarms())
+                if (await p.getExpiredAlarmsAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    p.parseAlarms();
+                    await p.parseAlarmsAsync(cancellationToken).ConfigureAwait(false);
                 }
                 else
                 {
-                    await Task.Delay(3000, cancellationToken);
+                    await Task.Delay(3000, cancellationToken).ConfigureAwait(false);
                 }
 
 
-                await Task.Delay(Convert.ToInt32(configuration["StepParserSleepTime"]), cancellationToken);
+                await Task.Delay(Convert.ToInt32(configuration["StepParserSleepTime"]), cancellationToken).ConfigureAwait(false);
             }
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         /// <summary>
         /// Returns the current ActiveAlarms point in the TRPT table.
         /// </summary>
         /// <returns>.</returns>
-        int ReadCurrentActiveAlarmPoint()
+        async Task<int> ReadCurrentActiveAlarmPointAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             int currentAlarmPoint = 0;
 
             _ = configuration.GetConnectionString("connstr")
                 ?? throw new InvalidOperationException("Connection string 'connstr' is not configured.");
 
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadCurrentActiveAlarmPoint(reloadConnectionString: true)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadCurrentActiveAlarmPoint(reloadConnectionString: true)))
             {
                 try
                 {
@@ -159,13 +164,15 @@ namespace NotificationWorkflowService.Service
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                while (MyDataReader.Read())
+                                while (await MyDataReader.ReadAsync(cancellationToken).ConfigureAwait(false))
                                 {
+                                    cancellationToken.ThrowIfCancellationRequested();
                                     currentAlarmPoint = Convert.ToInt32(MyDataReader["SystemID"]);
                                 }
                                 break;
@@ -178,7 +185,7 @@ namespace NotificationWorkflowService.Service
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -186,12 +193,17 @@ namespace NotificationWorkflowService.Service
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                            {
+                                throw;
+                            }
                             catch (Exception)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -201,11 +213,16 @@ namespace NotificationWorkflowService.Service
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
                 catch (Exception)
                 {
-
+                    cancellationToken.ThrowIfCancellationRequested();
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return currentAlarmPoint;
         }
 
@@ -214,13 +231,14 @@ namespace NotificationWorkflowService.Service
         /// </summary>
         /// <param name="parserID">The parserID<see cref="int"/>.</param>
         /// <returns>.</returns>
-        private int readLastSuccessfulProcess(int parserID)
+        private async Task<int> readLastSuccessfulProcessAsync(int parserID, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             int SystemID = 0;
             _ = configuration.GetConnectionString("connstr")
                 ?? throw new InvalidOperationException("Connection string 'connstr' is not configured.");
 
-            using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadLastSuccessfulProcess(parserID, reloadConnectionString: true)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareReadLastSuccessfulProcess(parserID, reloadConnectionString: true)))
             {
                 try
                 {
@@ -229,13 +247,15 @@ namespace NotificationWorkflowService.Service
                         int retries = 3;
                         while (retries > 0)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             try
                             {
-                                MyConnection.Open();
-                                IDataReader MyDataReader = cmd.ExecuteReader();
+                                await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                                await using DbDataReader MyDataReader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                                while (MyDataReader.Read())
+                                while (await MyDataReader.ReadAsync(cancellationToken).ConfigureAwait(false))
                                 {
+                                    cancellationToken.ThrowIfCancellationRequested();
                                     SystemID = (int)MyDataReader["StatusID"];
                                 }
 
@@ -252,7 +272,7 @@ namespace NotificationWorkflowService.Service
                                     if (retries > 0)
                                     {
                                         retries--;
-                                        Thread.Sleep(2000);
+                                        await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                     }
                                     else
                                     {
@@ -260,15 +280,20 @@ namespace NotificationWorkflowService.Service
                                     }
                                 }
                             }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                            {
+                                throw;
+                            }
                             catch (Exception exc)
                             {
+                                cancellationToken.ThrowIfCancellationRequested();
                                 log.LogError(exc, "ERROR: Unable to Read Last successful processed ActiveAlarms point ");
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Last successful processed ActiveAlarms point " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
-                                    Thread.Sleep(2000);
+                                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                                 }
                                 else
                                 {
@@ -278,15 +303,21 @@ namespace NotificationWorkflowService.Service
                         }
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     log.LogError(e, "ERROR: Unable to Read Last successful processed ActiveAlarms point ");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Last successful processed ActiveAlarms point " + e);
-                    MyConnection.Close();
+                    await MyConnection.CloseAsync().ConfigureAwait(false);
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             return SystemID;
         }
 

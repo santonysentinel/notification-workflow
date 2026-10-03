@@ -18,7 +18,7 @@ public class WorkflowVictimCharacterizationTests
     [InlineData(false, true)]
     [InlineData(true, false)]
     [InlineData(true, true)]
-    public void MissingOffenderMappingOrEmptyVictimSetDoesNothing(bool common, bool emptySet)
+    public async Task MissingOffenderMappingOrEmptyVictimSetDoesNothingAsync(bool common, bool emptySet)
     {
         var fixture = new Fixture(common);
         if (emptySet)
@@ -26,7 +26,7 @@ public class WorkflowVictimCharacterizationTests
         else
             fixture.MezVictims["other-offender"] = ["victim"];
 
-        fixture.AssertFiltered(Alarm("GPS20"));
+        await fixture.AssertFilteredAsync(Alarm("GPS20"));
     }
 
     public static IEnumerable<object[]> NonAppVictimCases()
@@ -39,7 +39,7 @@ public class WorkflowVictimCharacterizationTests
 
     [Theory]
     [MemberData(nameof(NonAppVictimCases))]
-    public void ExplicitNonVappTypeIsSkippedUsingExactCaseAndNoTrimming(
+    public async Task ExplicitNonVappTypeIsSkippedUsingExactCaseAndNoTrimmingAsync(
         bool common, string victimType, string eventCode)
     {
         var fixture = new Fixture(common);
@@ -54,7 +54,7 @@ public class WorkflowVictimCharacterizationTests
             ["zone|CircleZone"] = ["victim", "second-victim"]
         };
 
-        fixture.AssertFiltered(alarm);
+        await fixture.AssertFilteredAsync(alarm);
     }
 
     public static IEnumerable<object[]> MezMismatchCases()
@@ -68,7 +68,7 @@ public class WorkflowVictimCharacterizationTests
 
     [Theory]
     [MemberData(nameof(MezMismatchCases))]
-    public void MezEventsSkipMismatchedVictimsEvenWhenTypeIsVappOrUnknown(
+    public async Task MezEventsSkipMismatchedVictimsEvenWhenTypeIsVappOrUnknownAsync(
         bool common, string eventCode, bool knownAppType, string? eventVictim)
     {
         var fixture = new Fixture(common);
@@ -81,7 +81,7 @@ public class WorkflowVictimCharacterizationTests
         var alarm = Alarm(eventCode);
         alarm.MEZEventVictimID = eventVictim!;
 
-        fixture.AssertFiltered(alarm);
+        await fixture.AssertFilteredAsync(alarm);
     }
 
     public static IEnumerable<object[]> AttachedZoneCases()
@@ -99,7 +99,7 @@ public class WorkflowVictimCharacterizationTests
 
     [Theory]
     [MemberData(nameof(AttachedZoneCases))]
-    public void ZoneEventsRequireExactOffenderZoneIdCategoryAndVictimMembership(
+    public async Task ZoneEventsRequireExactOffenderZoneIdCategoryAndVictimMembershipAsync(
         bool common, string eventCode, string category, string exclusion)
     {
         var fixture = new Fixture(common);
@@ -153,7 +153,7 @@ public class WorkflowVictimCharacterizationTests
                 throw new ArgumentOutOfRangeException(nameof(exclusion));
         }
 
-        fixture.AssertFiltered(alarm);
+        await fixture.AssertFilteredAsync(alarm);
     }
 
     private static ActiveAlarm Alarm(string eventCode) => new()
@@ -172,7 +172,7 @@ public class WorkflowVictimCharacterizationTests
         private readonly NoHttpFactory httpFactory = new();
         private readonly RecordingLogger<NotificationSender> senderLogger = new();
         private readonly List<(LogLevel Level, string Message, Exception? Exception)> parserLogs = new();
-        private readonly Action<ActiveAlarm> push;
+        private readonly Func<ActiveAlarm, CancellationToken, Task> push;
 
         internal Dictionary<string, HashSet<string>> MezVictims { get; }
         internal Dictionary<string, string> VictimTypes { get; }
@@ -203,7 +203,7 @@ public class WorkflowVictimCharacterizationTests
                 MezVictims = parser.MEZVictims;
                 VictimTypes = parser.victimTypeDict;
                 AttachedZones = parser.AttachedVictimZones;
-                push = parser.PushNotificationToVictim;
+                push = parser.PushNotificationToVictimAsync;
             }
             else
             {
@@ -211,16 +211,16 @@ public class WorkflowVictimCharacterizationTests
                 MezVictims = parser.MEZVictims;
                 VictimTypes = parser.victimTypeDict;
                 AttachedZones = parser.AttachedVictimZones;
-                push = parser.PushNotificationToVictim;
+                push = parser.PushNotificationToVictimAsync;
             }
         }
 
-        internal void AssertFiltered(ActiveAlarm alarm)
+        internal async Task AssertFilteredAsync(ActiveAlarm alarm)
         {
-            Assert.Null(Record.Exception(() => push(alarm)));
+            Assert.Null(await Record.ExceptionAsync(() => push(alarm, CancellationToken.None)));
             Assert.Equal(0, queue.Count());
             Assert.Empty(queue.GetSnapshot());
-            // Empty batches reach PushNotification but must never attempt delivery.
+            // Empty batches reach PushNotificationAsync but must never attempt delivery.
             Assert.Empty(senderLogger.Entries);
             Assert.Empty(parserLogs);
             Assert.Equal(0, httpFactory.Calls);
