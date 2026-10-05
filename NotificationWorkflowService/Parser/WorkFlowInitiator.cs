@@ -4,6 +4,7 @@
     using Microsoft.Extensions.Logging;
     using NotificationWorkflowService.Parser;
     using NotificationWorkflowService.Repository;
+    using NotificationWorkflowService.Service.Notes;
     using NotificationSender = ActiveAlarmsParser.Service.NotificationService.NotificationService;
 
     /// <summary>
@@ -19,6 +20,11 @@
 
         public WorkFlowInitiator(ILogger<WorkFlowInitiator> logger, IConfiguration configuration, NotificationSender notificationService, IRepository repository)
             : base((ILogger)logger, configuration, notificationService, repository)
+        {
+        }
+
+        public WorkFlowInitiator(ILogger<WorkFlowInitiator> logger, IConfiguration configuration, NotificationSender notificationService, IRepository repository, INoteService noteService)
+            : base((ILogger)logger, configuration, notificationService, repository, noteService)
         {
         }
     }

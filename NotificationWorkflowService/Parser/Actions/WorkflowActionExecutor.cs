@@ -245,6 +245,11 @@ internal static class WorkflowActionExecutor
                 await operations.CreateAlarmAuditAsync(14, Msg, a.HistoryID, 1, cancellationToken).ConfigureAwait(false);
                 await operations.AddActiveAlarmActionToActivityAsync(a.HistoryID, Msg, 1, cancellationToken).ConfigureAwait(false);
                 break;
+            case 18:
+                sb.Append("Add Note");
+                WriteAction(a, context, "Add Note");
+                await operations.AddNoteAsync(a.Instruction, a.ClientID, cancellationToken).ConfigureAwait(false);
+                break;
             default:
                 sb.Append("Do Nothing");
                 if (!step)

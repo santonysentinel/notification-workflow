@@ -23,6 +23,12 @@ namespace NotificationWorkflowService.Repository
         IWorkflowOperation PrepareGetClientText(ActiveAlarm a);
 
         // Queue, audit and history writes.
+        /// <summary>
+        /// Prepares activealarms_AddNote without I/O. Duplicates are allowed.
+        /// Assumed procedure parameter names: @Note (nvarchar(1000)), @OID (varchar(20)).
+        /// OID encoding/representability is governed by the database collation, not ASCII validation.
+        /// </summary>
+        IWorkflowOperation PrepareAddNote(string noteText, string oid);
         IWorkflowOperation PreparePushAlertToMcApp(ActiveAlarm a);
         IWorkflowOperation PrepareAddToNotificationQueue(ActiveAlarm a, int insertType);
         IWorkflowOperation PrepareInsertPushNotificationQueue(ActiveAlarm a, string? victimID, string? offenderID);

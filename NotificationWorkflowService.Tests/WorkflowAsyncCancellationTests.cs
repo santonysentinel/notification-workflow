@@ -298,7 +298,8 @@ public class WorkflowAsyncCancellationTests
         (15, 0, ["clientEmail", "victimQueue", "audit", "history"]),
         (16, 0, ["clientText", "victimQueue", "audit", "history"]),
         (17, 0, ["victimQueue", "audit", "history"]),
-        (0, 0, []), (8, 0, []), (10, 0, []), (18, 0, []), (-1, 0, [])
+        (18, 0, ["note"]), (19, 0, []), (int.MaxValue, 0, []),
+        (0, 0, []), (8, 0, []), (10, 0, []), (-1, 0, [])
     ];
 
     public static IEnumerable<object[]> ActionCases()
@@ -822,11 +823,12 @@ public class WorkflowAsyncCancellationTests
             current = alarm ?? current;
             Calls.Add(name);
             Tokens.Add(token);
-            ProcessNextValues.Add(current!.ProcessNextStep);
+            if (current != null) ProcessNextValues.Add(current.ProcessNextStep);
             if (Calls.Count - 1 == BlockAt) await Gate.WaitAsync(token);
             token.ThrowIfCancellationRequested();
         }
         public Task SendNotificationsToOfficersInSameGroupAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => Callback("officers", cancellationToken, a);
+        public Task AddNoteAsync(string template, string oid, CancellationToken cancellationToken = default) => Callback("note", cancellationToken);
         public async Task<bool> PushAlertToMcAppAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
         { await Callback("mcapp", cancellationToken, a); return true; }
         public async Task<bool> AddToNotificationQueueAsync(ActiveAlarm a, int insertType, CancellationToken cancellationToken = default)

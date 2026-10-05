@@ -35,6 +35,7 @@ namespace NotificationWorkflowService.Repository
         public IWorkflowOperation PrepareGetInsertEmails(ActiveAlarm a) => Prepare(() => BuildGetInsertEmails(a));
         public IWorkflowOperation PrepareGetClientEmail(ActiveAlarm a) => Prepare(() => BuildGetClientEmail(a));
         public IWorkflowOperation PrepareGetClientText(ActiveAlarm a) => Prepare(() => BuildGetClientText(a));
+        public IWorkflowOperation PrepareAddNote(string noteText, string oid) => Prepare(() => BuildAddNote(noteText, oid));
         public IWorkflowOperation PreparePushAlertToMcApp(ActiveAlarm a) => Prepare(() => BuildPushAlertToMcApp(a));
         public IWorkflowOperation PrepareAddToNotificationQueue(ActiveAlarm a, int insertType) => Prepare(() => BuildAddToNotificationQueue(a, insertType));
         public IWorkflowOperation PrepareInsertPushNotificationQueue(ActiveAlarm a, string? victimID, string? offenderID) => Prepare(() => BuildInsertPushNotificationQueue(a, victimID, offenderID));
@@ -112,6 +113,24 @@ namespace NotificationWorkflowService.Repository
         internal static SqlCommand BuildGetInsertEmails(ActiveAlarm a) => Build("ActiveAlarms_ReadAuditEmails", cmd => Add(cmd, "@ClientSystemID", SqlDbType.Int, a.ClientSystemID));
         internal static SqlCommand BuildGetClientEmail(ActiveAlarm a) => Build("ActiveAlarms_ClientEmails", cmd => Add(cmd, "@ClientSystemID", SqlDbType.Int, a.ClientSystemID));
         internal static SqlCommand BuildGetClientText(ActiveAlarm a) => Build("ActiveAlarms_ClientCell", cmd => Add(cmd, "@ClientSystemID", SqlDbType.Int, a.ClientSystemID));
+
+        internal static SqlCommand BuildAddNote(string noteText, string oid)
+        {
+            ArgumentNullException.ThrowIfNull(noteText);
+            ArgumentNullException.ThrowIfNull(oid);
+            if (string.IsNullOrWhiteSpace(noteText) || noteText.Length > 1000)
+                throw new ArgumentException("Note text must be nonblank and at most 1000 UTF-16 code units.", nameof(noteText));
+            if (string.IsNullOrWhiteSpace(oid) || oid.Length > 20)
+                throw new ArgumentException("OID must be nonblank and at most 20 characters.", nameof(oid));
+
+            // Parameter names are inferred; verify against the deployed stored procedure signature.
+            // No ASCII restriction: varchar encoding and representability depend on database collation.
+            return Build("activealarms_AddNote", cmd =>
+            {
+                Add(cmd, "@Note", SqlDbType.NVarChar, noteText, 1000);
+                Add(cmd, "@OID", SqlDbType.VarChar, oid, 20);
+            });
+        }
 
         internal static SqlCommand BuildPushAlertToMcApp(ActiveAlarm a) => Build("ActiveAlarms_InsertIntoMCAPP", cmd =>
         {

@@ -41,10 +41,12 @@ public class WorkflowActionExecutorTests
         new(15, 0, "Alert Client - Email", "", true, true, false, ["clientEmail", "clientEmailQueue", "clientEmailAudit", "clientEmailHistory"]),
         new(16, 0, "Alert Client - Text", "", true, true, false, ["clientText", "clientTextQueue", "clientTextAudit", "clientTextHistory"]),
         new(17, 0, "Text All Victims", "Text All Victims", true, true, false, ["victimTextQueue", "victimTextAudit", "victimTextHistory"]),
+        new(18, 0, "Add Note", "Add Note", true, true, false, ["note"]),
+        new(19, 0, "Do Nothing", "Do Nothing", false, true, false, []),
+        new(int.MaxValue, 0, "Do Nothing", "Do Nothing", false, true, false, []),
         new(0, 0, "Do Nothing", "Do Nothing", false, true, false, []),
         new(8, 0, "Do Nothing", "Do Nothing", false, true, false, []),
         new(10, 0, "Do Nothing", "Do Nothing", false, true, false, []),
-        new(18, 0, "Do Nothing", "Do Nothing", false, true, false, []),
         new(-1, 0, "Do Nothing", "Do Nothing", false, true, false, [])
     ];
 
@@ -344,7 +346,7 @@ public class WorkflowActionExecutorTests
 
     private sealed record Call(string Name, ActiveAlarm? Alarm = null, int? Type = null,
         string? Text = null, int? HistoryID = null, int? StepNo = null, bool? IsVictim = null,
-        int ProcessNext = InitialProcessNext);
+        int ProcessNext = InitialProcessNext, string? Oid = null);
 
     private static Call Operation(string name, ActiveAlarm a) => new(name, a);
     private static Call Queue(ActiveAlarm a, int type) => new("queue", a, type);
@@ -354,6 +356,7 @@ public class WorkflowActionExecutorTests
 
     private static Call[] Expected(Scenario scenario, ActiveAlarm a, bool step) => scenario.Calls.Select(token => token switch
     {
+        "note" => new Call("note", Text: a.Instruction, Oid: a.ClientID),
         "officers" => Operation("officers", a),
         "mcapp" => Operation("mcapp", a),
         "queue3" => Queue(a, 3),
@@ -437,6 +440,8 @@ public class WorkflowActionExecutorTests
 
         public Task SendNotificationsToOfficersInSameGroupAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
         { Record(Operation("officers", a)); return Task.CompletedTask; }
+        public Task AddNoteAsync(string template, string oid, CancellationToken cancellationToken = default)
+        { Record(new Call("note", Text: template, Oid: oid)); return Task.CompletedTask; }
         public Task<bool> PushAlertToMcAppAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
         { Record(Operation("mcapp", a)); return Task.FromResult(BooleanResult); }
         public Task<bool> AddToNotificationQueueAsync(ActiveAlarm a, int insertType, CancellationToken cancellationToken = default)

@@ -1,6 +1,7 @@
 ﻿using ActiveAlarmsParser;
 using NotificationWorkflowService.Parser;
 using NotificationWorkflowService.Repository;
+using NotificationWorkflowService.Service.Notes;
 using System;
 using System.Collections.Generic;
 using System.Data.Common;
@@ -26,6 +27,7 @@ namespace NotificationWorkflowService.Service
         private readonly ILoggerFactory loggerFactory;
         private readonly Func<WorkFlowCommon> parserFactory;
         private readonly IRepository repository;
+        private readonly INoteService noteService;
 
         public WorkFlowInitiatorService(ILogger<WorkFlowInitiatorService> logger, IConfiguration configuration, ILoggerFactory loggerFactory, Func<WorkFlowCommon> parserFactory)
             : this(logger, configuration, loggerFactory, parserFactory, new NotificationWorkflowService.Repository.Repository(configuration))
@@ -33,12 +35,19 @@ namespace NotificationWorkflowService.Service
         }
 
         public WorkFlowInitiatorService(ILogger<WorkFlowInitiatorService> logger, IConfiguration configuration, ILoggerFactory loggerFactory, Func<WorkFlowCommon> parserFactory, IRepository repository)
+            : this(logger, configuration, loggerFactory, parserFactory, repository,
+                new NoteService(repository, new UnavailableNoteLocationProvider(), new UnavailableNoteAddressResolver()))
+        {
+        }
+
+        public WorkFlowInitiatorService(ILogger<WorkFlowInitiatorService> logger, IConfiguration configuration, ILoggerFactory loggerFactory, Func<WorkFlowCommon> parserFactory, IRepository repository, INoteService noteService)
         {
             this.log = logger;
             this.configuration = configuration;
             this.loggerFactory = loggerFactory;
             this.parserFactory = parserFactory;
             this.repository = repository;
+            this.noteService = noteService;
         }
 
 
@@ -104,7 +113,7 @@ namespace NotificationWorkflowService.Service
         {
             cancellationToken.ThrowIfCancellationRequested();
             DateTime lastParserResetTime = DateTime.UtcNow;
-            WorkFlowSteps p = new WorkFlowSteps(loggerFactory.CreateLogger<WorkFlowSteps>(), configuration, repository);
+            WorkFlowSteps p = new WorkFlowSteps(loggerFactory.CreateLogger<WorkFlowSteps>(), configuration, repository, noteService);
 
 
             while (!await p.setUpParserAsync(platform, cancellationToken).ConfigureAwait(false))

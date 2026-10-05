@@ -5,6 +5,7 @@ using NotificationWorkflowService.Entity;
 using NotificationWorkflowService.Repository;
 using NotificationWorkflowService.Parser.ReferenceData;
 using NotificationWorkflowService.Parser.Actions;
+using NotificationWorkflowService.Service.Notes;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -98,6 +99,7 @@ namespace NotificationWorkflowService.Parser
         private readonly String Platform;
         private readonly NotificationSender notificationService;
         private readonly IRepository repository;
+        private readonly INoteService noteService;
         private WorkflowReferenceData? pendingReferenceData;
 
 
@@ -115,12 +117,24 @@ namespace NotificationWorkflowService.Parser
         {
         }
 
+        public WorkFlowCommon(ILogger<WorkFlowCommon> logger, IConfiguration configuration, NotificationSender notificationService, IRepository repository, INoteService noteService)
+            : this((ILogger)logger, configuration, notificationService, repository, noteService)
+        {
+        }
+
         protected WorkFlowCommon(ILogger logger, IConfiguration configuration, NotificationSender notificationService, IRepository repository)
+            : this(logger, configuration, notificationService, repository,
+                new NoteService(repository, new UnavailableNoteLocationProvider(), new UnavailableNoteAddressResolver()))
+        {
+        }
+
+        protected WorkFlowCommon(ILogger logger, IConfiguration configuration, NotificationSender notificationService, IRepository repository, INoteService noteService)
         {
             this.log = logger;
             this.configuration = configuration;
             this.notificationService = notificationService;
             this.repository = repository;
+            this.noteService = noteService;
             Platform = configuration["Platform"] ?? "";
             setUpConnnectionStrings();
         }
@@ -618,6 +632,7 @@ namespace NotificationWorkflowService.Parser
                 PriorityMapping.Add(15, "Alert Client - Email");
                 PriorityMapping.Add(16, "Alert Client - Text");
                 PriorityMapping.Add(17, "Text All Victims");
+                PriorityMapping.Add(18, "Add Note");
 
                 Dictionary<int, String> RoleActionMapping = new Dictionary<int, String>();
                 RoleActionMapping.Add(1, "Call");
@@ -770,6 +785,7 @@ namespace NotificationWorkflowService.Parser
 
         private sealed class ActionOperations(WorkFlowCommon parser) : IWorkflowActionOperations
         {
+            public Task AddNoteAsync(string template, string oid, CancellationToken cancellationToken = default) => parser.noteService.AddNoteAsync(template, oid, cancellationToken);
             public Task SendNotificationsToOfficersInSameGroupAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.SendNotificationsToOfficersInSameGroupAsync(a, cancellationToken);
             public Task<bool> PushAlertToMcAppAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.PushAlertToMcAppAsync(a, cancellationToken);
             public Task<bool> AddToNotificationQueueAsync(ActiveAlarm a, int insertType, CancellationToken cancellationToken = default) => parser.AddToNotificationQueueAsync(a, insertType, cancellationToken);
