@@ -15,9 +15,10 @@ the two normal implementations, the step parser and the hosting service.
 
 ## Initial compatibility boundary
 
-The existing parser/helper method names remain adapters. Their row mapping, duplicate
-handling, partial dictionary mutation, retry loops, logging, return values and outer
-catch behavior remain in the callers. `parseAlarms` action order and state decisions
+The existing parser/helper method names remain adapters. Reference mapping is now extracted
+into local snapshot builders; partial live dictionary mutation has been replaced with
+successful-refresh publication. Duplicate rules, retry loops, logging and action helper
+contracts remain. `parseAlarms` action order and state decisions
 were not changed. Original constructors delegate to repository-aware overloads;
 host DI supplies `IRepository`, including the manually created step parser.
 
@@ -48,6 +49,10 @@ the old outer connection before that catch; this is a small exception-boundary d
   batch termination, step continuation and checkpoint behavior.
 - Existing workflow characterization tests continue to cover selection/victim filtering
   and lexical priority order. SQL parameter assertions now inspect repository builders.
+- `WorkflowReferenceDataTests` covers staged all-or-nothing reference refresh, loader
+  publication after disposal, builder mappings and deterministic profile resolution.
+- `WorkflowActionExecutorTests` covers the extracted common priority executor's ordered
+  callbacks, mode-specific parameters, return flags and failure/mutation timing.
 
 No live database or API is needed. Stored-procedure definitions, actual SQL commits,
 deadlock/timeout execution paths and accepted victim-delivery paths remain unverified.

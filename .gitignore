@@ -1,3 +1,85 @@
+# General OS artifacts
+.DS_Store
+Thumbs.db
+
+# Editor settings
+.idea/
+.vscode/*
+!.vscode/launch.json
+*.code-workspace
+*.swp
+*.swo
+
+# Environment files
+.env
+.env.*
+!.env.example
+config.local.yml
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+lerna-debug.log*
+pnpm-debug.log*
+
+# Temporary files
+.tmp/
+tmp/
+*.tmp
+
+# Go build artifacts
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.out
+
+# Go workspaces
+/go.work
+
+# Vendor
+vendor/
+
+# Node / JavaScript dependencies and build output
+node_modules/
+.pnp.cjs
+.pnp.data.json
+.pnp.loader.mjs
+.pnpm-store/
+.npm/
+
+# Transpiled / bundled output
+build/
+dist/
+out/
+.next/
+.nuxt/
+.svelte-kit/
+.storybook/
+storybook-static/
+.turbo/
+parcel-cache/
+.cache/
+coverage/
+
+# Static site generators
+public/
+
+# Testing snapshots
+__snapshots__/
+
+# Misc package manager artifacts
+*.tgz
+*.tsbuildinfo
+
+docs/temp
+.github/copilot-instructions.md
+
 # .NET build output
 [Bb]in/
 [Oo]bj/

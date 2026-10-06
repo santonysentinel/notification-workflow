@@ -1,0 +1,39 @@
+# .NET build output
+[Bb]in/
+[Oo]bj/
+[Aa]rtifacts/
+.test-output/
+
+# Visual Studio user settings and caches
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Rider user settings
+.idea/
+*.sln.iml
+
+# Test results and coverage
+[Tt]est[Rr]esults/
+coverage/
+coverage.*
+*.coverage
+*.coveragexml
+
+# NuGet packages (keep dependency lock files tracked)
+*.nupkg
+*.snupkg
+**/packages/*
+!**/packages/build/
+
+# Local logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+Desktop.ini
