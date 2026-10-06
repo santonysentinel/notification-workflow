@@ -1,4 +1,4 @@
-# Synergy Chat Monorepo
+# Notification Workflow Monorepo
 
 
 

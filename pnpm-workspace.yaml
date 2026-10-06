@@ -1,4 +1,4 @@
 packages:
   - 'packages/*'
-  - 'apps/chat-web-ui'
-  - 'apps/chat-web-notifier'
+  - 'apps/notification-feedback-api'
+  - 'apps/notification-workflow-service'
