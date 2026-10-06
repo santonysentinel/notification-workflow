@@ -1,0 +1,32 @@
+{
+  "appName": "notification-feedback-api",
+  "version": "0.1.0",
+  "microservices": {    
+  },
+  "dependencies": {
+    "microservices": []
+  },
+  "server": {
+    "port": 6000,
+    "host": "localhost"
+  }, 
+  "logging": {
+    "level": "info",
+    "enableMetrics": true
+  },
+  "statsD": {
+    "host": "localhost",
+    "port": 8125,
+    "protocol": "udp",
+    "prefix": "notification-feedback-api.",
+    "telegraf": false,
+    "mock": false,
+    "globalTags": {
+      "service": "notification-feedback-api",
+      "datacenter": "us-langley-1",
+      "version": "0.1.0"
+    },
+    "maxBufferSize": 1400,
+    "bufferFlushInterval": 1000
+  }
+}

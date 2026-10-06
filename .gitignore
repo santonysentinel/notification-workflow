@@ -119,3 +119,6 @@ coverage.*
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+
+apps/notification-feedback-api/configure/log/
