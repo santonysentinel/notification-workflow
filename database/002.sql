@@ -1,6 +1,6 @@
 -- Hot path: workers looking for available jobs
 CREATE INDEX IX_WorkerQueue_Ready
-ON dbo.WorkerQueue
+ON dbo.AutomatedCallQueue
 (
     AvailableAt,
     Priority DESC,
@@ -15,7 +15,7 @@ WHERE Status = 'READY';
 
 
 CREATE INDEX IX_WorkerQueue_ExpiredLease
-ON dbo.WorkerQueue
+ON dbo.AutomatedCallQueue
 (
     LockedUntil,
     QueueName,
