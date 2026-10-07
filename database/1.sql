@@ -25,10 +25,99 @@ CREATE TABLE dbo.AutomatedCallQueue
     CreatedDateTime datetime2(3) NOT NULL DEFAULT (SYSUTCDATETIME()),
     StartedDateTime datetime2(3) NULL,
     UpdatedDateTime datetime2(3) NULL,
-    LastMessage varchar(max) NULL,
+    -- =========================================================
+    -- Scheduling / Priority
+    -- =========================================================
+    Status              VARCHAR(20) NOT NULL
+                        CONSTRAINT DF_WorkerQueue_Status
+                        DEFAULT ('READY'),
+
+    Priority            INT NOT NULL
+                        CONSTRAINT DF_WorkerQueue_Priority
+                        DEFAULT (0),
+
+    -- Job cannot be picked before this time
+    AvailableAt         DATETIME2(3) NOT NULL
+                        CONSTRAINT DF_WorkerQueue_AvailableAt
+                        DEFAULT (SYSUTCDATETIME()),
+
+    -- =========================================================
+    -- Retry Handling
+    -- =========================================================
+    AttemptCount        INT NOT NULL
+                        CONSTRAINT DF_WorkerQueue_AttemptCount
+                        DEFAULT (0),
+
+    MaxAttempts         INT NOT NULL
+                        CONSTRAINT DF_WorkerQueue_MaxAttempts
+                        DEFAULT (10),
+
+    LastAttemptAt       DATETIME2(3) NULL,
+
+    -- =========================================================
+    -- Worker Lease / Ownership
+    -- =========================================================
+    LockedBy            VARCHAR(100) NULL,
+
+    LockedAt            DATETIME2(3) NULL,
+
+    LockedUntil         DATETIME2(3) NULL,
+
+    -- Fencing token. Changes every time the job is claimed.
+    LeaseToken          UNIQUEIDENTIFIER NULL,
+
+    -- =========================================================
+    -- Result / Failure Information
+    -- =========================================================
+    LastErrorCode       VARCHAR(100) NULL,
+
+    LastErrorMessage    NVARCHAR(2000) NULL,
+
+    -- =========================================================
+    -- Audit Timestamps
+    -- =========================================================
+    CreatedAt           DATETIME2(3) NOT NULL
+                        CONSTRAINT DF_WorkerQueue_CreatedAt
+                        DEFAULT (SYSUTCDATETIME()),
+
+    UpdatedAt           DATETIME2(3) NOT NULL
+                        CONSTRAINT DF_WorkerQueue_UpdatedAt
+                        DEFAULT (SYSUTCDATETIME()),
+
+    StartedAt           DATETIME2(3) NULL,
+
+    CompletedAt         DATETIME2(3) NULL,
+
+    FailedAt            DATETIME2(3) NULL,
+
+    DeadLetteredAt      DATETIME2(3) NULL,
+
+    -- Useful for optimistic concurrency / diagnostics.
+    Version             ROWVERSION,
+
     CONSTRAINT FK_AutomatedCallQueue_OID FOREIGN KEY (OID) REFERENCES dbo.Client (OID),
     CONSTRAINT FK_AutomatedCallQueue_FlowId FOREIGN KEY (FlowId) REFERENCES dbo.CallFlowTemplates (SystemID),
-    CONSTRAINT FK_AutomatedCallQueue_CallStatus FOREIGN KEY (CallStatus) REFERENCES dbo.LookUpFields (LookUpId)
+        
+    CONSTRAINT CK_WorkerQueue_Status
+        CHECK
+        (
+            Status IN
+            (
+                'READY',
+                'PROCESSING',
+                'COMPLETED',
+                'FAILED',
+                'DEAD_LETTER'
+            )
+        ),
+
+    CONSTRAINT CK_WorkerQueue_Attempts
+        CHECK
+        (
+            AttemptCount >= 0
+            AND MaxAttempts > 0
+            AND AttemptCount <= MaxAttempts
+        )
 );
 
 IF OBJECT_ID(N'dbo.AutomatedCalls', N'U') IS NULL
