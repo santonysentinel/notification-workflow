@@ -9,13 +9,21 @@ export async function addToAutomatedCallQueue(
     throw new TypeError('activeAlarmId must be an integer');
   }
 
+  if (typeof oid !== 'string' || !oid.trim() || oid.length > 20) {
+    throw new TypeError('oid must be a non-empty string of at most 20 characters');
+  }
+
+  if (!Number.isInteger(flowId)) {
+    throw new TypeError('flowId must be an integer');
+  }
+
   const params = {
-    ActiveAlarmID: { type: sql.Int, val: activeAlarmId }
+    ActiveAlarmID: { type: sql.Int, val: activeAlarmId },
+    OID: { type: sql.VarChar(20), val: oid },
+    FlowId: { type: sql.Int, val: flowId }
   };
 
   const optionalParams = {
-    OID: { type: sql.VarChar(20), val: oid },
-    FlowId: { type: sql.Int, val: flowId },
     CallStatus: { type: sql.Int, val: callStatus },
     Priority: { type: sql.Int, val: priority },
     AvailableAt: { type: sql.DateTime2(3), val: availableAt },
