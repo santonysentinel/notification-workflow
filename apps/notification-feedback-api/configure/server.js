@@ -9,6 +9,7 @@ import { Errors } from './errors.js';
 import configFile from './configuration.js';
 import { Logger as logger, MorganAccessStream } from './loggers.js';
 import routes from '../app/routes/routes.js';
+import twilioVoiceRouter from '../app/routes/twilioVoice.js';
 import { setupDefaultMetricsConfig, initializeMetrics } from '../app/services/metricsService.js';
 import {
   metricsMiddleware,
@@ -407,6 +408,8 @@ app.use(
     { stream: MorganAccessStream }
   )
 );
+
+app.use('/webhooks/twilio/voice', twilioVoiceRouter);
 
 app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
 app.use(bodyParser.json({ limit: '50mb' }));

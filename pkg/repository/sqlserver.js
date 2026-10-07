@@ -181,7 +181,7 @@ function resolveDefaultPoolKey(entries) {
 
 export async function executeProcedure(
   procName,
-  { params = {}, outputs = {}, platform, timeoutMs, transaction } = {}
+  { params = {}, outputs = {}, platform, timeoutMs, transaction, strictPlatform = false } = {}
 ) {
   assertValidProcName(procName);
 
@@ -258,7 +258,7 @@ export async function executeProcedure(
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const key = platform ? normalizePoolKey(platform) : DEFAULT_POOL_KEY;
-      const poolPromise = Pools[key] || Pools[DEFAULT_POOL_KEY];
+      const poolPromise = strictPlatform ? Pools[key] : Pools[key] || Pools[DEFAULT_POOL_KEY];
       if (!poolPromise) throw new Error(`No pool configured for platform: ${key}`);
 
       const pool = await poolPromise;

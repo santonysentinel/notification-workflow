@@ -20,12 +20,12 @@
   "author": "Subin Antony | santony@sentineladvantage.com",
   "devDependencies": {
     "@eslint/js": "^9.39.1",
+    "c8": "^10.1.3",
     "chai": "^6.2.1",
     "cross-env": "^10.1.0",
     "eslint": "^9.31.1",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.4",
-    "c8": "^10.1.3",
     "globals": "^16.5.0",
     "mocha": "^11.7.5",
     "mock-req-res": "^1.2.1",
@@ -49,6 +49,7 @@
     "multer": "^2.0.1",
     "nconf": "^0.13.0",
     "rotating-file-stream": "^3.2.6",
+    "twilio": "^6.1.2",
     "uuid": "^11.1.0",
     "winston": "3.17.0",
     "winston-daily-rotate-file": "^5.0.0"
