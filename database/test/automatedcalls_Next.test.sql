@@ -14,7 +14,7 @@ IF DB_NAME() <> N'NotificationWorkflowVoiceTests'
 BEGIN TRY
     BEGIN TRANSACTION;
     DECLARE @FlowId int, @CallId int, @OtherCallId int,
-            @Status int = (SELECT MIN(LookUpId) FROM dbo.LookUpFields),
+            @Status varchar(20) = 'in-progress',
             @Sid varchar(200) = 'CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
             @Phone varchar(16) = '+15551234567',
             @SourceId uniqueidentifier = NEWID(),
@@ -33,7 +33,7 @@ BEGIN TRY
     SET @CallId = SCOPE_IDENTITY();
     DECLARE @Result TABLE (Outcome varchar(30), ResponseTwiML nvarchar(max), StepId nvarchar(200), ExecutionId uniqueidentifier, Replayed bit);
 
-    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, @Sid, @Phone, @Status,
+    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, @Sid, @Phone,
         @ExpectedTwiML = @Bundle, @StepId = N'opening', @ExecutionId = @SourceId, @ResponseTwiML = N'<Response><Say>Hello.</Say></Response>';
     IF NOT EXISTS (SELECT 1 FROM @Result WHERE Outcome = 'started') THROW 51000, 'Start fixture failed.', 1;
     DELETE FROM @Result;

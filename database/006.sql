@@ -60,6 +60,8 @@ BEGIN
                 @Provider varchar(100),
                 @ExistingCallId varchar(200),
                 @ExistingPhone varchar(16),
+                @CallStatus varchar(20),
+                @EndedDateTime datetime2(3),
                 @TwiML nvarchar(max),
                 @TemplateJSON nvarchar(max),
                 @ActualSourceStepId nvarchar(200),
@@ -77,7 +79,9 @@ BEGIN
                @ExistingCallId = calls.providerCallId,
                @ExistingPhone = calls.PhoneE164,
                @TwiML = calls.TwiML,
-               @TemplateJSON = templates.TemplateJSON
+               @TemplateJSON = templates.TemplateJSON,
+               @CallStatus = calls.CallStatus,
+               @EndedDateTime = calls.EndedDateTime
         FROM dbo.AutomatedCalls AS calls WITH (UPDLOCK, HOLDLOCK)
         LEFT JOIN dbo.CallFlowTemplates AS templates WITH (HOLDLOCK) ON templates.SystemID = calls.FlowId
         WHERE calls.SystemID = @CallId;
@@ -137,6 +141,8 @@ BEGIN
                         SET @Replayed = 1;
                 END;
             END
+            ELSE IF @EndedDateTime IS NOT NULL OR @CallStatus IN ('completed', 'busy', 'failed', 'no-answer', 'canceled')
+                SET @Outcome = 'call-ended';
             ELSE IF @SourceEventId <> (SELECT MAX(SystemID) FROM dbo.AutomatedCallEvents WHERE CallId = @CallId AND EventType = 'StepIssued')
                 SET @Outcome = 'stale-execution';
             ELSE IF @NextExecutionId IS NULL OR @NextExecutionId = @ExecutionId

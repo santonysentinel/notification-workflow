@@ -223,6 +223,7 @@ describe('POST /webhooks/twilio/voice/next', () => {
     ['call-sid-mismatch', 409],
     ['stale-execution', 409],
     ['context-changed', 409],
+    ['call-ended', 409],
     ['invalid-flow', 500]
   ]) {
     it(`handles ${outcome}`, async () => {

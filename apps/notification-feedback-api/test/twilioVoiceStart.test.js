@@ -36,9 +36,7 @@ describe('POST /webhooks/twilio/voice/start', () => {
       accountSid: body.AccountSid,
       authToken: 'test-auth-token',
       startUrl: 'https://feedback.example.com/webhooks/twilio/voice/start',
-      database: 'AutoCallDB',
-      startedCallStatus: 7,
-      pendingCallStatus: null
+      database: 'AutoCallDB'
     };
     getAutomatedCallTwiML = sinon.stub().resolves(bundle);
     startAutomatedCall = sinon.stub().resolves({
@@ -87,9 +85,7 @@ describe('POST /webhooks/twilio/voice/start', () => {
     expect(startAutomatedCall.firstCall.args[0]).to.include({
       callId: 42,
       providerCallId: body.CallSid,
-      phoneE164: body.To,
-      startedCallStatus: 7,
-      pendingCallStatus: null
+      phoneE164: body.To
     });
     expect(startAutomatedCall.firstCall.args[0].openingStep).to.include({
       stepId: 'battery-reminder',
@@ -191,7 +187,7 @@ describe('POST /webhooks/twilio/voice/start', () => {
   });
 
   it('fails closed for missing configuration', async () => {
-    config.startedCallStatus = NaN;
+    config.authToken = '';
     expect((await signedRequest()).status).to.equal(503);
     expect(startAutomatedCall.notCalled).to.be.true;
   });
@@ -201,6 +197,7 @@ describe('POST /webhooks/twilio/voice/start', () => {
     ['provider-mismatch', 409],
     ['destination-mismatch', 409],
     ['call-sid-mismatch', 409],
+    ['call-ended', 409],
     ['bundle-changed', 409],
     ['invalid-twiml', 500]
   ]) {

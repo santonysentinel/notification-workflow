@@ -25,8 +25,6 @@ CREATE OR ALTER PROCEDURE dbo.automatedcalls_Start
     @CallId int,
     @ProviderCallId varchar(200),
     @PhoneE164 varchar(16),
-    @StartedCallStatus int,
-    @PendingCallStatus int = NULL,
     @ExpectedTwiML nvarchar(max) = NULL,
     @StepId nvarchar(200) = NULL,
     @ExecutionId uniqueidentifier = NULL,
@@ -48,6 +46,8 @@ BEGIN
                 @Provider varchar(100),
                 @ExistingCallId varchar(200),
                 @ExistingPhone varchar(16),
+                @CallStatus varchar(20),
+                @EndedDateTime datetime2(3),
                 @TwiML nvarchar(max),
                 @EventJSON nvarchar(max),
                 @EventFound bit = 0,
@@ -58,7 +58,9 @@ BEGIN
                @Provider = Provider,
                @ExistingCallId = providerCallId,
                @ExistingPhone = PhoneE164,
-               @TwiML = TwiML
+               @TwiML = TwiML,
+               @CallStatus = CallStatus,
+               @EndedDateTime = EndedDateTime
         FROM dbo.AutomatedCalls WITH (UPDLOCK, HOLDLOCK)
         WHERE SystemID = @CallId;
 
@@ -106,7 +108,9 @@ BEGIN
             END
             ELSE
             BEGIN
-                IF @ExecutionId IS NULL OR NULLIF(LTRIM(RTRIM(@StepId)), '') IS NULL
+                IF @EndedDateTime IS NOT NULL OR @CallStatus IN ('completed', 'busy', 'failed', 'no-answer', 'canceled')
+                    SET @Outcome = 'call-ended';
+                ELSE IF @ExecutionId IS NULL OR NULLIF(LTRIM(RTRIM(@StepId)), '') IS NULL
                    OR NULLIF(LTRIM(RTRIM(@ResponseTwiML)), '') IS NULL
                    OR @ExpectedTwiML IS NULL OR @TwiML IS NULL
                     SET @Outcome = 'invalid-twiml';
@@ -121,9 +125,8 @@ BEGIN
             UPDATE dbo.AutomatedCalls
             SET providerCallId = COALESCE(providerCallId, @ProviderCallId),
                 CallStatus = CASE
-                    WHEN StartedDateTime IS NULL
-                     AND (CallStatus = @PendingCallStatus OR (CallStatus IS NULL AND @PendingCallStatus IS NULL))
-                    THEN @StartedCallStatus
+                    WHEN CallStatus IS NULL OR CallStatus IN ('queued', 'initiated', 'ringing')
+                    THEN 'in-progress'
                     ELSE CallStatus
                 END,
                 StartedDateTime = COALESCE(StartedDateTime, SYSUTCDATETIME()),

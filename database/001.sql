@@ -139,7 +139,12 @@ CREATE TABLE dbo.AutomatedCalls
     OID varchar(20) NULL,
     PhoneE164 varchar(16) NULL,
     FlowId int NULL,
-    CallStatus int NULL,
+    CallStatus varchar(20) NULL,
+    QueueLeaseToken uniqueidentifier NULL,
+    EndedDateTime datetime2(3) NULL,
+    CallDurationSeconds int NULL,
+    LastStatusSequenceNumber int NULL,
+    LastStatusDateTime datetime2(3) NULL,
     TwiML nvarchar(max) NULL,
     Parameters nvarchar(max) NULL,
     CreatedDateTime datetime2(3) NOT NULL DEFAULT (SYSUTCDATETIME()),
@@ -147,8 +152,7 @@ CREATE TABLE dbo.AutomatedCalls
     UpdatedDateTime datetime2(3) NULL,
     CONSTRAINT FK_AutomatedCalls_AutomatedCallQueueId FOREIGN KEY (AutomatedCallQueueId) REFERENCES dbo.AutomatedCallQueue (SystemID),
     CONSTRAINT FK_AutomatedCalls_OID FOREIGN KEY (OID) REFERENCES dbo.Client (OID),
-    CONSTRAINT FK_AutomatedCalls_FlowId FOREIGN KEY (FlowId) REFERENCES dbo.CallFlowTemplates (SystemID),
-    CONSTRAINT FK_AutomatedCalls_CallStatus FOREIGN KEY (CallStatus) REFERENCES dbo.LookUpFields (LookUpId)
+    CONSTRAINT FK_AutomatedCalls_FlowId FOREIGN KEY (FlowId) REFERENCES dbo.CallFlowTemplates (SystemID)
 );
 
 IF OBJECT_ID(N'dbo.AutomatedCallEvents', N'U') IS NULL

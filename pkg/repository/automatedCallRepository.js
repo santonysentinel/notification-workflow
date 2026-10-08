@@ -22,14 +22,7 @@ export async function getAutomatedCallTwiML(
 }
 
 export async function startAutomatedCall(
-  {
-    callId,
-    providerCallId,
-    phoneE164,
-    startedCallStatus,
-    pendingCallStatus = null,
-    openingStep = null,
-  },
+  { callId, providerCallId, phoneE164, openingStep = null },
   { platform = "AutoCallDB", timeoutMs, transaction } = {},
 ) {
   if (!Number.isInteger(callId) || callId <= 0 || callId > 2147483647) {
@@ -44,20 +37,8 @@ export async function startAutomatedCall(
   if (typeof phoneE164 !== "string" || !/^\+[1-9]\d{1,14}$/.test(phoneE164)) {
     throw new TypeError("phoneE164 must be an E.164 phone number");
   }
-  for (const status of [startedCallStatus, pendingCallStatus]) {
-    if (
-      status !== null &&
-      (!Number.isInteger(status) || status <= 0 || status > 2147483647)
-    ) {
-      throw new TypeError("call statuses must be positive SQL integers");
-    }
-  }
-  if (
-    startedCallStatus == null ||
-    typeof platform !== "string" ||
-    !platform.trim()
-  ) {
-    throw new TypeError("startedCallStatus and platform are required");
+  if (typeof platform !== "string" || !platform.trim()) {
+    throw new TypeError("platform is required");
   }
 
   const result = await executeProcedure("dbo.automatedcalls_Start", {
@@ -65,8 +46,6 @@ export async function startAutomatedCall(
       CallId: { type: sql.Int, val: callId },
       ProviderCallId: { type: sql.VarChar(200), val: providerCallId },
       PhoneE164: { type: sql.VarChar(16), val: phoneE164 },
-      StartedCallStatus: { type: sql.Int, val: startedCallStatus },
-      PendingCallStatus: { type: sql.Int, val: pendingCallStatus },
       ExpectedTwiML: {
         type: sql.NVarChar(sql.MAX),
         val: openingStep?.expectedTwiML ?? null,
@@ -178,5 +157,78 @@ export async function advanceAutomatedCall(
   });
   const context = result.recordset?.[0];
   if (!context) throw new Error("automatedcalls_Next did not return a result");
+  return context;
+}
+
+export async function recordAutomatedCallStatus(
+  {
+    callId,
+    providerCallId,
+    phoneE164,
+    callStatus,
+    sequenceNumber,
+    timestamp,
+    callDurationSeconds = null,
+    sipResponseCode = null,
+    parameters,
+  },
+  { platform = "AutoCallDB", timeoutMs, transaction } = {},
+) {
+  if (!Number.isInteger(callId) || callId <= 0 || callId > 2147483647)
+    throw new TypeError("callId must be a positive SQL integer");
+  if (
+    typeof providerCallId !== "string" ||
+    !/^CA[0-9a-fA-F]{32}$/.test(providerCallId)
+  )
+    throw new TypeError("providerCallId must be a Twilio CallSid");
+  if (typeof phoneE164 !== "string" || !/^\+[1-9]\d{1,14}$/.test(phoneE164))
+    throw new TypeError("phoneE164 must be an E.164 phone number");
+  if (
+    ![
+      "queued",
+      "initiated",
+      "ringing",
+      "in-progress",
+      "completed",
+      "busy",
+      "failed",
+      "no-answer",
+      "canceled",
+    ].includes(callStatus)
+  )
+    throw new TypeError("Unsupported Twilio call status");
+  if (
+    !Number.isInteger(sequenceNumber) ||
+    sequenceNumber < 0 ||
+    sequenceNumber > 2147483647 ||
+    !(timestamp instanceof Date) ||
+    !Number.isFinite(timestamp.getTime())
+  )
+    throw new TypeError("Valid sequenceNumber and timestamp are required");
+  if (typeof platform !== "string" || !platform.trim())
+    throw new TypeError("platform is required");
+  const result = await executeProcedure("dbo.automatedcalls_Status", {
+    params: {
+      CallId: { type: sql.Int, val: callId },
+      ProviderCallId: { type: sql.VarChar(200), val: providerCallId },
+      PhoneE164: { type: sql.VarChar(16), val: phoneE164 },
+      CallStatus: { type: sql.VarChar(20), val: callStatus },
+      SequenceNumber: { type: sql.Int, val: sequenceNumber },
+      Timestamp: { type: sql.DateTime2(3), val: timestamp },
+      CallDurationSeconds: { type: sql.Int, val: callDurationSeconds },
+      SipResponseCode: { type: sql.Int, val: sipResponseCode },
+      ParametersJSON: {
+        type: sql.NVarChar(sql.MAX),
+        val: JSON.stringify(parameters ?? {}),
+      },
+    },
+    platform,
+    timeoutMs,
+    transaction,
+    strictPlatform: true,
+  });
+  const context = result.recordset?.[0];
+  if (!context)
+    throw new Error("automatedcalls_Status did not return a result");
   return context;
 }

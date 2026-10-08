@@ -2,6 +2,7 @@ import * as repository from '../../../../pkg/repository/automatedCallRepository.
 import { sendError } from '../../configure/errors.js';
 import { isVoiceResponse, prepareOpeningStep } from '../utils/twilioTwiML.js';
 import { prepareNextStep } from '../utils/twilioTransitions.js';
+import { parseStatusCallback } from '../utils/twilioStatuses.js';
 
 export function createVoiceStartController(repo = repository) {
   return async (req, res) => {
@@ -30,8 +31,6 @@ export function createVoiceStartController(repo = repository) {
           callId,
           providerCallId: CallSid,
           phoneE164: To,
-          startedCallStatus: config.startedCallStatus,
-          pendingCallStatus: config.pendingCallStatus,
           openingStep
         },
         options
@@ -44,7 +43,8 @@ export function createVoiceStartController(repo = repository) {
           'provider-mismatch',
           'destination-mismatch',
           'call-sid-mismatch',
-          'bundle-changed'
+          'bundle-changed',
+          'call-ended'
         ].includes(result.Outcome)
       ) {
         return sendError(res, 409, 'Callback does not match the automated call', errorContext);
@@ -132,7 +132,8 @@ export function createVoiceNextController(repo = repository) {
           'destination-mismatch',
           'call-sid-mismatch',
           'stale-execution',
-          'context-changed'
+          'context-changed',
+          'call-ended'
         ].includes(result.Outcome)
       ) {
         return sendError(
@@ -153,6 +154,53 @@ export function createVoiceNextController(repo = repository) {
     } catch (err) {
       req.log?.error('twilio.voice.next.failed', { message: err?.message, callId, executionId });
       return sendError(res, 500, 'Failed to advance automated call', errorContext);
+    }
+  };
+}
+
+export function createVoiceStatusController(repo = repository) {
+  return async (req, res) => {
+    const errorContext = { traceId: req.context?.traceId, path: req.originalUrl };
+    const rawCallId = req.query.callId;
+    const callId =
+      typeof rawCallId === 'string' && /^[1-9]\d*$/.test(rawCallId) ? Number(rawCallId) : NaN;
+    const { CallSid, To } = req.body;
+    if (!Number.isInteger(callId) || callId > 2147483647) {
+      return sendError(res, 400, 'callId must be a positive SQL integer', errorContext);
+    }
+    if (typeof CallSid !== 'string' || !/^CA[0-9a-fA-F]{32}$/.test(CallSid)) {
+      return sendError(res, 400, 'A valid CallSid is required', errorContext);
+    }
+    if (typeof To !== 'string' || !/^\+[1-9]\d{1,14}$/.test(To)) {
+      return sendError(res, 400, 'A valid E.164 To number is required', errorContext);
+    }
+    const status = parseStatusCallback(req.body);
+    if (!status) return sendError(res, 400, 'Invalid call status callback', errorContext);
+    try {
+      const result = await repo.recordAutomatedCallStatus(
+        {
+          callId,
+          providerCallId: CallSid,
+          phoneE164: To,
+          ...status,
+          parameters: req.body
+        },
+        { platform: req.twilioVoiceConfig.database, timeoutMs: 5000 }
+      );
+      if (result.Outcome === 'not-found')
+        return sendError(res, 404, 'Automated call not found', errorContext);
+      if (
+        ['provider-mismatch', 'destination-mismatch', 'call-sid-mismatch'].includes(result.Outcome)
+      ) {
+        return sendError(res, 409, 'Callback does not match the automated call', errorContext);
+      }
+      if (!['recorded', 'duplicate'].includes(result.Outcome)) {
+        return sendError(res, 500, 'Call status could not be recorded', errorContext);
+      }
+      return res.status(204).set('Cache-Control', 'no-store').end();
+    } catch (err) {
+      req.log?.error('twilio.voice.status.failed', { message: err?.message, callId });
+      return sendError(res, 500, 'Failed to record call status', errorContext);
     }
   };
 }

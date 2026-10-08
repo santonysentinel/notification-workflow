@@ -2,11 +2,12 @@
 
 ## Endpoint Status
 
-The feedback API implements `POST /webhooks/twilio/voice/start` and
-`POST /webhooks/twilio/voice/next`. Call-status, recording, and transcription callbacks
-are not implemented yet. `/start` issues the opening step; `/next` resolves a transition
-and issues its destination. Neither endpoint executes business actions, chooses
-human/machine branches, or saves recordings or transcripts.
+The feedback API implements `POST /webhooks/twilio/voice/start`,
+`POST /webhooks/twilio/voice/next`, and `POST /webhooks/twilio/voice/status`.
+`/start` issues the opening step; `/next` resolves a transition and issues its
+destination; `/status` records call progress and closes the owning queue job.
+Business actions, worker-service feedback, retry scheduling, alternative-number
+selection, human/machine branching, recordings, and transcription remain deferred.
 
 The [flow contract](twilio_flow_contract.md) documents the storage change and the
 complete version-1 TemplateJSON with its matching personalized XML bundle.
@@ -112,9 +113,10 @@ for byte-for-byte replay. The stored bundle is not modified during progression.
 
 On first issuance, the transaction binds a NULL `providerCallId`, preserves an
 existing matching SID, sets `StartedDateTime` if absent, and sets `UpdatedDateTime`.
-`CallStatus` changes to the configured started status only when the attempt has no
-start timestamp and its status matches the configured pending status. When no pending
-status is configured, the expected pending value is NULL. Other statuses are preserved.
+`CallStatus` changes from NULL, `queued`, `initiated`, or `ringing` to `in-progress`.
+It does not overwrite a terminal status. An ended attempt cannot issue a new opening
+step, but its saved start response can still replay. Status sequence/time reporting
+fields are maintained by `/status`, not `/start`.
 The worker must not overwrite a different SID already bound by the callback.
 
 The event has `EventType = 'StepIssued'`, `IdempotencyKey = 'voice:start'`, and
@@ -131,7 +133,7 @@ data are not changed by this endpoint.
 | 400 | Missing/invalid `callId`, `CallSid`, or `To`; duplicate `callId`; out-of-range call ID. |
 | 403 | Missing/invalid Twilio signature, unexpected account, or non-scalar form values. |
 | 404 | Attempt does not exist. |
-| 409 | Provider, destination, or SID mismatch; or the bundle changed before first issuance. |
+| 409 | Provider, destination, or SID mismatch; changed bundle; or an ended call with no saved start response. |
 | 413 | Form body exceeds the parser's 32 KB limit. |
 | 415 | Request is not form-urlencoded. |
 | 500 | Invalid/unavailable instructions, corrupt replay data, or database failure. |
@@ -189,7 +191,7 @@ responses produce HTTP 500 without committing events.
 Duplicate/concurrent callbacks for the same source execution return the **first
 committed response**, even if subsequent callbacks contain different input. The first
 input is retained; retries do not create new input events. Replays remain valid after
-later progression or changes to the graph/bundle. An old execution without a committed
+later progression, call termination, or changes to the graph/bundle. An old execution without a committed
 transition is rejected as stale; an execution belonging to another call is rejected.
 Corrupt saved transition records fail closed. Input can contain personal information;
 apply the same access and retention controls as other call records.
@@ -220,11 +222,117 @@ performed for an acknowledgement branch; the event records the conversational ou
 | 400 | Invalid/duplicate call or execution ID, invalid SID/phone, malformed digits or confidence. |
 | 403 | Invalid signature, account, or non-scalar form values. |
 | 404 | Call does not exist, or the execution was not issued to this call. |
-| 409 | Provider/destination/SID mismatch, unbound SID, stale execution, or changed snapshots. |
+| 409 | Provider/destination/SID mismatch, unbound SID, stale execution, changed snapshots, or an ended call attempting a new transition. |
 | 413 | Body exceeds 32 KB. |
 | 415 | Request is not form-urlencoded. |
 | 500 | Invalid graph/response, terminal source with no transition, corrupt replay data, or database failure. |
 | 503 | Missing/invalid next webhook configuration. |
+
+## Status
+
+`POST /webhooks/twilio/voice/status?callId=<AutomatedCalls.SystemID>`
+
+Configure the outgoing Twilio call's status callback URL with the attempt ID,
+method `POST`, and events `initiated`, `ringing`, `answered`, and `completed`.
+The `answered` event carries `CallStatus=in-progress`; the `completed` event can
+carry any terminal outcome, not just `completed`. This endpoint does not return TwiML.
+
+### Request
+
+The signature/account checks, scalar form fields, 32 KB limit, and required `callId`,
+`AccountSid`, `CallSid`, and E.164 `To` are the same as `/start`. The configured
+**status** URL plus the raw query is used for signature validation. No `executionId`
+is needed; progress callbacks are associated with the call attempt, not a step.
+
+| Field | Contract |
+| --- | --- |
+| `CallStatus` | Required exact text: `queued`, `initiated`, `ringing`, `in-progress`, `completed`, `busy`, `failed`, `no-answer`, or `canceled`. |
+| `SequenceNumber` | Required canonical nonnegative integer, maximum 2147483647. Twilio progress-event sequences start at zero. No timestamp-based deduplication fallback is used. |
+| `Timestamp` | Required valid UTC RFC2822 timestamp, e.g. `Thu, 08 Oct 2026 10:00:00 +0000`. UTC/GMT suffixes are also accepted; dates and weekday must agree. |
+| `CallDuration` | Optional nonnegative integer seconds, maximum 2147483647. Omitted means unknown, not zero. Used for attempt reporting only on an applied terminal callback. |
+| `SipResponseCode` | Optional integer 100 through 699, retained in the event. |
+
+All other form values are preserved in event `parameters` and participate in signature
+validation. `Duration` is not used: it represents minutes, unlike `CallDuration`.
+This contract requires explicit call-progress event subscriptions; callbacks without
+sequence/time fields receive HTTP 400 rather than weakening replay protection.
+
+### Processing And Events
+
+`dbo.automatedcalls_Status` locks the attempt in one transaction and checks the
+provider, destination, and bound SID. It can bind a NULL SID before `/start`, which
+also supports busy/no-answer/failed calls that never request instructions. The worker
+must never overwrite a different callback-bound SID.
+
+Each unique callback inserts `CallStatusReceived` with key
+`voice:status:<CallSid>:<SequenceNumber>`, scoped by `CallId`. Duplicate keys return
+204 without changing the first event, reporting values, timestamps, or queue state,
+even if the retry's payload differs. Events preserve provider event time in
+`CallEventDateTime`; JSON also records receipt time.
+
+The event JSON contains `providerCallId`, `callStatus`, `sequenceNumber`, `timestamp`,
+`receivedDateTime`, `callDurationSeconds`, `sipResponseCode`, `applied`, `ignoreReason`,
+`queueFinalized`, and the full form `parameters`. Nullable fields are explicit.
+Apply the same access and retention controls as other call records.
+
+Unique callbacks are audited even when ignored. A callback updates current state
+only if its sequence exceeds the last applied sequence, the call is not terminal,
+and its status does not regress through `queued -> initiated -> ringing -> in-progress`.
+The first accepted terminal status is sticky. Ignored events have `applied=false` and
+reason `already-terminal`, `older-sequence`, or `status-regression`; they do not move
+the applied reporting watermark. This also prevents a delayed ringing callback from
+undoing `/start`'s `in-progress` status. Sequence order, not HTTP arrival time or
+provider timestamp, controls callback ordering.
+
+### Reporting And Queue Ownership
+
+| AutomatedCalls column | Meaning |
+| --- | --- |
+| `CallStatus varchar(20)` | Current Twilio text status; NULL is permitted before any activity. No lookup FK. |
+| `EndedDateTime datetime2(3)` | UTC provider timestamp of the first applied terminal callback. |
+| `CallDurationSeconds int` | Terminal `CallDuration`, or NULL if absent. |
+| `LastStatusSequenceNumber int` | Sequence of the last applied progress callback, not the highest received sequence. |
+| `LastStatusDateTime datetime2(3)` | UTC provider timestamp of that applied callback. |
+| `QueueLeaseToken uniqueidentifier` | Immutable copy of the claimed queue lease captured when the attempt is created. |
+
+The attempt update, event insert, and eligible queue update commit or roll back
+together. For a terminal callback, the associated job changes only when its
+`Status='PROCESSING'` and current `LeaseToken` equals the attempt's non-NULL
+`QueueLeaseToken`. Capture `AutomatedCallQueueId` and the claim's lease token when
+creating one attempt per claim, before dialing; do not infer ownership later from
+the queue ID, latest call ID, or the queue's current lease. Existing attempts without
+a snapshot still record progress but do not close a queue job. Expiration alone does
+not invalidate an unchanged token; a re-claim supplies a new token and fences old calls.
+
+- `completed`: queue `COMPLETED`, `CompletedAt` set to terminal event time.
+- `busy`, `no-answer`, `failed`, `canceled`: queue `FAILED`, `FailedAt` set,
+  `LastErrorCode='twilio:<status>'`, and a status-specific error message.
+
+Finalization clears lease/lock fields, updates queue audit timestamps, and clears
+the opposite completion/failure timestamp. It does not increment attempts or schedule
+another job. `AutomatedCallQueue.CallStatus` remains its existing nullable integer;
+it is separate from the attempt lifecycle and is not changed by this endpoint.
+
+The worker must not manage ongoing or terminal call status after initiation; it will
+later handle failed-job requeueing or alternative numbers. Worker feedback is not
+implemented here. Twilio `completed` does not prove a human answered or acknowledged.
+Some queued cancellations generate no status callbacks; cancellation/reconciliation
+support remains future work. `/start` and `/next` refuse new issuance after an accepted
+terminal outcome, while already committed responses remain replayable.
+
+### Responses
+
+| Status | Meaning |
+| --- | --- |
+| 204 | Recorded, duplicate, or ignored callback; empty body and `Cache-Control: no-store`. |
+| 400 | Invalid/duplicate call ID, SID, phone, status, sequence, timestamp, duration, or SIP code. |
+| 403 | Invalid signature, unexpected account, or non-scalar form values. |
+| 404 | Attempt does not exist. |
+| 409 | Provider, destination, or bound SID mismatch. |
+| 413 | Body exceeds 32 KB. |
+| 415 | Request is not form-urlencoded. |
+| 500 | Persistence failure or unexpected repository result; database details are masked. |
+| 503 | Missing/invalid status webhook configuration. |
 
 ## Configuration And Deployment
 
@@ -234,15 +342,41 @@ performed for an acknowledgement branch; the event records the conversational ou
 | `TWILIO_AUTH_TOKEN` | Secret account Auth Token for signature validation. |
 | `TWILIO_VOICE_START_URL` | Exact public HTTPS start URL, including any proxy prefix; no query, fragment, or credentials. |
 | `TWILIO_VOICE_NEXT_URL` | Required for `/next`: exact public HTTPS next URL, including any proxy prefix; no query, fragment, or credentials. |
+| `TWILIO_VOICE_STATUS_URL` | Required for `/status`: exact public HTTPS status URL, including any proxy prefix; no query, fragment, or credentials. |
 | `AUTO_CALL_DATABASE` | Pool key under `dependencies.databases`; defaults to `AutoCallDB`, with no fallback to another database. |
-| `TWILIO_STARTED_CALL_STATUS` | Required positive `LookUpFields.LookUpId` for started calls. |
-| `TWILIO_PENDING_CALL_STATUS` | Optional positive lookup ID; omitted means NULL is the pending status. |
 
-Equivalent `twilio` configuration keys are `accountSid`, `authToken`, `voiceStartUrl`, `voiceNextUrl`,
-`database`, `startedCallStatus`, and `pendingCallStatus`. Environment variables take
+Equivalent `twilio` configuration keys are `accountSid`, `authToken`, `voiceStartUrl`,
+`voiceNextUrl`, `voiceStatusUrl`, and `database`. Environment variables take
 precedence. URL pathnames must end with `/webhooks/twilio/voice/start` and
-`/webhooks/twilio/voice/next`, respectively. Next does not require the started/pending
-status settings; those are validated only for Start. Each endpoint validates its own URL.
+`/webhooks/twilio/voice/next`, and `/webhooks/twilio/voice/status`, respectively.
+Each endpoint validates its own URL. Numeric started/pending status configuration
+has been removed and must no longer be supplied by direct Start procedure callers.
+
+Deploy in a coordinated release: stop producers and drain/pause webhooks while changing
+the schema and Start signature. For a fresh database, create the tables with
+`database/001.sql`. For both fresh and existing databases, run `database/007.sql`
+**before** redeploying `database/005.sql` and `database/006.sql`, then deploy the API.
+007 migrates attempt status, adds reporting/lease columns and constraints, and installs
+`dbo.automatedcalls_Status`. It is rerunnable and never backfills lease ownership or
+guesses terminal timestamps/durations. Update attempt producers to write textual status
+and the claim's lease snapshot before enabling callbacks.
+
+Existing non-NULL numeric attempt statuses require explicit verified mappings. In the
+same SQL session that will execute 007, create and populate:
+
+```sql
+CREATE TABLE #TwilioCallStatusMapping
+(
+  LegacyCallStatus int PRIMARY KEY,
+  CallStatus varchar(20) NOT NULL
+);
+```
+
+Insert the approved old-ID-to-Twilio-text mappings for your data, then execute 007 in
+that session. Missing or invalid mappings abort and roll back schema changes; no
+numeric value is blindly cast into a lifecycle string. NULL-only/empty tables need
+no mappings. Mapping preserves the existing rows; the lookup FK is removed only
+after validation. Use a runner that stops on errors and supports `GO` batches.
 
 Install dependencies with `pnpm install` and deploy `database/005.sql` to AutoCallDB
 using a runner that supports `GO`. Deploy both `dbo.automatedcalls_GetTwiML` and the
@@ -263,14 +397,17 @@ duplicate non-NULL event keys before deployment; the script does not delete hist
 The tables and columns from `database/001.sql` must exist. That script creates missing
 tables but does not add columns to existing tables. Existing bare `<Response>` values
 must be migrated to bundles before first issuance. AutoCallDB must contain the
-`Client` and `LookUpFields` rows required by the existing foreign keys.
+`Client` rows required by the existing foreign keys; attempt status no longer requires
+`LookUpFields` rows.
 
 See [the running guide](../RUNNING_GUIDE.md) for column migration and local SQL test
 commands. JavaScript parser and signed HTTP tests are in
 `apps/notification-feedback-api/test/twilioTwiML.test.js` and
 `apps/notification-feedback-api/test/twilioVoiceStart.test.js`. The isolated SQL
 regression scripts are `database/test/automatedcalls_Start.test.sql` and
-`database/test/automatedcalls_Next.test.sql`. Transition and signed next HTTP tests are
+`database/test/automatedcalls_Next.test.sql` and `database/test/automatedcalls_Status.test.sql`.
+Status parser and signed HTTP tests are `apps/notification-feedback-api/test/twilioStatuses.test.js`
+and `apps/notification-feedback-api/test/twilioVoiceStatus.test.js`. Transition and signed next HTTP tests are
 `apps/notification-feedback-api/test/twilioTransitions.test.js` and
 `apps/notification-feedback-api/test/twilioVoiceNext.test.js`. The transition tests also
 validate the complete JSON/XML example in the flow contract.

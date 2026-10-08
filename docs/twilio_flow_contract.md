@@ -72,7 +72,8 @@ question, and four terminal outcomes. IDs match the XML bundle below exactly.
   to select a transition.
 - A `terminal` step has no transitions. Its response must end the call, normally
   with `<Hangup>`. `/next` does not synthesize a terminal response or automatically
-  update completion status; the future status callback will handle completion.
+  update completion status; `/status` handles terminal call reporting and guarded
+  queue finalization. Worker feedback and business actions remain deferred.
 - Unknown transition keys, dangling targets, unsupported step types, and embedded
   `actions` are rejected. Templates must be immutable: publish changes as a new
   template row/version rather than editing a row referenced by existing calls.

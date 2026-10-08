@@ -14,8 +14,8 @@ IF DB_NAME() <> N'NotificationWorkflowVoiceTests'
 BEGIN TRY
     BEGIN TRANSACTION;
 
-    DECLARE @StartedStatus int = (SELECT MIN(LookUpId) FROM dbo.LookUpFields),
-            @ProtectedStatus int = (SELECT MAX(LookUpId) FROM dbo.LookUpFields),
+        DECLARE @StartedStatus varchar(20) = 'in-progress',
+            @ProtectedStatus varchar(20) = 'completed',
             @CallId int,
             @Sid varchar(200) = 'CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
             @Phone varchar(16) = '+15551234567',
@@ -26,9 +26,6 @@ BEGIN TRY
 
     SET @PreparedResponse = N'<Response><Say>Hello Alex.</Say><Redirect method="POST">https://example.com/webhooks/twilio/voice/next?callId=42&amp;executionId='
         + CONVERT(nvarchar(36), @ExecutionId) + N'</Redirect></Response>';
-
-    IF @StartedStatus IS NULL OR @ProtectedStatus = @StartedStatus
-        THROW 51000, 'The isolated test database needs two lookup status rows.', 1;
 
     DECLARE @Result TABLE
     (
@@ -48,7 +45,7 @@ BEGIN TRY
     IF NOT EXISTS (SELECT 1 FROM @ReadBundle WHERE TwiML = @Bundle)
         THROW 51000, 'The read procedure did not return the full stored bundle.', 1;
 
-    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, @Sid, @Phone, @StartedStatus,
+    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, @Sid, @Phone,
         @ExpectedTwiML = @Bundle, @StepId = N'reminder', @ExecutionId = @ExecutionId, @ResponseTwiML = @PreparedResponse;
     IF NOT EXISTS (SELECT 1 FROM @Result WHERE Outcome = 'started' AND StepId = 'reminder' AND ExecutionId IS NOT NULL AND Replayed = 0)
         THROW 51000, 'Initial start did not issue the opening step.', 1;
@@ -75,26 +72,26 @@ BEGIN TRY
     SELECT @StartedAt = StartedDateTime, @UpdatedAt = UpdatedDateTime FROM dbo.AutomatedCalls WHERE SystemID = @CallId;
     UPDATE dbo.AutomatedCalls SET TwiML = N'invalid bundle', CallStatus = @ProtectedStatus WHERE SystemID = @CallId;
     DELETE FROM @Result;
-    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, @Sid, @Phone, @StartedStatus;
+    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, @Sid, @Phone;
     IF NOT EXISTS (SELECT 1 FROM @Result WHERE Outcome = 'started' AND Replayed = 1 AND ExecutionId = @ExecutionId AND ResponseTwiML = @ResponseTwiML)
        OR (SELECT COUNT(*) FROM dbo.AutomatedCallEvents WHERE CallId = @CallId) <> 1
        OR NOT EXISTS (SELECT 1 FROM dbo.AutomatedCalls WHERE SystemID = @CallId AND StartedDateTime = @StartedAt AND UpdatedDateTime = @UpdatedAt AND CallStatus = @ProtectedStatus)
         THROW 51000, 'Replay changed state, issued another execution, or did not return the saved response.', 1;
 
     DELETE FROM @Result;
-    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, 'CAbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', @Phone, @StartedStatus;
+    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, 'CAbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', @Phone;
     IF NOT EXISTS (SELECT 1 FROM @Result WHERE Outcome = 'call-sid-mismatch' AND ResponseTwiML IS NULL)
         THROW 51000, 'A conflicting SID was allowed to replay.', 1;
 
     DELETE FROM @Result;
-    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, @Sid, '+15557654321', @StartedStatus;
+    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, @Sid, '+15557654321';
     IF NOT EXISTS (SELECT 1 FROM @Result WHERE Outcome = 'destination-mismatch' AND ResponseTwiML IS NULL)
         THROW 51000, 'A conflicting destination was allowed to replay.', 1;
 
     DECLARE @SavedEventJSON nvarchar(max) = (SELECT EventJSON FROM dbo.AutomatedCallEvents WHERE CallId = @CallId AND IdempotencyKey = 'voice:start');
     UPDATE dbo.AutomatedCallEvents SET EventJSON = N'[]' WHERE CallId = @CallId AND IdempotencyKey = 'voice:start';
     DELETE FROM @Result;
-    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, @Sid, @Phone, @StartedStatus,
+    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, @Sid, @Phone,
         @ExpectedTwiML = @Bundle, @StepId = N'reminder', @ExecutionId = @ExecutionId, @ResponseTwiML = @PreparedResponse;
     IF NOT EXISTS (SELECT 1 FROM @Result WHERE Outcome = 'invalid-twiml' AND ResponseTwiML IS NULL)
         THROW 51000, 'A corrupt replay event returned the newly prepared candidate.', 1;
@@ -103,7 +100,7 @@ BEGIN TRY
     INSERT INTO dbo.AutomatedCalls (Provider, PhoneE164, TwiML) VALUES ('Twilio', @Phone, @Bundle);
     SET @CallId = SCOPE_IDENTITY();
     DELETE FROM @Result;
-    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, @Sid, @Phone, @StartedStatus;
+    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, @Sid, @Phone;
     IF NOT EXISTS (SELECT 1 FROM @Result WHERE Outcome = 'invalid-twiml' AND ResponseTwiML IS NULL)
        OR EXISTS (SELECT 1 FROM dbo.AutomatedCallEvents WHERE CallId = @CallId)
        OR EXISTS (SELECT 1 FROM dbo.AutomatedCalls WHERE SystemID = @CallId AND (providerCallId IS NOT NULL OR StartedDateTime IS NOT NULL))
@@ -111,7 +108,7 @@ BEGIN TRY
 
     DECLARE @StaleBundle nvarchar(max) = REPLACE(@Bundle, N'Hello', N'HELLO');
     DELETE FROM @Result;
-    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, @Sid, @Phone, @StartedStatus,
+    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, @Sid, @Phone,
         @ExpectedTwiML = @StaleBundle, @StepId = N'reminder', @ExecutionId = @ExecutionId, @ResponseTwiML = @PreparedResponse;
     IF NOT EXISTS (SELECT 1 FROM @Result WHERE Outcome = 'bundle-changed' AND ResponseTwiML IS NULL)
        OR EXISTS (SELECT 1 FROM dbo.AutomatedCallEvents WHERE CallId = @CallId)
@@ -120,7 +117,7 @@ BEGIN TRY
 
     SET @StaleBundle = @Bundle + N' ';
     DELETE FROM @Result;
-    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, @Sid, @Phone, @StartedStatus,
+    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, @Sid, @Phone,
         @ExpectedTwiML = @StaleBundle, @StepId = N'reminder', @ExecutionId = @ExecutionId, @ResponseTwiML = @PreparedResponse;
     IF NOT EXISTS (SELECT 1 FROM @Result WHERE Outcome = 'bundle-changed' AND ResponseTwiML IS NULL)
         THROW 51000, 'The snapshot check ignored a trailing space.', 1;
@@ -129,19 +126,20 @@ BEGIN TRY
     VALUES ('Twilio', @Phone, @Bundle, @ProtectedStatus);
     SET @CallId = SCOPE_IDENTITY();
     DELETE FROM @Result;
-    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, @Sid, @Phone, @StartedStatus,
+    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, @Sid, @Phone,
         @ExpectedTwiML = @Bundle, @StepId = N'reminder', @ExecutionId = @ExecutionId, @ResponseTwiML = @PreparedResponse;
-    IF NOT EXISTS (SELECT 1 FROM dbo.AutomatedCalls WHERE SystemID = @CallId AND CallStatus = @ProtectedStatus)
-        THROW 51000, 'Start overwrote a non-pending status.', 1;
+    IF NOT EXISTS (SELECT 1 FROM dbo.AutomatedCalls WHERE SystemID = @CallId AND CallStatus = @ProtectedStatus AND StartedDateTime IS NULL)
+       OR NOT EXISTS (SELECT 1 FROM @Result WHERE Outcome = 'call-ended')
+        THROW 51000, 'Start issued new instructions for a terminal call.', 1;
 
     INSERT INTO dbo.AutomatedCalls (Provider, PhoneE164, TwiML, CallStatus)
-    VALUES ('Twilio', @Phone, @Bundle, @ProtectedStatus);
+    VALUES ('Twilio', @Phone, @Bundle, 'ringing');
     SET @CallId = SCOPE_IDENTITY();
     DELETE FROM @Result;
-    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, @Sid, @Phone, @StartedStatus, @ProtectedStatus,
+    INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, @Sid, @Phone,
         @ExpectedTwiML = @Bundle, @StepId = N'reminder', @ExecutionId = @ExecutionId, @ResponseTwiML = @PreparedResponse;
     IF NOT EXISTS (SELECT 1 FROM dbo.AutomatedCalls WHERE SystemID = @CallId AND CallStatus = @StartedStatus)
-        THROW 51000, 'Start did not transition the configured pending status.', 1;
+        THROW 51000, 'Start did not transition a ringing call to in-progress.', 1;
 
     ROLLBACK TRANSACTION;
     PRINT 'automatedcalls_Start SQL regression checks passed; test data rolled back.';
