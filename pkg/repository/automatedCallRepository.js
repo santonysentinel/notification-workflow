@@ -1,6 +1,30 @@
 import sql from "mssql";
 import { executeProcedure } from "./sqlserver.js";
 
+export async function getAutomatedCallRecording(
+  { recordingId },
+  { platform = "AutoCallDB", timeoutMs, transaction } = {},
+) {
+  if (
+    !Number.isInteger(recordingId) ||
+    recordingId <= 0 ||
+    recordingId > 2147483647
+  ) {
+    throw new TypeError("recordingId must be a positive SQL integer");
+  }
+  if (typeof platform !== "string" || !platform.trim()) {
+    throw new TypeError("platform is required");
+  }
+  const result = await executeProcedure("dbo.automatedcalls_GetRecording", {
+    params: { RecordingId: { type: sql.Int, val: recordingId } },
+    platform,
+    timeoutMs,
+    transaction,
+    strictPlatform: true,
+  });
+  return result.recordset?.[0] ?? null;
+}
+
 export async function getAutomatedCallTwiML(
   { callId },
   { platform = "AutoCallDB", timeoutMs, transaction } = {},

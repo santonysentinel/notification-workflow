@@ -5,12 +5,13 @@
 The feedback API implements `POST /webhooks/twilio/voice/start`,
 `POST /webhooks/twilio/voice/next`, `POST /webhooks/twilio/voice/status`, and
 `POST /webhooks/twilio/recordings/status`.
+It also implements trusted internal `GET`/`HEAD /api/v1/auto-call/recordings/:recordingId/content`.
 `/start` issues the opening step; `/next` resolves a transition and issues its
 destination; `/status` records call progress and closes the owning queue job.
 The recording callback persists recording metadata and an audit event only.
 Business actions, worker-service feedback, retry scheduling, alternative-number
-selection, human/machine branching, recording playback/downloads, and transcription
-remain deferred. Audio remains at Twilio.
+selection, human/machine branching, local recording storage, and transcription
+remain deferred. Audio remains at Twilio and can be streamed through the internal content endpoint.
 
 The [flow contract](twilio_flow_contract.md) documents the storage change and the
 complete version-1 TemplateJSON with its matching personalized XML bundle.
@@ -395,7 +396,7 @@ the full form payload, typed metadata, and whether the update was applied or ign
 
 Neither `AutomatedCalls` nor `AutomatedCallQueue` is updated. Worker feedback,
 business actions, retries, local audio storage, and playback are outside this
-endpoint. A future authenticated playback endpoint can use the saved recording
+callback endpoint. The trusted recording-content endpoint uses the saved recording
 identity to access Twilio; never expose the Auth Token or embed it in a UI media URL.
 
 ### Responses
@@ -411,6 +412,65 @@ identity to access Twilio; never expose the Auth Token or embed it in a UI media
 | 415 | Request is not form-urlencoded. |
 | 500 | Persistence failure or unexpected repository result; database details are masked. |
 | 503 | Missing/invalid recording webhook configuration. |
+
+## Trusted Recording Content
+
+`GET /api/v1/auto-call/recordings/:recordingId/content`
+
+`recordingId` is the positive SQL integer `AutomatedCallRecordings.SystemID`, not
+a Twilio RecordingSid. `HEAD` on the same path returns media headers without a body.
+The application mounts this content-only route before bearer middleware; it does
+not validate a service credential, user, or tenant. Other API routes retain their
+existing bearer checks. No playback-session endpoint, token, or session table exists.
+
+**Deployment security requirement:** allow this route only from the trusted UI
+backend using private networking or gateway rules. Block it on public ingress,
+even if Twilio webhook routes on the same API are public. The UI backend must
+authenticate the user and authorize tenant/call access before requesting audio.
+A browser should call the authenticated UI backend, not this API directly.
+
+Deploy `database/009.sql` after 008 before enabling playback. It installs the
+rerunnable, read-only `dbo.automatedcalls_GetRecording` procedure. Lookup uses only
+AutoCallDB (or `AUTO_CALL_DATABASE`), with no default-pool fallback and a five-second
+SQL timeout. No schema changes or call, queue, recording, or event writes are made.
+
+Playback requires a completed Twilio recording with a media location and the same
+account as `TWILIO_ACCOUNT_SID`. The stored location is validated against the account,
+recording, and bound call SID; standard/regional/edge Twilio API hosts are supported.
+Legacy HTTP URLs are upgraded to HTTPS and the media extension is normalized to
+`.mp3`. The API uses `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` for server-side Basic
+authentication. It never forwards incoming bearer credentials to Twilio or returns
+provider credentials, media locations, cookies, or redirects to the caller.
+Upstream redirects are rejected rather than followed.
+
+Audio is streamed with backpressure, without storing files or buffering the full
+response. A single `Range: bytes=start-end`, `bytes=start-`, or `bytes=-suffix`
+is forwarded. A valid partial response preserves `Content-Range`, `Content-Length`,
+and `Accept-Ranges`; if Twilio ignores Range, the full 200 response is returned.
+The UI backend must preserve these headers and statuses when proxying to its player.
+Responses use `Cache-Control: no-store`; successful responses use `audio/mpeg`.
+The upstream request has a 15-second timeout for inactivity/connection establishment.
+Caller disconnects cancel upstream work. A failure after streaming starts terminates
+the connection instead of appending JSON to audio; the caller must handle truncation.
+
+| HTTP | Meaning |
+| --- | --- |
+| 200 | Full MP3 stream, or headers only for HEAD. |
+| 206 | Valid partial MP3 response with range headers. |
+| 400 | Invalid recording ID or unsupported/malformed range; only a single byte range is supported. |
+| 404 | Recording row does not exist. |
+| 409 | Recording is not completed or has no media location. |
+| 410 | Twilio reports media missing or deleted; metadata is not changed. |
+| 416 | Upstream byte range cannot be satisfied; safe `Content-Range` is retained when provided. |
+| 500 | SQL lookup failed; details are masked. |
+| 502 | Invalid/mismatched provider metadata, redirect, invalid media headers, or upstream failure. |
+| 503 | Missing configuration or Twilio throttling/service unavailable. |
+| 504 | Upstream request timed out before streaming started. |
+
+Tests are `apps/notification-feedback-api/test/recordingContent.test.js` and
+`database/test/automatedcalls_GetRecording.test.sql`. HTTP tests use fake media and
+a local HTTP upstream, not live Twilio. A deployment smoke test with a real completed
+recording is still required to verify credentials, account/region, and ingress rules.
 
 ## Configuration And Deployment
 
