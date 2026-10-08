@@ -2,10 +2,14 @@
 
 ## Endpoint Status
 
-The feedback API implements `POST /webhooks/twilio/voice/start`. `/next`, call-status,
-recording, and transcription callbacks are not implemented yet. `/start` only issues
-the opening executable step; it does not advance the graph, execute business actions,
-choose human/machine branches, or save recordings or transcripts.
+The feedback API implements `POST /webhooks/twilio/voice/start` and
+`POST /webhooks/twilio/voice/next`. Call-status, recording, and transcription callbacks
+are not implemented yet. `/start` issues the opening step; `/next` resolves a transition
+and issues its destination. Neither endpoint executes business actions, chooses
+human/machine branches, or saves recordings or transcripts.
+
+The [flow contract](twilio_flow_contract.md) documents the storage change and the
+complete version-1 TemplateJSON with its matching personalized XML bundle.
 
 ## Start
 
@@ -87,9 +91,9 @@ in `CallFlowTemplates.TemplateJSON`, referenced by the attempt's `FlowId`.
 ```
 
 This example returns only the reminder response and ends the call; the second step
-is not reached automatically. A future continuation callback may use the reserved
-`{{executionId}}` placeholder in a `Gather` action or `Redirect` URL, but `/next`
-must be implemented before such URLs are usable.
+is not reached automatically. To continue a call, use the reserved `{{executionId}}`
+placeholder in a `Gather` action or `Redirect` URL targeting `/next`, and define the
+transition graph in TemplateJSON. See the complete example in the flow contract.
 
 The document must have one unnamespaced `CallFlow` root. Its nonblank `initialStep`
 must be at most 200 characters and match exactly one direct, unnamespaced `Step`
@@ -137,6 +141,91 @@ Errors do not return TwiML and do not expose database error details. A 200 respo
 does not mean the call has completed. Caller-input validation follows authentication;
 an unsigned request is rejected before its call fields are processed.
 
+## Next
+
+`POST /webhooks/twilio/voice/next?callId=<AutomatedCalls.SystemID>&executionId=<current UUID>`
+
+### Request
+
+Authentication, the form-urlencoded content type, the 32 KB limit, and required
+`AccountSid`, `CallSid`, and `To` fields are the same as `/start`. Signature validation
+uses the configured public **next** URL plus the raw query, not the start URL.
+Exactly one positive SQL `callId` and one canonical UUID `executionId` are required.
+The UUID identifies the step that issued this callback, not its destination. Do not
+send a client-chosen step ID or destination.
+
+Gather callbacks may additionally contain:
+
+| Field | Meaning |
+| --- | --- |
+| `Digits` | Exact DTMF string containing digits, `*`, or `#`; empty or omitted means no digit input. |
+| `SpeechResult` | Recognized speech, preserved in the input event. |
+| `Confidence` | Optional nonblank finite numeric value from 0 to 1; stored as a number, not used for matching. |
+
+Redirect callbacks require no gather input. For a gather, digits take precedence over
+speech. Speech matches the whole phrase after trimming, lowercasing, and collapsing
+whitespace. Silence selects `noInput`; unmatched input selects `fallback`. A terminal
+step has no outgoing transition. Unsupported/invalid graphs or missing destination
+responses produce HTTP 500 without committing events.
+
+### Processing And Replay
+
+1. Read the full bundle, TemplateJSON through `AutomatedCalls.FlowId`, and the issued
+  source event through `dbo.automatedcalls_GetNextContext`.
+2. In JavaScript, validate the complete graph, resolve the branch from the source
+  step and input, select the destination response, and generate a fresh execution ID.
+3. Pass the candidate, source step, both original snapshots, and input JSON to
+  `dbo.automatedcalls_Next`.
+4. In one transaction, lock the attempt; verify its provider, bound SID, destination,
+  and ownership of the issued source execution. `/next` never binds an unbound SID.
+5. If the source execution already has a saved transition, return its exact response
+  and destination execution ID. Replay is checked before checking whether the source
+  is current or validating the candidate/snapshots.
+6. Otherwise, require the source to be the latest issued execution and require exact,
+  case-sensitive snapshots of the bundle, graph, and source step. Commit the three
+  events below and update the call's `UpdatedDateTime` together.
+7. Validate the returned response XML in JavaScript and return only that `<Response>`.
+
+Duplicate/concurrent callbacks for the same source execution return the **first
+committed response**, even if subsequent callbacks contain different input. The first
+input is retained; retries do not create new input events. Replays remain valid after
+later progression or changes to the graph/bundle. An old execution without a committed
+transition is rejected as stale; an execution belonging to another call is rejected.
+Corrupt saved transition records fail closed. Input can contain personal information;
+apply the same access and retention controls as other call records.
+
+The unchanged per-call bundle supplies every response. No schema columns are added.
+Queue state, tenant data, SID, `StartedDateTime`, and `CallStatus` are not changed by
+`/next`. Issuing a terminal response does not itself mark the call completed.
+
+### Events
+
+Each successful first transition inserts these events atomically. UUIDs in keys are
+normalized to lowercase, and keys are scoped by `CallId` in the unique filtered index.
+
+| EventType | IdempotencyKey | EventJSON fields |
+| --- | --- | --- |
+| `InputReceived` | `voice:input:<source execution UUID>` | `stepId`, `executionId`, `providerCallId`, `inputType`, and `input` containing `digits`, `speechResult`, `confidence`. |
+| `StepTransitioned` | `voice:next:<source execution UUID>` | `fromStepId`, `fromExecutionId`, `stepId`, `executionId`, `providerCallId`, `inputType`, `responseTwiML`. Destination IDs and exact XML are saved for replay. |
+| `StepIssued` | `voice:step:<destination execution UUID>` | `stepId`, `executionId`, `sourceExecutionId`, `providerCallId`, `responseTwiML`. |
+
+`inputType` is `redirect`, `dtmf`, `speech`, or `no-input`. No business action is
+performed for an acknowledgement branch; the event records the conversational outcome.
+
+### Responses
+
+| Status | Meaning |
+| --- | --- |
+| 200 | Destination or saved replay TwiML; `application/xml`, `Cache-Control: no-store`. |
+| 400 | Invalid/duplicate call or execution ID, invalid SID/phone, malformed digits or confidence. |
+| 403 | Invalid signature, account, or non-scalar form values. |
+| 404 | Call does not exist, or the execution was not issued to this call. |
+| 409 | Provider/destination/SID mismatch, unbound SID, stale execution, or changed snapshots. |
+| 413 | Body exceeds 32 KB. |
+| 415 | Request is not form-urlencoded. |
+| 500 | Invalid graph/response, terminal source with no transition, corrupt replay data, or database failure. |
+| 503 | Missing/invalid next webhook configuration. |
+
 ## Configuration And Deployment
 
 | Environment variable | Purpose |
@@ -144,19 +233,30 @@ an unsigned request is rejected before its call fields are processed.
 | `TWILIO_ACCOUNT_SID` | Expected account SID (`AC` plus 32 hexadecimal characters). |
 | `TWILIO_AUTH_TOKEN` | Secret account Auth Token for signature validation. |
 | `TWILIO_VOICE_START_URL` | Exact public HTTPS start URL, including any proxy prefix; no query, fragment, or credentials. |
+| `TWILIO_VOICE_NEXT_URL` | Required for `/next`: exact public HTTPS next URL, including any proxy prefix; no query, fragment, or credentials. |
 | `AUTO_CALL_DATABASE` | Pool key under `dependencies.databases`; defaults to `AutoCallDB`, with no fallback to another database. |
 | `TWILIO_STARTED_CALL_STATUS` | Required positive `LookUpFields.LookUpId` for started calls. |
 | `TWILIO_PENDING_CALL_STATUS` | Optional positive lookup ID; omitted means NULL is the pending status. |
 
-Equivalent `twilio` configuration keys are `accountSid`, `authToken`, `voiceStartUrl`,
+Equivalent `twilio` configuration keys are `accountSid`, `authToken`, `voiceStartUrl`, `voiceNextUrl`,
 `database`, `startedCallStatus`, and `pendingCallStatus`. Environment variables take
-precedence. The start URL pathname must end with `/webhooks/twilio/voice/start`.
+precedence. URL pathnames must end with `/webhooks/twilio/voice/start` and
+`/webhooks/twilio/voice/next`, respectively. Next does not require the started/pending
+status settings; those are validated only for Start. Each endpoint validates its own URL.
 
 Install dependencies with `pnpm install` and deploy `database/005.sql` to AutoCallDB
 using a runner that supports `GO`. Deploy both `dbo.automatedcalls_GetTwiML` and the
 updated `dbo.automatedcalls_Start` together with the API; their candidate-input
 contract replaces the previous SQL XML implementation. Direct callers of Start must
 also supply a JavaScript-validated candidate when no event exists.
+
+Deploy `database/006.sql` after the existing schema and Start procedures, together
+with the new API. It creates `dbo.automatedcalls_GetNextContext` and
+`dbo.automatedcalls_Next`. Set `TWILIO_VOICE_NEXT_URL`, populate TemplateJSON using
+the documented schema, and make sure every transition target has a response in the
+personalized bundle. Direct Next procedure callers must supply a JavaScript-validated
+candidate for first issuance. The procedures do not evaluate branch rules or validate
+the full Twilio verb schema. Publish template changes as new rows/versions.
 
 The script creates the unique filtered event index if needed. Resolve existing
 duplicate non-NULL event keys before deployment; the script does not delete history.
@@ -169,4 +269,8 @@ See [the running guide](../RUNNING_GUIDE.md) for column migration and local SQL 
 commands. JavaScript parser and signed HTTP tests are in
 `apps/notification-feedback-api/test/twilioTwiML.test.js` and
 `apps/notification-feedback-api/test/twilioVoiceStart.test.js`. The isolated SQL
-regression script is `database/test/automatedcalls_Start.test.sql`.
+regression scripts are `database/test/automatedcalls_Start.test.sql` and
+`database/test/automatedcalls_Next.test.sql`. Transition and signed next HTTP tests are
+`apps/notification-feedback-api/test/twilioTransitions.test.js` and
+`apps/notification-feedback-api/test/twilioVoiceNext.test.js`. The transition tests also
+validate the complete JSON/XML example in the flow contract.

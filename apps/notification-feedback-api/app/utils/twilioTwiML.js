@@ -34,10 +34,17 @@ export function isVoiceResponse(xml) {
 }
 
 export function prepareOpeningStep(twiML) {
+  return prepareStep(twiML);
+}
+
+export function prepareStep(twiML, selectedStepId, expectedInitialStep) {
   const document = parseDocument(twiML);
   if (!document || !isElement(document.documentElement, 'CallFlow')) return null;
   const root = document.documentElement;
-  const stepId = root.getAttribute('initialStep');
+  const initialStep = root.getAttribute('initialStep');
+  if (!initialStep || !initialStep.trim() || initialStep.length > 200) return null;
+  if (expectedInitialStep !== undefined && initialStep !== expectedInitialStep) return null;
+  const stepId = selectedStepId ?? initialStep;
   if (!stepId || !stepId.trim() || stepId.length > 200) return null;
   const steps = Array.from(root.childNodes).filter(
     (node) => isElement(node, 'Step') && node.getAttribute('id') === stepId
