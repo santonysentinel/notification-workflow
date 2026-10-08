@@ -1,3 +1,11 @@
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_PADDING ON;
+SET ANSI_WARNINGS ON;
+SET ARITHABORT ON;
+SET CONCAT_NULL_YIELDS_NULL ON;
+SET NUMERIC_ROUNDABORT OFF;
+
 IF OBJECT_ID(N'dbo.CallFlowTemplates', N'U') IS NULL
 CREATE TABLE dbo.CallFlowTemplates
 (
@@ -155,6 +163,10 @@ CREATE TABLE dbo.AutomatedCallEvents
     CONSTRAINT FK_AutomatedCallEvents_CallId FOREIGN KEY (CallId) REFERENCES dbo.AutomatedCalls (SystemID)
 );
 
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID(N'dbo.AutomatedCallEvents') AND name = N'UX_AutomatedCallEvents_CallId_IdempotencyKey')
+CREATE UNIQUE INDEX UX_AutomatedCallEvents_CallId_IdempotencyKey
+ON dbo.AutomatedCallEvents (CallId, IdempotencyKey)
+WHERE CallId IS NOT NULL AND IdempotencyKey IS NOT NULL;
 
 
 IF OBJECT_ID(N'dbo.AutomatedCallTranscripts', N'U') IS NULL

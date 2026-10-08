@@ -1,5 +1,6 @@
 import * as repository from '../../../../pkg/repository/automatedCallRepository.js';
 import { sendError } from '../../configure/errors.js';
+import { isVoiceResponse, prepareOpeningStep } from '../utils/twilioTwiML.js';
 
 export function createVoiceStartController(repo = repository) {
   return async (req, res) => {
@@ -20,36 +21,41 @@ export function createVoiceStartController(repo = repository) {
 
     try {
       const config = req.twilioVoiceConfig;
+      const options = { platform: config.database, timeoutMs: 5000 };
+      const twiML = await repo.getAutomatedCallTwiML({ callId }, options);
+      const openingStep = prepareOpeningStep(twiML);
       const result = await repo.startAutomatedCall(
         {
           callId,
           providerCallId: CallSid,
           phoneE164: To,
           startedCallStatus: config.startedCallStatus,
-          pendingCallStatus: config.pendingCallStatus
+          pendingCallStatus: config.pendingCallStatus,
+          openingStep
         },
-        { platform: config.database, timeoutMs: 5000 }
+        options
       );
       if (result.Outcome === 'not-found') {
         return sendError(res, 404, 'Automated call not found', errorContext);
       }
       if (
-        ['provider-mismatch', 'destination-mismatch', 'call-sid-mismatch'].includes(result.Outcome)
+        [
+          'provider-mismatch',
+          'destination-mismatch',
+          'call-sid-mismatch',
+          'bundle-changed'
+        ].includes(result.Outcome)
       ) {
         return sendError(res, 409, 'Callback does not match the automated call', errorContext);
       }
-      if (
-        result.Outcome !== 'started' ||
-        typeof result.TwiML !== 'string' ||
-        !result.TwiML.trim()
-      ) {
+      if (result.Outcome !== 'started' || !isVoiceResponse(result.ResponseTwiML)) {
         return sendError(res, 500, 'Automated call instructions are unavailable', errorContext);
       }
       return res
         .status(200)
         .set('Cache-Control', 'no-store')
         .type('application/xml')
-        .send(result.TwiML);
+        .send(result.ResponseTwiML);
     } catch (err) {
       req.log?.error('twilio.voice.start.failed', { message: err?.message, callId });
       return sendError(res, 500, 'Failed to start automated call', errorContext);
