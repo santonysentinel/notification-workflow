@@ -173,6 +173,34 @@ ON dbo.AutomatedCallEvents (CallId, IdempotencyKey)
 WHERE CallId IS NOT NULL AND IdempotencyKey IS NOT NULL;
 
 
+IF OBJECT_ID(N'dbo.AutomatedCallRecordings', N'U') IS NULL
+CREATE TABLE dbo.AutomatedCallRecordings
+(
+    SystemID int IDENTITY(1, 1) NOT NULL PRIMARY KEY,
+    CallId int NOT NULL,
+    Provider varchar(30) COLLATE Latin1_General_100_BIN2 NOT NULL,
+    AccountSid varchar(34) COLLATE Latin1_General_100_BIN2 NOT NULL,
+    RecordingSid varchar(34) COLLATE Latin1_General_100_BIN2 NOT NULL,
+    RecordingStatus varchar(20) COLLATE Latin1_General_100_BIN2 NOT NULL,
+    RecordingUrl nvarchar(2048) NULL,
+    DurationSeconds int NULL,
+    Channels tinyint NULL,
+    RecordingStartTime datetime2(3) NULL,
+    RecordingSource varchar(100) NULL,
+    RecordingTrack varchar(20) NULL,
+    CreatedDateTime datetime2(3) NOT NULL DEFAULT (SYSUTCDATETIME()),
+    UpdatedDateTime datetime2(3) NULL,
+    CONSTRAINT FK_AutomatedCallRecordings_CallId FOREIGN KEY (CallId) REFERENCES dbo.AutomatedCalls (SystemID),
+    CONSTRAINT UQ_AutomatedCallRecordings_ProviderIdentity UNIQUE (Provider, AccountSid, RecordingSid),
+    CONSTRAINT CK_AutomatedCallRecordings_Status CHECK (RecordingStatus IN ('in-progress', 'completed', 'absent', 'failed')),
+    CONSTRAINT CK_AutomatedCallRecordings_Duration CHECK (DurationSeconds IS NULL OR DurationSeconds >= 0),
+    CONSTRAINT CK_AutomatedCallRecordings_Channels CHECK (Channels IS NULL OR Channels IN (1, 2)),
+    CONSTRAINT CK_AutomatedCallRecordings_Track CHECK (RecordingTrack IS NULL OR RecordingTrack IN ('inbound', 'outbound', 'both'))
+);
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID(N'dbo.AutomatedCallRecordings') AND name = N'IX_AutomatedCallRecordings_CallId')
+CREATE INDEX IX_AutomatedCallRecordings_CallId ON dbo.AutomatedCallRecordings (CallId);
+
 IF OBJECT_ID(N'dbo.AutomatedCallTranscripts', N'U') IS NULL
 CREATE TABLE dbo.AutomatedCallTranscripts
 (

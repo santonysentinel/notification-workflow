@@ -3,11 +3,14 @@
 ## Endpoint Status
 
 The feedback API implements `POST /webhooks/twilio/voice/start`,
-`POST /webhooks/twilio/voice/next`, and `POST /webhooks/twilio/voice/status`.
+`POST /webhooks/twilio/voice/next`, `POST /webhooks/twilio/voice/status`, and
+`POST /webhooks/twilio/recordings/status`.
 `/start` issues the opening step; `/next` resolves a transition and issues its
 destination; `/status` records call progress and closes the owning queue job.
+The recording callback persists recording metadata and an audit event only.
 Business actions, worker-service feedback, retry scheduling, alternative-number
-selection, human/machine branching, recordings, and transcription remain deferred.
+selection, human/machine branching, recording playback/downloads, and transcription
+remain deferred. Audio remains at Twilio.
 
 The [flow contract](twilio_flow_contract.md) documents the storage change and the
 complete version-1 TemplateJSON with its matching personalized XML bundle.
@@ -334,6 +337,81 @@ terminal outcome, while already committed responses remain replayable.
 | 500 | Persistence failure or unexpected repository result; database details are masked. |
 | 503 | Missing/invalid status webhook configuration. |
 
+## Recording Callback
+
+`POST /webhooks/twilio/recordings/status?callId=<AutomatedCalls.SystemID>`
+
+Configure the recording's `recordingStatusCallback` with this attempt-specific URL
+and `recordingStatusCallbackMethod="POST"`. This is separate from the voice status
+callback and the `<Record action>` URL that continues the conversation. The worker
+or personalized TwiML must supply the callback URL; this endpoint does not enable
+recording or modify a flow.
+
+### Request And Authentication
+
+Accepts form-urlencoded bodies up to 32 KB. Authentication uses the account Auth
+Token, `X-Twilio-Signature`, the exact configured public HTTPS URL plus the raw query
+string, and all scalar form fields. It also verifies the configured account SID.
+The route is mounted before bearer authentication; no bearer token is required.
+Host and forwarded headers cannot override the public URL used for verification.
+
+| Form field | Contract |
+| --- | --- |
+| `AccountSid`, `CallSid`, `RecordingSid` | Required valid `AC`, `CA`, and `RE` SIDs. |
+| `RecordingStatus` | Required: `in-progress`, `completed`, `absent`, or `failed`. |
+| `RecordingUrl` | Required for `completed`; otherwise optional. Twilio API media URL for the same account, recording, and call when call-scoped. |
+| `RecordingDuration` | Required for `completed`; otherwise optional. Non-negative SQL integer seconds; zero is valid. |
+| `RecordingChannels` | Required for `completed`; otherwise optional. `1` or `2`. |
+| `RecordingStartTime` | Optional UTC ISO timestamp (seconds or three-digit milliseconds) or UTC RFC 2822 timestamp. |
+| `RecordingSource` | Optional string, at most 100 characters. |
+| `RecordingTrack` | Optional: `inbound`, `outbound`, or `both`. |
+
+Blank optional fields are treated as absent. `To`, `SequenceNumber`, and the voice
+status `Timestamp` are not required. Unknown scalar fields are retained in the audit
+payload. Media URLs accept standard/regional/edge Twilio API hosts, optional WAV/MP3
+extensions, and legacy HTTP locations. Credentials, ports, query strings, fragments,
+and non-Twilio media URLs are rejected. No URL is fetched by this endpoint.
+
+### Persistence And Replay
+
+The attempt must already belong to Twilio and be bound to the same `CallSid`.
+Unbound attempts are rejected rather than bound by a recording callback. Call
+termination does not prevent a late recording callback.
+
+`dbo.automatedcalls_RecordingStatus` writes `AutomatedCallRecordings` and a
+`RecordingStatusReceived` event in one transaction. Recording identity is unique
+by `(Provider, AccountSid, RecordingSid)` and cannot move between attempts.
+Each recording has its own row, so one attempt can have multiple recordings.
+Metadata includes status, media URL, duration, channels, optional start/source/track,
+and UTC receipt/update timestamps. No audio bytes or transcription are stored.
+
+The event key is `recording:status:<RecordingSid>:<RecordingStatus>`, scoped to the
+attempt. An exact status retry returns 204 without changing the first event or
+metadata. The first terminal status (`completed`, `absent`, or `failed`) wins.
+Later `in-progress` or conflicting terminal statuses are audited once but do not
+overwrite the recording. Accepted transitions preserve omitted optional metadata.
+Event timestamps represent receipt time, not recording start time; event JSON stores
+the full form payload, typed metadata, and whether the update was applied or ignored.
+
+Neither `AutomatedCalls` nor `AutomatedCallQueue` is updated. Worker feedback,
+business actions, retries, local audio storage, and playback are outside this
+endpoint. A future authenticated playback endpoint can use the saved recording
+identity to access Twilio; never expose the Auth Token or embed it in a UI media URL.
+
+### Responses
+
+| HTTP | Meaning |
+| --- | --- |
+| 204 | Recorded, duplicate, or ignored callback; empty body and `Cache-Control: no-store`. |
+| 400 | Invalid/duplicate call ID or invalid recording fields. |
+| 403 | Invalid signature, unexpected account, or non-scalar form values. |
+| 404 | Attempt does not exist. |
+| 409 | Provider/SID mismatch, unbound attempt, or recording already belongs to another attempt. |
+| 413 | Body exceeds 32 KB. |
+| 415 | Request is not form-urlencoded. |
+| 500 | Persistence failure or unexpected repository result; database details are masked. |
+| 503 | Missing/invalid recording webhook configuration. |
+
 ## Configuration And Deployment
 
 | Environment variable | Purpose |
@@ -343,14 +421,22 @@ terminal outcome, while already committed responses remain replayable.
 | `TWILIO_VOICE_START_URL` | Exact public HTTPS start URL, including any proxy prefix; no query, fragment, or credentials. |
 | `TWILIO_VOICE_NEXT_URL` | Required for `/next`: exact public HTTPS next URL, including any proxy prefix; no query, fragment, or credentials. |
 | `TWILIO_VOICE_STATUS_URL` | Required for `/status`: exact public HTTPS status URL, including any proxy prefix; no query, fragment, or credentials. |
+| `TWILIO_RECORDING_STATUS_URL` | Exact public HTTPS recording URL ending in `/webhooks/twilio/recordings/status`, including any proxy prefix; no query, fragment, or credentials. |
 | `AUTO_CALL_DATABASE` | Pool key under `dependencies.databases`; defaults to `AutoCallDB`, with no fallback to another database. |
 
 Equivalent `twilio` configuration keys are `accountSid`, `authToken`, `voiceStartUrl`,
-`voiceNextUrl`, `voiceStatusUrl`, and `database`. Environment variables take
+`voiceNextUrl`, `voiceStatusUrl`, `recordingStatusUrl`, and `database`. Environment variables take
 precedence. URL pathnames must end with `/webhooks/twilio/voice/start` and
 `/webhooks/twilio/voice/next`, and `/webhooks/twilio/voice/status`, respectively.
 Each endpoint validates its own URL. Numeric started/pending status configuration
 has been removed and must no longer be supplied by direct Start procedure callers.
+
+For recording callbacks, deploy `database/008.sql` to AutoCallDB after the existing
+schema and before enabling the new API endpoint. It creates the metadata table,
+identity/index constraints, and `dbo.automatedcalls_RecordingStatus`; it is rerunnable
+on fresh and existing databases. The fresh table definition is also in
+`database/001.sql`. Resolve existing duplicate non-NULL event keys if the filtered
+event index does not yet exist; the migration does not delete history.
 
 Deploy in a coordinated release: stop producers and drain/pause webhooks while changing
 the schema and Start signature. For a fresh database, create the tables with
@@ -411,3 +497,10 @@ and `apps/notification-feedback-api/test/twilioVoiceStatus.test.js`. Transition 
 `apps/notification-feedback-api/test/twilioTransitions.test.js` and
 `apps/notification-feedback-api/test/twilioVoiceNext.test.js`. The transition tests also
 validate the complete JSON/XML example in the flow contract.
+
+Recording parser and signed HTTP/repository tests are
+`apps/notification-feedback-api/test/twilioRecordings.test.js` and
+`apps/notification-feedback-api/test/twilioRecordingStatus.test.js`. The isolated
+SQL script `database/test/automatedcalls_RecordingStatus.test.sql` covers metadata,
+deduplication, late/conflicting events, identity fencing, unchanged call/queue rows,
+and atomic rollback when audit persistence fails.

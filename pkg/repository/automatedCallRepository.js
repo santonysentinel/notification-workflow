@@ -232,3 +232,98 @@ export async function recordAutomatedCallStatus(
     throw new Error("automatedcalls_Status did not return a result");
   return context;
 }
+
+export async function recordAutomatedCallRecordingStatus(
+  {
+    callId,
+    providerCallId,
+    accountSid,
+    recordingSid,
+    recordingStatus,
+    recordingUrl = null,
+    durationSeconds = null,
+    channels = null,
+    recordingStartTime = null,
+    recordingSource = null,
+    recordingTrack = null,
+    parameters,
+  },
+  { platform = "AutoCallDB", timeoutMs, transaction } = {},
+) {
+  if (!Number.isInteger(callId) || callId <= 0 || callId > 2147483647)
+    throw new TypeError("callId must be a positive SQL integer");
+  for (const [value, prefix] of [
+    [providerCallId, "CA"],
+    [accountSid, "AC"],
+    [recordingSid, "RE"],
+  ]) {
+    if (
+      typeof value !== "string" ||
+      !new RegExp(`^${prefix}[0-9a-fA-F]{32}$`).test(value)
+    )
+      throw new TypeError(`A valid ${prefix} SID is required`);
+  }
+  if (
+    !["in-progress", "completed", "absent", "failed"].includes(recordingStatus)
+  )
+    throw new TypeError("Unsupported recording status");
+  if (typeof platform !== "string" || !platform.trim())
+    throw new TypeError("platform is required");
+  if (
+    durationSeconds !== null &&
+    (!Number.isInteger(durationSeconds) ||
+      durationSeconds < 0 ||
+      durationSeconds > 2147483647)
+  )
+    throw new TypeError("Invalid recording duration");
+  if (channels !== null && ![1, 2].includes(channels))
+    throw new TypeError("Invalid recording channels");
+  if (
+    recordingStartTime !== null &&
+    (!(recordingStartTime instanceof Date) ||
+      !Number.isFinite(recordingStartTime.getTime()))
+  )
+    throw new TypeError("Invalid recording start time");
+  if (
+    recordingUrl !== null &&
+    (typeof recordingUrl !== "string" || recordingUrl.length > 2048)
+  )
+    throw new TypeError("Invalid recording URL");
+  if (
+    recordingSource !== null &&
+    (typeof recordingSource !== "string" || recordingSource.length > 100)
+  )
+    throw new TypeError("Invalid recording source");
+  if (
+    recordingTrack !== null &&
+    !["inbound", "outbound", "both"].includes(recordingTrack)
+  )
+    throw new TypeError("Invalid recording track");
+  const result = await executeProcedure("dbo.automatedcalls_RecordingStatus", {
+    params: {
+      CallId: { type: sql.Int, val: callId },
+      ProviderCallId: { type: sql.VarChar(200), val: providerCallId },
+      AccountSid: { type: sql.VarChar(34), val: accountSid },
+      RecordingSid: { type: sql.VarChar(34), val: recordingSid },
+      RecordingStatus: { type: sql.VarChar(20), val: recordingStatus },
+      RecordingUrl: { type: sql.NVarChar(2048), val: recordingUrl },
+      DurationSeconds: { type: sql.Int, val: durationSeconds },
+      Channels: { type: sql.TinyInt, val: channels },
+      RecordingStartTime: { type: sql.DateTime2(3), val: recordingStartTime },
+      RecordingSource: { type: sql.VarChar(100), val: recordingSource },
+      RecordingTrack: { type: sql.VarChar(20), val: recordingTrack },
+      ParametersJSON: {
+        type: sql.NVarChar(sql.MAX),
+        val: JSON.stringify(parameters ?? {}),
+      },
+    },
+    platform,
+    timeoutMs,
+    transaction,
+    strictPlatform: true,
+  });
+  const context = result.recordset?.[0];
+  if (!context)
+    throw new Error("automatedcalls_RecordingStatus did not return a result");
+  return context;
+}
