@@ -76,6 +76,8 @@ namespace ActiveAlarmsParser
                 services.AddTransient<IRepository, Repository>();
                 services.AddNoteServices();
                 services.AddAutoCallContacts();
+                if (hostContext.Configuration.GetValue<bool>("AutoCall:Worker:Enabled"))
+                    services.AddHostedService<AutoCallWorker>();
                 services.AddSingleton<NotificationWorkflowService.Repository.INotificationRepository, NotificationWorkflowService.Repository.NotificationRepository>();
                 services.AddTransient<WorkFlowCommon>();
                 services.AddTransient<Func<WorkFlowCommon>>(provider => () => provider.GetRequiredService<WorkFlowCommon>());

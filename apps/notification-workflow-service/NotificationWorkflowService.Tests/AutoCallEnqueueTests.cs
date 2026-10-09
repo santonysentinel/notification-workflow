@@ -12,7 +12,7 @@ public sealed class AutoCallEnqueueTests
 {
     private static ActiveAlarm Alarm() => new()
     { SystemID=42, HistoryID=81, ClientID="oid-42", ProfileID=7, StateNo=3, CurrentLoopNumber=1, FlowId=12, OffenderName="Alex & Co", AlarmText="Low battery" };
-    private static AutoCallFlow Flow(string content="{{OffenderName}} {{AlarmText}} {{callId}} {{feedbackBaseUrl}} {{executionId}}")
+    private static AutoCallFlow Flow(string content="{{OffenderName}} {{AlarmText}} {{callId}} {{feedbackBaseUrl}} {{executionId}} {{recipient}}")
         => new(12,"{\"schemaVersion\":1}","<CallFlow initialStep=\"hello\"><Step id=\"hello\"><Response><Say>"+content+"</Say></Response></Step></CallFlow>");
     private sealed class Repository : IAutoCallQueueRepository
     {

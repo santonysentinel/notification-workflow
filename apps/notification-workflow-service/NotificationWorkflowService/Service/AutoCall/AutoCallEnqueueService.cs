@@ -20,7 +20,7 @@ public interface IAutoCallQueueRepository
 public sealed class AutoCallEnqueueService(IAutoCallQueueRepository repository)
 {
     private static readonly Regex Placeholder = new(@"\{\{\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\}\}", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
-    private static readonly HashSet<string> Reserved = new(StringComparer.Ordinal) { "callId", "feedbackBaseUrl", "executionId" };
+    private static readonly HashSet<string> Reserved = new(StringComparer.Ordinal) { "callId", "feedbackBaseUrl", "executionId", "recipient" };
 
     public async Task<int> EnqueueAsync(ActiveAlarm alarm, string platform, CancellationToken cancellationToken = default)
     {

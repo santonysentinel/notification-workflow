@@ -80,6 +80,9 @@ public static class AutoCallServiceCollectionExtensions
         services.AddSingleton<AutoCallContactService>();
         services.AddSingleton<IAutoCallQueueRepository, AutoCallQueueRepository>();
         services.AddSingleton<AutoCallEnqueueService>();
+        services.AddSingleton<IAutoCallRepository, AutoCallRepository>();
+        services.AddSingleton(provider => AutoCallWorkerOptions.Read(provider.GetRequiredService<IConfiguration>()));
+        services.AddSingleton<IAutoCallProcessingService, AutoCallProcessingService>();
         return services;
     }
 }
