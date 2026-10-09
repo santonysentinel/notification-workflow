@@ -8,8 +8,8 @@ SET NUMERIC_ROUNDABORT OFF;
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
 
-IF DB_NAME() <> N'NotificationWorkflowVoiceTests'
-    THROW 51000, 'Run only in the isolated NotificationWorkflowVoiceTests database.', 1;
+IF DB_NAME() NOT IN (N'NotificationWorkflowVoiceTests', N'NotificationWorkflowTranscriptionSchemaTests')
+    THROW 51000, 'Run only in an owned scratch database.', 1;
 
 BEGIN TRY
     BEGIN TRANSACTION;
@@ -35,6 +35,8 @@ BEGIN TRY
        OR NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallRecordings WHERE SystemID = @RecordingId AND CallId = @CallId AND RecordingStatus = 'in-progress' AND RecordingUrl IS NULL AND DurationSeconds IS NULL AND Channels IS NULL AND RecordingStartTime = @Timestamp)
        OR NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallEvents WHERE CallId = @CallId AND EventType = 'RecordingStatusReceived' AND IdempotencyKey = 'recording:status:' + @RecordingSid + ':in-progress' AND JSON_VALUE(EventJSON, '$.parameters.Extra') = 'preserved' AND JSON_VALUE(EventJSON, '$.applied') = 'true')
         THROW 51000, 'Recording start callback failed after call termination.', 1;
+    IF EXISTS (SELECT 1 FROM dbo.AutomatedCallTranscriptionJobs WHERE RecordingId=@RecordingId)
+        THROW 51000, 'In-progress recording must not enqueue transcription.', 1;
     DELETE FROM @Result;
     INSERT INTO @Result EXEC dbo.automatedcalls_RecordingStatus @CallId, @Sid, @AccountSid, @RecordingSid, 'completed', @Url, 25, 2;
     IF NOT EXISTS (SELECT 1 FROM @Result WHERE Outcome = 'recorded' AND Applied = 1 AND RecordingId = @RecordingId)
@@ -42,6 +44,15 @@ BEGIN TRY
        OR (SELECT COUNT(*) FROM dbo.AutomatedCallRecordings WHERE CallId = @CallId) <> 1
        OR (SELECT COUNT(*) FROM dbo.AutomatedCallEvents WHERE CallId = @CallId) <> 2
         THROW 51000, 'Completed callback did not update the same recording and preserve omitted metadata.', 1;
+    IF (SELECT COUNT(*) FROM dbo.AutomatedCallTranscriptionJobs WHERE RecordingId=@RecordingId) <> 1
+        OR NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallTranscriptionJobs WHERE RecordingId=@RecordingId
+            AND Provider='Deepgram' AND ConfigurationVersion=1 AND Status='READY' AND AttemptCount=0
+            AND LockedBy IS NULL AND LockedUntil IS NULL AND LeaseToken IS NULL AND CompletedSubmissionId IS NULL
+            AND JSON_VALUE(ConfigurationJSON,'$.model')='nova-3' AND JSON_VALUE(ConfigurationJSON,'$.utterances')='true'
+            AND JSON_VALUE(ConfigurationJSON,'$.multichannel')='true' AND AvailableAt=CreatedDateTime)
+        OR EXISTS (SELECT 1 FROM dbo.AutomatedCallTranscriptionSubmissions WHERE RecordingId=@RecordingId)
+        THROW 51000, 'Completion must enqueue one unclaimed job with a configuration snapshot and no submission.', 1;
+    DECLARE @JobBefore nvarchar(max)=(SELECT * FROM dbo.AutomatedCallTranscriptionJobs WHERE RecordingId=@RecordingId FOR JSON PATH);
 
     DECLARE @SavedEvent nvarchar(max) = (SELECT EventJSON FROM dbo.AutomatedCallEvents WHERE CallId = @CallId AND IdempotencyKey = 'recording:status:' + @RecordingSid + ':completed'),
             @UpdatedAt datetime2(3) = (SELECT UpdatedDateTime FROM dbo.AutomatedCallRecordings WHERE SystemID = @RecordingId);
@@ -53,6 +64,8 @@ BEGIN TRY
        OR NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallEvents WHERE CallId = @CallId AND IdempotencyKey = 'recording:status:' + @RecordingSid + ':completed' AND EventJSON COLLATE Latin1_General_100_BIN2 = @SavedEvent COLLATE Latin1_General_100_BIN2)
        OR (SELECT COUNT(*) FROM dbo.AutomatedCallEvents WHERE CallId = @CallId) <> 2
         THROW 51000, 'Duplicate callback changed metadata or the first event payload.', 1;
+    IF @JobBefore<>(SELECT * FROM dbo.AutomatedCallTranscriptionJobs WHERE RecordingId=@RecordingId FOR JSON PATH)
+        THROW 51000, 'Duplicate callback must not mutate or recreate the transcription job.', 1;
     DELETE FROM @Result;
     INSERT INTO @Result EXEC dbo.automatedcalls_RecordingStatus @CallId, @Sid, @AccountSid, @RecordingSid, 'absent';
     IF NOT EXISTS (SELECT 1 FROM @Result WHERE Applied = 0 AND IgnoreReason = 'terminal-conflict')
@@ -63,12 +76,22 @@ BEGIN TRY
     SET @RecordingSid = 'REbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
     SET @Url = REPLACE(@Url, 'REaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', @RecordingSid);
     DELETE FROM @Result;
-    INSERT INTO @Result EXEC dbo.automatedcalls_RecordingStatus @CallId, @Sid, @AccountSid, @RecordingSid, 'completed', @Url, 0, 1;
+    INSERT INTO @Result EXEC dbo.automatedcalls_RecordingStatus @CallId, @Sid, @AccountSid, @RecordingSid, 'completed', @Url, 0, 1,
+        @TranscriptionConfigurationVersion=3, @TranscriptionConfigurationJSON=N'{"model":"nova-3","utterances":true,"language":"en"}';
     SELECT @RecordingId = RecordingId FROM @Result;
     IF NOT EXISTS (SELECT 1 FROM @Result WHERE Applied = 1)
        OR NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallRecordings WHERE SystemID = @RecordingId AND DurationSeconds = 0 AND RecordingStatus = 'completed')
        OR (SELECT COUNT(*) FROM dbo.AutomatedCallRecordings WHERE CallId = @CallId) <> 2
         THROW 51000, 'Completion-first or multiple-recording behavior failed.', 1;
+    IF NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallTranscriptionJobs WHERE RecordingId=@RecordingId AND ConfigurationVersion=3
+        AND ConfigurationJSON=N'{"model":"nova-3","utterances":true,"language":"en"}' AND Status='READY')
+        THROW 51000, 'Completion-first must snapshot its explicit configuration version.', 1;
+    DELETE FROM @Result;
+    INSERT INTO @Result EXEC dbo.automatedcalls_RecordingStatus @CallId, @Sid, @AccountSid, @RecordingSid, 'completed', @Url, 0, 1,
+        @TranscriptionConfigurationVersion=4;
+    IF (SELECT COUNT(*) FROM dbo.AutomatedCallTranscriptionJobs WHERE RecordingId=@RecordingId)<>1
+        OR EXISTS (SELECT 1 FROM dbo.AutomatedCallTranscriptionJobs WHERE RecordingId=@RecordingId AND ConfigurationVersion=4)
+        THROW 51000, 'Duplicate callback with a changed configuration must not request retranscription.', 1;
     SET @UpdatedAt = (SELECT UpdatedDateTime FROM dbo.AutomatedCallRecordings WHERE SystemID = @RecordingId);
     DELETE FROM @Result;
     INSERT INTO @Result EXEC dbo.automatedcalls_RecordingStatus @CallId, @Sid, @AccountSid, @RecordingSid, 'in-progress';
@@ -84,6 +107,23 @@ BEGIN TRY
     DELETE FROM @Result;
     INSERT INTO @Result EXEC dbo.automatedcalls_RecordingStatus @CallId, @Sid, @AccountSid, 'REdddddddddddddddddddddddddddddddd', 'failed';
     IF NOT EXISTS (SELECT 1 FROM @Result WHERE Applied = 1) THROW 51000, 'Failed callback was not accepted.', 1;
+    DELETE FROM @Result;
+    INSERT INTO @Result EXEC dbo.automatedcalls_RecordingStatus @CallId, @Sid, @AccountSid, 'REdddddddddddddddddddddddddddddddd', 'completed', @Url, 5, 1;
+    IF NOT EXISTS (SELECT 1 FROM @Result WHERE Applied=0 AND IgnoreReason='terminal-conflict')
+        OR (SELECT COUNT(*) FROM dbo.AutomatedCallTranscriptionJobs j INNER JOIN dbo.AutomatedCallRecordings r ON r.SystemID=j.RecordingId WHERE r.CallId=@CallId)<>2
+        THROW 51000, 'Absent, failed and ignored completion callbacks must not enqueue jobs.', 1;
+
+    INSERT dbo.AutomatedCallRecordings (CallId,Provider,AccountSid,RecordingSid,RecordingStatus)
+    VALUES (@CallId,'Twilio',@AccountSid,'RE77777777777777777777777777777777','in-progress');
+    DECLARE @ExistingJobRecording int=SCOPE_IDENTITY();
+    INSERT dbo.AutomatedCallTranscriptionJobs (RecordingId,ConfigurationVersion,ConfigurationJSON,Status,AttemptCount)
+    VALUES (@ExistingJobRecording,1,N'{"model":"nova-2","utterances":true}','FAILED',1);
+    SET @JobBefore=(SELECT * FROM dbo.AutomatedCallTranscriptionJobs WHERE RecordingId=@ExistingJobRecording FOR JSON PATH);
+    DELETE FROM @Result;
+    INSERT INTO @Result EXEC dbo.automatedcalls_RecordingStatus @CallId,@Sid,@AccountSid,'RE77777777777777777777777777777777','completed',@Url,5,1;
+    IF NOT EXISTS (SELECT 1 FROM @Result WHERE Applied=1)
+        OR @JobBefore<>(SELECT * FROM dbo.AutomatedCallTranscriptionJobs WHERE RecordingId=@ExistingJobRecording FOR JSON PATH)
+        THROW 51000, 'Accepted completion must preserve an existing job snapshot and lifecycle state.', 1;
 
     DECLARE @EventCount int = (SELECT COUNT(*) FROM dbo.AutomatedCallEvents WHERE CallId = @CallId);
     DELETE FROM @Result;
@@ -160,12 +200,54 @@ BEGIN TRY
         THROW 51000, 'Event persistence failure did not roll back recording metadata.', 1;
     DROP TRIGGER dbo.RecordingStatusRollbackTest;
     SET @TriggerCreated = 0;
+    DECLARE @ConfigurationCase int=1, @ConfigurationVersion int, @ConfigurationJSON nvarchar(max);
+    WHILE @ConfigurationCase<=3
+    BEGIN
+        SET @ConfigurationVersion=CASE WHEN @ConfigurationCase=1 THEN 0 ELSE 1 END;
+        SET @ConfigurationJSON=CASE @ConfigurationCase WHEN 2 THEN N'[]' WHEN 3 THEN N'invalid' ELSE N'{}' END;
+        SET @FailureNumber=NULL;
+        BEGIN TRY
+            EXEC dbo.automatedcalls_RecordingStatus @RollbackCallId,'CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                'ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','REffffffffffffffffffffffffffffffff','completed',
+                N'https://api.twilio.com/2010-04-01/Accounts/ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/Recordings/REffffffffffffffffffffffffffffffff',5,1,
+                @TranscriptionConfigurationVersion=@ConfigurationVersion,@TranscriptionConfigurationJSON=@ConfigurationJSON;
+        END TRY
+        BEGIN CATCH
+            SET @FailureNumber=ERROR_NUMBER();
+        END CATCH;
+        IF @FailureNumber IS NULL OR @FailureNumber<>51000
+            OR EXISTS (SELECT 1 FROM dbo.AutomatedCallRecordings WHERE CallId=@RollbackCallId)
+            OR EXISTS (SELECT 1 FROM dbo.AutomatedCallEvents WHERE CallId=@RollbackCallId)
+            THROW 51000, 'Invalid transcription configuration must roll back recording and event.', 1;
+        SET @ConfigurationCase+=1;
+    END;
+    SET @TriggerSQL=N'CREATE TRIGGER dbo.RecordingStatusRollbackTest ON dbo.AutomatedCallTranscriptionJobs AFTER INSERT AS BEGIN IF EXISTS (SELECT 1 FROM inserted j INNER JOIN dbo.AutomatedCallRecordings r ON r.SystemID=j.RecordingId WHERE r.CallId='
+        +CONVERT(varchar(11),@RollbackCallId)+N') THROW 51002, ''Forced transcription enqueue failure.'', 1; END;';
+    EXEC(@TriggerSQL);
+    SET @TriggerCreated=1;
+    SET @FailureNumber=NULL;
+    BEGIN TRY
+        EXEC dbo.automatedcalls_RecordingStatus @RollbackCallId, 'CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            'ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'REffffffffffffffffffffffffffffffff', 'completed',
+            N'https://api.twilio.com/2010-04-01/Accounts/ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/Recordings/REffffffffffffffffffffffffffffffff', 5, 1;
+    END TRY
+    BEGIN CATCH
+        SET @FailureNumber=ERROR_NUMBER();
+    END CATCH;
+    IF @FailureNumber IS NULL OR @FailureNumber<>51002
+        OR EXISTS (SELECT 1 FROM dbo.AutomatedCallRecordings WHERE CallId=@RollbackCallId)
+        OR EXISTS (SELECT 1 FROM dbo.AutomatedCallEvents WHERE CallId=@RollbackCallId)
+        OR EXISTS (SELECT 1 FROM dbo.AutomatedCallTranscriptionJobs j INNER JOIN dbo.AutomatedCallRecordings r ON r.SystemID=j.RecordingId WHERE r.CallId=@RollbackCallId)
+        THROW 51000, 'Enqueue failure must roll back recording metadata, event and job together.', 1;
+    DROP TRIGGER dbo.RecordingStatusRollbackTest;
+    SET @TriggerCreated=0;
     DELETE FROM dbo.AutomatedCalls WHERE SystemID = @RollbackCallId;
-    PRINT 'Recording event failure rollback check passed; fixtures cleaned up.';
+    PRINT 'Recording event and transcription enqueue failure rollback checks passed; fixtures cleaned up.';
 END TRY
 BEGIN CATCH
     IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;
     IF @TriggerCreated = 1 DROP TRIGGER dbo.RecordingStatusRollbackTest;
+    DELETE j FROM dbo.AutomatedCallTranscriptionJobs j INNER JOIN dbo.AutomatedCallRecordings r ON r.SystemID=j.RecordingId WHERE r.CallId=@RollbackCallId;
     DELETE FROM dbo.AutomatedCallEvents WHERE CallId = @RollbackCallId;
     DELETE FROM dbo.AutomatedCallRecordings WHERE CallId = @RollbackCallId;
     DELETE FROM dbo.AutomatedCalls WHERE SystemID = @RollbackCallId;

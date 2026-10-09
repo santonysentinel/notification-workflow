@@ -2,15 +2,43 @@
 
 ## Scope And Flow
 
-Audio stays at Twilio. A future worker creates a transcription job/submission,
-streams audio to Deepgram's prerecorded API, supplies a callback URL, and records
+Audio stays at Twilio. An accepted recording-completed callback creates a READY
+transcription job. A future worker claims it, creates a submission, streams audio
+to Deepgram's prerecorded API, supplies a callback URL, and records
 the returned request ID. Deepgram later posts the result to this API. The callback
 does not download audio, contact Deepgram, schedule retries, or perform business actions.
-Enqueueing and the worker are separate, deferred work.
+Enqueueing is implemented; submission, worker claims and retries remain deferred.
 
 Schema migration `database/010.sql` defines logical jobs, independent submissions,
 and recording/submission-linked utterance rows with explicit millisecond timing.
 Deploy `database/011.sql` for callback persistence and a nullable callback payload hash.
+Deploy `database/012.sql` after 011 to replace the recording-status procedure with
+atomic transcription enqueueing. Do not redeploy the older procedure from 008 afterward.
+
+## Job Creation
+
+`dbo.automatedcalls_RecordingStatus` creates the job in the same transaction as
+recording metadata and its audit event, only when a `completed` status is applied.
+Each recording gets its own job, including a completion-first callback or a zero-duration
+recording. Call completion itself does not enqueue work. Invalid callbacks,
+in-progress/absent/failed statuses, and ignored terminal conflicts do not enqueue.
+If job creation fails, metadata and the event roll back, and the webhook returns
+an error so Twilio can retry rather than acknowledging unscheduled work.
+
+The default immutable configuration snapshot is version 1:
+
+```json
+{"model":"nova-3","utterances":true,"multichannel":true}
+```
+
+The SQL procedure accepts optional trusted `@TranscriptionConfigurationVersion`
+and `@TranscriptionConfigurationJSON` arguments; the HTTP callback does not accept
+these settings from Twilio. Use a new version when intentionally changing configuration.
+Jobs start READY with zero attempts, no lease or submission, and availability at
+creation time. Existing jobs with the same recording/provider/version are preserved.
+Repeated completed callbacks neither reset jobs nor create another configuration
+version. Retranscription requires a separate explicit operation, not replaying a
+recording callback. Historical completed recordings are not backfilled by migration 012.
 
 ## Callback Contract
 
@@ -116,7 +144,7 @@ Database selection falls back to `twilio.database` and then AutoCallDB; a missin
 named pool never falls back to another database.
 
 Deploy migration 011 after 010, configure identity trust, and expose the route through
-TLS/rate-limited ingress. The future worker must first persist the job and submission,
+TLS/rate-limited ingress. The future worker must claim the existing job and persist its submission,
 including the exact JWT hash and callback deadline, before sending audio. Until then,
 there are no automatic transcription submissions. Raw responses and transcript text
 contain sensitive recording content; apply database access and retention controls.
