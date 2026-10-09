@@ -10,6 +10,24 @@ internal static class AutoCallBundlePreparer
 {
     private static readonly Regex Placeholder = new(@"\{\{\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\}\}", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
 
+    internal static AutoCallOpeningStep PrepareOpening(string twiML)
+    {
+        using var text = new StringReader(twiML);
+        using var reader = XmlReader.Create(text, new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null, MaxCharactersInDocument = 2 * 1024 * 1024 });
+        var root = XDocument.Load(reader).Root;
+        string? stepId = (string?)root?.Attribute("initialStep");
+        if (root?.Name != "CallFlow" || string.IsNullOrWhiteSpace(stepId) || stepId.Length > 200)
+            throw new InvalidOperationException("A CallFlow with a valid opening step is required.");
+        var steps = root.Elements("Step").Where(step => (string?)step.Attribute("id") == stepId).ToList();
+        if (steps.Count != 1 || steps[0].Elements("Response").Count() != 1)
+            throw new InvalidOperationException("The opening step must have exactly one Response.");
+        Guid executionId = Guid.NewGuid();
+        string response = steps[0].Element("Response")!.ToString(SaveOptions.DisableFormatting)
+            .Replace("{{executionId}}", executionId.ToString("D"), StringComparison.Ordinal);
+        if (response.Contains("{{", StringComparison.Ordinal)) throw new InvalidOperationException("The opening response contains unresolved variables.");
+        return new AutoCallOpeningStep(stepId, executionId, response);
+    }
+
     internal static AutoCallPreparedBundle Prepare(AutoCallAttempt attempt, string feedbackBaseUrl)
     {
         string baseUrl = AutoCallWorkerOptions.ValidateBaseUrl(feedbackBaseUrl);

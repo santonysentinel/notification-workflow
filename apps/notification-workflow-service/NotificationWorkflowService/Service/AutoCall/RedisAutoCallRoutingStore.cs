@@ -83,6 +83,13 @@ public static class AutoCallServiceCollectionExtensions
         services.AddSingleton<IAutoCallRepository, AutoCallRepository>();
         services.AddSingleton(provider => AutoCallWorkerOptions.Read(provider.GetRequiredService<IConfiguration>()));
         services.AddSingleton<IAutoCallProcessingService, AutoCallProcessingService>();
+        services.AddSingleton(provider => AutoCallTwilioOptions.Read(provider.GetRequiredService<IConfiguration>(), provider.GetRequiredService<AutoCallWorkerOptions>()));
+        services.AddSingleton<IAutoCallSubmissionRepository, AutoCallRepository>();
+        services.AddHttpClient(TwilioCallClient.ClientName, client => client.Timeout = Timeout.InfiniteTimeSpan)
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false })
+            .RemoveAllLoggers();
+        services.AddSingleton<ITwilioCallClient, TwilioCallClient>();
+        services.AddSingleton<IAutoCallSubmissionService, AutoCallSubmissionService>();
         return services;
     }
 }

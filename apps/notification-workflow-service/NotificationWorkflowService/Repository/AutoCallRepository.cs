@@ -6,8 +6,36 @@ using NotificationWorkflowService.Service.AutoCall;
 
 namespace NotificationWorkflowService.Repository;
 
-public sealed class AutoCallRepository(IConfiguration configuration) : IAutoCallRepository
+public sealed class AutoCallRepository(IConfiguration configuration) : IAutoCallRepository, IAutoCallSubmissionRepository
 {
+    public async Task<AutoCallSubmissionResult> BeginSubmissionAsync(AutoCallAttempt attempt, string workerId, Guid token, AutoCallSubmissionRequest request, CancellationToken cancellationToken)
+        => (await ReadAsync<AutoCallSubmissionResult>(BeginSubmissionCommand(attempt, workerId, token, request, cancellationToken)).ConfigureAwait(false)).Single();
+
+    public async Task<AutoCallSubmissionResult> SaveSubmissionAsync(AutoCallAttempt attempt, Guid token, string state, string? sid, string? errorCode, CancellationToken cancellationToken)
+        => (await ReadAsync<AutoCallSubmissionResult>(SaveSubmissionCommand(attempt, token, state, sid, errorCode, cancellationToken)).ConfigureAwait(false)).Single();
+
+    internal static CommandDefinition BeginSubmissionCommand(AutoCallAttempt attempt, string workerId, Guid token, AutoCallSubmissionRequest request, CancellationToken cancellationToken)
+    {
+        var parameters = ClaimParameters(attempt.QueueId, attempt.QueueLeaseToken, workerId);
+        parameters.Add("@CallId", attempt.CallId, DbType.Int32);
+        parameters.Add("@SubmissionToken", token, DbType.Guid);
+        parameters.Add("@RequestJSON", System.Text.Json.JsonSerializer.Serialize(request), DbType.String, size: -1);
+        return Command("dbo.automatedcalls_BeginSubmission", parameters, cancellationToken);
+    }
+
+    internal static CommandDefinition SaveSubmissionCommand(AutoCallAttempt attempt, Guid token, string state, string? sid, string? errorCode, CancellationToken cancellationToken)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@QueueId", attempt.QueueId, DbType.Int32);
+        parameters.Add("@LeaseToken", attempt.QueueLeaseToken, DbType.Guid);
+        parameters.Add("@CallId", attempt.CallId, DbType.Int32);
+        parameters.Add("@SubmissionToken", token, DbType.Guid);
+        parameters.Add("@SubmissionState", state, DbType.AnsiString, size: 20);
+        parameters.Add("@ProviderCallId", sid, DbType.AnsiString, size: 200);
+        parameters.Add("@ErrorCode", errorCode, DbType.AnsiString, size: 100);
+        return Command("dbo.automatedcalls_SaveSubmission", parameters, cancellationToken);
+    }
+
     public Task<IReadOnlyList<AutoCallJob>> ClaimAsync(int capacity, string workerId, int leaseMinutes, CancellationToken cancellationToken)
         => ReadAsync<AutoCallJob>(ClaimCommand(capacity, workerId, leaseMinutes, cancellationToken));
 

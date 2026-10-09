@@ -152,6 +152,12 @@ CREATE TABLE dbo.AutomatedCalls
     FlowId int NULL,
     CallStatus varchar(20) NULL,
     QueueLeaseToken uniqueidentifier NULL,
+    SubmissionState varchar(20) NULL CONSTRAINT DF_AutomatedCalls_SubmissionState DEFAULT('READY'),
+    SubmissionToken uniqueidentifier NULL,
+    SubmissionStartedAt datetime2(3) NULL,
+    SubmissionCompletedAt datetime2(3) NULL,
+    SubmissionErrorCode varchar(100) NULL,
+    SubmissionRequestJSON nvarchar(max) NULL,
     EndedDateTime datetime2(3) NULL,
     CallDurationSeconds int NULL,
     LastStatusSequenceNumber int NULL,
@@ -163,7 +169,9 @@ CREATE TABLE dbo.AutomatedCalls
     UpdatedDateTime datetime2(3) NULL,
     CONSTRAINT FK_AutomatedCalls_AutomatedCallQueueId FOREIGN KEY (AutomatedCallQueueId) REFERENCES dbo.AutomatedCallQueue (SystemID),
     CONSTRAINT FK_AutomatedCalls_OID FOREIGN KEY (OID) REFERENCES dbo.Client (OID),
-    CONSTRAINT FK_AutomatedCalls_FlowId FOREIGN KEY (FlowId) REFERENCES dbo.CallFlowTemplates (SystemID)
+    CONSTRAINT FK_AutomatedCalls_FlowId FOREIGN KEY (FlowId) REFERENCES dbo.CallFlowTemplates (SystemID),
+    CONSTRAINT CK_AutomatedCalls_SubmissionState CHECK
+        (SubmissionState IS NULL OR SubmissionState COLLATE Latin1_General_100_BIN2 IN('READY','SUBMITTING','ACCEPTED','REJECTED','UNKNOWN'))
 );
 
 IF OBJECT_ID(N'dbo.AutomatedCallEvents', N'U') IS NULL

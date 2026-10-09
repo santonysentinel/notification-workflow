@@ -5,7 +5,7 @@
 The C# service registers `AutoCallContactService` for use by the future auto-call
 worker. Registration does not start another hosted worker or contact Redis/SQL.
 Phase 1 adds queue snapshots and workflow enqueueing below. Phase 2 adds an opt-in
-claim loop and attempt preparation. Twilio submission remains future work.
+claim loop and attempt preparation. Phase 3 adds separately opt-in Twilio submission.
 No schema changes are needed for Phase 0 itself.
 
 Given an OID from the central AutoCallDB queue:
@@ -86,7 +86,7 @@ Its existing routing behavior is unchanged. Action 19 uses direct central SQL ac
 
 `AutoCallWorker` runs alongside the selected Normal or Step workflow worker only
 when `AutoCall:Worker:Enabled` is true (default false). It claims no more than
-`MaxConcurrency` minus its in-flight preparation tasks, starts every claimed item
+`MaxConcurrency` minus its in-flight preparation/submission tasks, starts every claimed item
 immediately, and polls again when capacity becomes available. There is no local
 backlog of already leased jobs. Preparation has a cancellation deadline shorter
 than the lease; host shutdown cancels outstanding work and drains those tasks.
@@ -95,7 +95,7 @@ than the lease; host shutdown cancels outstanding work and drains those tasks.
 the first number, in returned order, already matching E.164 (`+`, a nonzero first
 digit, and 2-15 digits total). It never guesses country codes, splits strings or
 normalizes numbers. Missing valid numbers fail preparation. Alternative-number
-retry and provider submission policies remain later phases.
+retry remains deferred. Opt-in provider submission is described in Phase 3.
 
 `AutoCallRepository` uses asynchronous SqlClient connections and Dapper commands
 against exactly `ConnectionStrings:AutoCallDB`, with explicit SQL types, 30-second
@@ -134,16 +134,94 @@ or provider-bound attempts are never failed by this path, including ambiguous
 save outcomes. Host cancellation does not dispose the claim as failed.
 Automatic retry, lease renewal/reclamation and restart recovery remain deferred.
 
-This stage does **not** dial, download recordings or submit transcription jobs.
+With Twilio submission disabled, this stage does **not** dial, download recordings or submit transcription jobs.
 Prepared jobs remain PROCESSING with a queued, unsubmitted attempt and their
-original lease. Enable only for controlled preparation until the dialing/recovery
-stage is available; expired or shutdown-interrupted claims require explicit
+original lease. Enable preparation alone only for controlled verification;
+expired or shutdown-interrupted claims require explicit
 operator handling rather than guessed ownership. Logs contain technical IDs and
 failure types, not phone numbers, variables, XML or connection strings.
 
+## Phase 3: Twilio Submission
+
+Apply `database/015.sql` after 014 before enabling submission. Fresh installations
+include the columns in 001 and must also apply 015 for the procedures. The migration
+is rerunnable. Existing attempts retain NULL submission state and cannot be dialed
+automatically; only newly inserted attempts receive READY. Never backfill historical
+attempts as READY without proving that no provider request was made.
+
+Apply `database/016.sql` after 015 **before deploying/enabling the inline-opening
+worker**. It replaces BeginSubmission and Next to persist opening execution metadata
+and support early inline callbacks. Do not overwrite them with old 015 or 006
+afterward. The worker requires the persisted opening execution ID in the marker
+response and refuses to POST when the database procedure is older. Migration 016
+is rerunnable and does not backfill or change previously submitted requests.
+
+Set both `AutoCall:Worker:Enabled` and `AutoCall:Twilio:Enabled` to true. The worker
+submits only after personalized TwiML and Parameters have been persisted. The
+dedicated typed `TwilioCallClient` uses the documented Twilio Call resource, pinned
+to `https://api.twilio.com/2010-04-01/Accounts/<AccountSid>/Calls.json`, with per-request
+Basic authentication, form encoding, no redirects/cookies or automatic retries,
+and a bounded 64 KiB response. The timeout covers HTTP headers and body.
+
+The worker sends the first step inline in the create-call request's `Twiml` field,
+not the complete CallFlow bundle and not a `Url`. It selects the declared initial
+step's Response, substitutes its execution UUID, and rejects unresolved placeholders
+or unsafe XML before submission. This removes the opening webhook round trip.
+The complete personalized bundle remains persisted for subsequent steps.
+
+The sender must be an E.164 Twilio number or verified outgoing caller ID. The
+recipient remains the prepared Phase 0 selection, not a queue field. All callback
+methods are POST, with the same public HTTPS base/path prefix as the prepared bundle:
+
+- Opening endpoint, retained for URL-based callers/replay: `/webhooks/twilio/voice/start?callId=<id>`; not requested by normal inline submission.
+- Progress: `/webhooks/twilio/voice/status?callId=<id>`, events initiated/ringing/answered/completed.
+- Recording: `/webhooks/twilio/recordings/status?callId=<id>`, event completed.
+
+`RecordCalls` defaults false: whole-call recording requires explicit opt-in and
+appropriate consent/compliance. The recording callback is configured either way;
+flow `<Record>` callbacks retain their persisted bundle configuration. Match these
+public URLs, account SID and auth token to the feedback API's Twilio signature
+validation configuration, including any reverse-proxy path prefix.
+
+`automatedcalls_BeginSubmission` checks the persisted preparation and current exact
+worker/lease ownership, then commits SUBMITTING, a unique submission token, timestamp
+and nonsecret request snapshot **before** the HTTP POST. Only that successful first
+marker authorizes sending. Replays, legacy attempts and already-bound SIDs cannot
+authorize a second call. The snapshot includes phone numbers and callback/account
+identities; restrict database access and retention as personal data.
+
+For inline requests, the same transaction also persists the opening StepIssued
+event (`voice:start`) with its step ID, execution UUID and exact rendered response.
+SQL verifies that response against the stored personalized bundle. Issuing the
+opening does not bind a SID or mark the call answered. `/voice/start` can replay
+this exact response without issuing another execution. The first signed `/voice/next`
+may bind the SID before any progress callback or response save, but only for that
+pre-issued inline execution after the existing transition/context checks pass.
+
+`automatedcalls_SaveSubmission` fences the immutable attempt/lease/submission token,
+not the queue's current lease. It can save a returned SID after an early `/start`
+or `/status` callback, even after a terminal callback cleared queue ownership.
+It preserves an identical existing SID; a different SID is retained as a sanitized
+SID_CONFLICT/UNKNOWN outcome without overwriting callback identity. Submission
+state/timestamps never overwrite CallStatus, lifecycle fields or queue status.
+Twilio acceptance **does not complete the queue job**; terminal callbacks do that.
+
+A validated 201 response becomes ACCEPTED; explicit 4xx rejection (except 408)
+becomes REJECTED. Timeouts, transport failures, 5xx, redirects and malformed/oversized
+responses become UNKNOWN. Shutdown after POST still uses a separate five-second
+SQL persistence deadline to save the SID/outcome. If that save fails, SUBMITTING
+remains durable. None of these outcomes automatically redial or invoke preparation
+failure cleanup. REJECTED/UNKNOWN or callback-missing jobs remain PROCESSING until
+operator reconciliation; lease renewal/reclaim, restart recovery, retry/fallback
+numbers and provider reconciliation are not implemented. Do not simply reset a
+marker or create a fresh attempt after uncertain acceptance: that can place two calls.
+
 ## Configuration
 
-Add these sections to the service configuration, replacing the example hosts:
+The service's `appsettings.json` includes disabled-by-default AutoCall sections.
+Replace its example FeedbackBaseUrl and fill routing/account/sender settings through
+deployment configuration; provide credentials through secrets/environment variables.
+The equivalent configuration structure is:
 
 ```json
 {
@@ -159,6 +237,13 @@ Add these sections to the service configuration, replacing the example hosts:
       "PollSeconds": 5,
       "PreparationTimeoutSeconds": 60,
       "FeedbackBaseUrl": "https://feedback.example.com"
+    },
+    "Twilio": {
+      "Enabled": false,
+      "AccountSid": "AC0123456789abcdef0123456789abcdef",
+      "FromNumber": "+15551234567",
+      "TimeoutSeconds": 30,
+      "RecordCalls": false
     }
   },
   "ConnectionStrings": {
@@ -181,6 +266,13 @@ must be absolute HTTPS without credentials, query or fragment. WorkerId defaults
 to a generated UUID-based identity; any configured value must be unique per live
 worker, nonblank and at most 100 characters. Environment activation is
 `AutoCall__Worker__Enabled=true`; keep it false until migration 014 is deployed.
+Submission additionally requires migrations 015/016, `AutoCall__Twilio__Enabled=true`
+and secret-backed `AutoCall__Twilio__AuthToken`. Do not commit the auth token.
+Twilio timeout must be 1-120 seconds; preparation timeout plus Twilio timeout plus
+five seconds must remain strictly shorter than the lease. Keep submission disabled
+until live tenant routing, public callbacks, signature validation and sender ownership
+are verified. Capacity limits concurrent preparation/submission requests, not active
+phone calls or Twilio account Calls Per Second; accepted calls may remain provider-queued.
 
 Redis uses one lazy shared StackExchange.Redis connection with reconnection enabled.
 The lookup deadline includes connection initialization and GET, defaults to five
@@ -209,10 +301,12 @@ The result does not expose a connection string and does not initiate a call.
 ```powershell
 dotnet test apps/notification-workflow-service/NotificationWorkflowService.Tests/NotificationWorkflowService.Tests.csproj --filter FullyQualifiedName~AutoCallContactsTests
 dotnet test apps/notification-workflow-service/NotificationWorkflowService.Tests/NotificationWorkflowService.Tests.csproj --filter FullyQualifiedName~AutoCallPreparationTests
+dotnet test apps/notification-workflow-service/NotificationWorkflowService.Tests/NotificationWorkflowService.Tests.csproj --filter FullyQualifiedName~AutoCallSubmissionTests
 dotnet test apps/notification-workflow-service/NotificationWorkflowService.Tests/NotificationWorkflowService.Tests.csproj --filter 'FullyQualifiedName~AutoCallEnqueueTests|FullyQualifiedName~WorkflowActionExecutorTests|FullyQualifiedName~WorkflowReferenceDataTests|FullyQualifiedName~WorkflowSelectionCharacterizationTests'
 pnpm --dir apps/notification-feedback-api exec mocha --timeout 10000 test/autoCall.test.js
 sqlcmd -S "(localdb)\NotificationWorkflowVoiceTests" -E -I -b -d NotificationWorkflowVoiceTests -i database/test/automatedcalls_QueueContract.test.sql
 sqlcmd -S "(localdb)\NotificationWorkflowVoiceTests" -E -I -b -d NotificationWorkflowVoiceTests -i database/test/automatedcalls_Preparation.test.sql
+sqlcmd -S "(localdb)\NotificationWorkflowVoiceTests" -E -I -b -d NotificationWorkflowVoiceTests -i database/test/automatedcalls_Submission.test.sql
 ```
 
 Offline tests use injected Redis/SQL boundaries, the real Redis adapter with mocked
