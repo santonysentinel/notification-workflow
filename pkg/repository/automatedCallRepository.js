@@ -1,6 +1,100 @@
 import sql from "mssql";
 import { executeProcedure } from "./sqlserver.js";
 
+function validateCallbackIdentity(correlationId, platform) {
+  if (
+    typeof correlationId !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      correlationId,
+    )
+  ) {
+    throw new TypeError("correlationId must be a UUID");
+  }
+  if (typeof platform !== "string" || !platform.trim())
+    throw new TypeError("platform is required");
+}
+
+export async function getDeepgramCallbackContext(
+  { correlationId },
+  { platform = "AutoCallDB", timeoutMs, transaction } = {},
+) {
+  validateCallbackIdentity(correlationId, platform);
+  const result = await executeProcedure(
+    "dbo.transcription_GetCallbackContext",
+    {
+      params: {
+        CorrelationId: { type: sql.UniqueIdentifier, val: correlationId },
+      },
+      platform,
+      timeoutMs,
+      transaction,
+      strictPlatform: true,
+    },
+  );
+  return result.recordset?.[0] ?? null;
+}
+
+export async function completeDeepgramCallback(
+  {
+    correlationId,
+    recordingId,
+    tokenHash,
+    requestId,
+    payloadHash,
+    success,
+    response,
+    transcripts,
+    errorCode = null,
+    errorMessage = null,
+  },
+  { platform = "AutoCallDB", timeoutMs, transaction } = {},
+) {
+  validateCallbackIdentity(correlationId, platform);
+  if (
+    !Number.isInteger(recordingId) ||
+    recordingId <= 0 ||
+    recordingId > 2147483647 ||
+    !Buffer.isBuffer(tokenHash) ||
+    tokenHash.length !== 32 ||
+    !Buffer.isBuffer(payloadHash) ||
+    payloadHash.length !== 32 ||
+    typeof requestId !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      requestId,
+    ) ||
+    typeof success !== "boolean" ||
+    !Array.isArray(transcripts)
+  )
+    throw new TypeError("Invalid callback data");
+  const result = await executeProcedure("dbo.transcription_CompleteCallback", {
+    params: {
+      CorrelationId: { type: sql.UniqueIdentifier, val: correlationId },
+      RecordingId: { type: sql.Int, val: recordingId },
+      TokenHash: { type: sql.Binary(32), val: tokenHash },
+      RequestId: { type: sql.VarChar(100), val: requestId },
+      PayloadHash: { type: sql.Binary(32), val: payloadHash },
+      Success: { type: sql.Bit, val: success },
+      ResponseJSON: {
+        type: sql.NVarChar(sql.MAX),
+        val: JSON.stringify(response),
+      },
+      TranscriptsJSON: {
+        type: sql.NVarChar(sql.MAX),
+        val: JSON.stringify(transcripts),
+      },
+      ErrorCode: { type: sql.VarChar(100), val: errorCode },
+      ErrorMessage: { type: sql.NVarChar(2000), val: errorMessage },
+    },
+    platform,
+    timeoutMs,
+    transaction,
+    strictPlatform: true,
+  });
+  if (!result.recordset?.[0])
+    throw new Error("transcription_CompleteCallback did not return a result");
+  return result.recordset[0];
+}
+
 export async function getAutomatedCallRecording(
   { recordingId },
   { platform = "AutoCallDB", timeoutMs, transaction } = {},

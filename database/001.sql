@@ -247,6 +247,7 @@ CREATE TABLE dbo.AutomatedCallTranscriptionSubmissions
     AttemptNumber int NOT NULL,
     CorrelationId uniqueidentifier NOT NULL DEFAULT (NEWID()),
     CallbackTokenHash binary(32) NOT NULL,
+    CallbackPayloadHash binary(32) NULL,
     ProviderRequestId varchar(100) COLLATE Latin1_General_100_BIN2 NULL,
     Status varchar(20) COLLATE Latin1_General_100_BIN2 NOT NULL DEFAULT ('SUBMITTING'),
     CallbackDeadlineDateTime datetime2(3) NOT NULL,

@@ -11,6 +11,7 @@ import { Logger as logger, MorganAccessStream } from './loggers.js';
 import routes from '../app/routes/routes.js';
 import twilioVoiceRouter from '../app/routes/twilioVoice.js';
 import twilioRecordingsRouter from '../app/routes/twilioRecordings.js';
+import deepgramTranscriptionsRouter from '../app/routes/deepgramTranscriptions.js';
 import { mountRecordingContentRoute } from '../app/routes/recordingContent.js';
 import { setupDefaultMetricsConfig, initializeMetrics } from '../app/services/metricsService.js';
 import {
@@ -413,6 +414,7 @@ app.use(
 
 app.use('/webhooks/twilio/voice', twilioVoiceRouter);
 app.use('/webhooks/twilio/recordings', twilioRecordingsRouter);
+app.use('/webhooks/deepgram/transcriptions', deepgramTranscriptionsRouter);
 mountRecordingContentRoute(app);
 
 app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
