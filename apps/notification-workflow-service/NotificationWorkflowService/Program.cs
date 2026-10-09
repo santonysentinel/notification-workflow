@@ -3,6 +3,7 @@ using NotificationWorkflowService.Parser;
 using NotificationWorkflowService.Service;
 using NotificationWorkflowService.Repository;
 using NotificationWorkflowService.Service.Notes;
+using NotificationWorkflowService.Service.AutoCall;
 using NotificationSender = ActiveAlarmsParser.Service.NotificationService.NotificationService;
 
 using Microsoft.Extensions.Configuration;
@@ -74,6 +75,7 @@ namespace ActiveAlarmsParser
                 services.AddTransient<NotificationSender>();
                 services.AddTransient<IRepository, Repository>();
                 services.AddNoteServices();
+                services.AddAutoCallContacts();
                 services.AddSingleton<NotificationWorkflowService.Repository.INotificationRepository, NotificationWorkflowService.Repository.NotificationRepository>();
                 services.AddTransient<WorkFlowCommon>();
                 services.AddTransient<Func<WorkFlowCommon>>(provider => () => provider.GetRequiredService<WorkFlowCommon>());
