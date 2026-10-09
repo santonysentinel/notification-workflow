@@ -26,7 +26,13 @@ describe('POST /autocall', () => {
   let authenticatedOid;
   let routing;
   let log;
-  const validJob = { activeAlarmId: 123, oid: 'client-1', flowId: 5 };
+  const validJob = {
+    activeAlarmId: 123,
+    oid: 'client-1',
+    flowId: 5,
+    variables: { OffenderName: 'Alex' },
+    enqueueIdempotencyKey: 'd148c0a7-7c0b-822a-982b-2a637f9a2776'
+  };
 
   beforeEach(() => {
     authenticatedOid = undefined;
@@ -109,6 +115,18 @@ describe('POST /autocall', () => {
     ['missing fields', {}],
     ['non-integer alarm ID', { ...validJob, activeAlarmId: '123' }],
     ['missing flow ID', { ...validJob, flowId: undefined }],
+    ['nonpositive alarm ID', { ...validJob, activeAlarmId: 0 }],
+    ['nonpositive flow ID', { ...validJob, flowId: 0 }],
+    ['missing variable map', { ...validJob, variables: undefined }],
+    ['null variable map', { ...validJob, variables: null }],
+    ['array variable map', { ...validJob, variables: [] }],
+    ['string variable map', { ...validJob, variables: '{}' }],
+    ['missing enqueue key', { ...validJob, enqueueIdempotencyKey: undefined }],
+    ['invalid enqueue key', { ...validJob, enqueueIdempotencyKey: 'invalid' }],
+    [
+      'zero enqueue key',
+      { ...validJob, enqueueIdempotencyKey: '00000000-0000-0000-0000-000000000000' }
+    ],
     ['blank OID', { ...validJob, oid: '   ' }],
     ['missing OID', { ...validJob, oid: undefined }],
     ['overlong OID', { ...validJob, oid: 'a'.repeat(21) }],
@@ -149,5 +167,55 @@ describe('POST /autocall', () => {
 
     expect(response.status).to.equal(500);
     expect(response.body.message).to.equal('Database unavailable');
+  });
+
+  it('returns 409 for a conflicting enqueue snapshot', async () => {
+    addToAutomatedCallQueue.rejects(
+      Object.assign(new Error('Enqueue key conflicts with the original request snapshot.'), {
+        httpStatus: 500,
+        sqlState: { number: 51001 }
+      })
+    );
+    const response = await request(app).post('/api/v1/autocall').send(validJob);
+    expect(response.status).to.equal(409);
+    expect(addToAutomatedCallQueue.calledOnce).to.be.true;
+  });
+
+  it('binds the snapshot and UUID through the real repository without SQL access', async () => {
+    const { initialize } = await import('../../../pkg/repository/sqlserver.js');
+    const repository = await import('../../../pkg/repository/activeAlarmParserRepository.js');
+    const { default: sql } = await import('mssql');
+    const pools = await initialize();
+    const original = pools.AUTOCALLDB;
+    const fakeRequest = {
+      input: sinon.stub(),
+      execute: sinon.stub().resolves({ recordset: [{ SystemID: 42 }] })
+    };
+    try {
+      pools.AUTOCALLDB = Promise.resolve({ request: () => fakeRequest });
+      const variables = { OffenderName: 'Alex & Co', AlarmText: 'Low battery' };
+      expect(
+        await repository.addToAutomatedCallQueue(
+          { ...validJob, variables },
+          { platform: 'AutoCallDB' }
+        )
+      ).to.equal(42);
+      expect(fakeRequest.execute.calledOnceWithExactly('dbo.activealarms_call_InsertJob')).to.be
+        .true;
+      const bindings = Object.fromEntries(
+        fakeRequest.input.args.map(([name, type, value]) => [name, { type, value }])
+      );
+      expect(bindings.VariablesJSON.type).to.deep.equal(sql.NVarChar(sql.MAX));
+      expect(bindings.VariablesJSON.value).to.equal(
+        '{"AlarmText":"Low battery","OffenderName":"Alex & Co"}'
+      );
+      expect(bindings.EnqueueIdempotencyKey).to.deep.equal({
+        type: sql.UniqueIdentifier,
+        value: validJob.enqueueIdempotencyKey
+      });
+    } finally {
+      if (original === undefined) delete pools.AUTOCALLDB;
+      else pools.AUTOCALLDB = original;
+    }
   });
 });

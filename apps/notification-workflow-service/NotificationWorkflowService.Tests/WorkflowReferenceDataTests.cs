@@ -289,6 +289,7 @@ public class WorkflowReferenceDataTests
         Assert.Single(profiles[20].Events["event"][1]);
         ProfileItem item = profiles[10].Events["event"][1][0];
         Assert.Equal(10, item.ProfileID); Assert.Equal("event", item.EventCode); Assert.Equal(1, item.Day);
+        Assert.Equal(0, item.FlowId);
         Assert.Equal(TimeSpan.FromHours(8), item.StartTime.TimeOfDay); Assert.Equal(TimeSpan.FromHours(18), item.EndTime.TimeOfDay);
         Assert.Equal(3, item.Action); Assert.Equal(4, item.HoldDuration); Assert.Equal(5, item.GracePeriod);
         Assert.Equal("instruction", item.Instruction); Assert.Equal("email", item.Email); Assert.Equal(1, item.EmailJoin);
@@ -309,6 +310,19 @@ public class WorkflowReferenceDataTests
         await using var reader = table.CreateDataReader();
         await Assert.ThrowsAsync<FormatException>(() => WorkflowReferenceDataBuilders.BuildProfilesAsync(reader));
         Assert.False(reader.IsClosed);
+    }
+
+    [Theory]
+    [InlineData("flowid", 12)]
+    [InlineData("FlowId", 0)]
+    public async Task ProfileBuilderReadsOptionalFlowIdAsync(string column, int expected)
+    {
+        using var table = Profiles();
+        table.Columns.Add(column, typeof(int));
+        table.Rows[0][column] = expected == 0 ? DBNull.Value : expected;
+        await using var reader = table.CreateDataReader();
+        var profiles = await WorkflowReferenceDataBuilders.BuildProfilesAsync(reader);
+        Assert.Equal(expected, profiles[10].Events["event"][1][0].FlowId);
     }
 
     [Fact]

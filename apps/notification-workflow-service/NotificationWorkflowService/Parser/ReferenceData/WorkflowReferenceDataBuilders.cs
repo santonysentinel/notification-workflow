@@ -33,6 +33,9 @@ internal static class WorkflowReferenceDataBuilders
     {
         cancellationToken.ThrowIfCancellationRequested();
         var result = new Dictionary<int, Profile>();
+        int flowOrdinal = -1;
+        for (int column = 0; column < reader.FieldCount; column++)
+            if (string.Equals(reader.GetName(column), "flowid", StringComparison.OrdinalIgnoreCase)) flowOrdinal = column;
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             int profileId = (int)reader["ProfileID"];
@@ -44,6 +47,7 @@ internal static class WorkflowReferenceDataBuilders
             var item = new ProfileItem
             {
                 ProfileID = profileId,
+                FlowId = flowOrdinal >= 0 && !reader.IsDBNull(flowOrdinal) ? Convert.ToInt32(reader.GetValue(flowOrdinal)) : 0,
                 EventCode = eventCode,
                 StartTime = DateTime.ParseExact(reader["StartTime"].ToString()!, "HH:mm:ss", CultureInfo.InvariantCulture),
                 EndTime = DateTime.ParseExact(reader["EndTime"].ToString()!, "HH:mm:ss", CultureInfo.InvariantCulture),

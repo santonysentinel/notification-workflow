@@ -323,7 +323,8 @@ public class AddNoteIntegrationTests
         };
         Assert.IsType<NoteService>(Field(parser, "noteService").GetValue(parser));
         Assert.Empty(spy.Calls);
-        Assert.Equal(kind == 2 ? new[] { 2, 3, 4 } : [3, 4, 5], parser.GetType().GetConstructors().Select(c => c.GetParameters().Length).Order());
+        int[] arities = kind switch { 0 => [3, 4, 5, 6], 1 => [3, 4, 5], _ => [2, 3, 4, 5] };
+        Assert.Equal(arities, parser.GetType().GetConstructors().Select(c => c.GetParameters().Length).Order());
     }
 
     private sealed class RecordingNote : INoteService

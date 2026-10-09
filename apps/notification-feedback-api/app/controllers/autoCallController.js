@@ -21,11 +21,42 @@ export async function createAutoCall(req, res) {
     return sendError(res, 400, 'A JSON request body is required', { traceId, path });
   }
 
-  const { activeAlarmId, flowId, callStatus, priority, availableAt, maxAttempts } = body;
+  const {
+    activeAlarmId,
+    flowId,
+    variables,
+    enqueueIdempotencyKey,
+    callStatus,
+    priority,
+    availableAt,
+    maxAttempts
+  } = body;
   const oid = req.oid ?? body.oid;
 
-  if (!Number.isInteger(activeAlarmId) || !Number.isInteger(flowId)) {
-    return sendError(res, 400, 'activeAlarmId and flowId must be integers', { traceId, path });
+  if (
+    !Number.isInteger(activeAlarmId) ||
+    activeAlarmId <= 0 ||
+    !Number.isInteger(flowId) ||
+    flowId <= 0
+  ) {
+    return sendError(res, 400, 'activeAlarmId and flowId must be positive integers', {
+      traceId,
+      path
+    });
+  }
+
+  if (!variables || typeof variables !== 'object' || Array.isArray(variables)) {
+    return sendError(res, 400, 'variables must be a JSON object', { traceId, path });
+  }
+
+  if (
+    typeof enqueueIdempotencyKey !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      enqueueIdempotencyKey
+    ) ||
+    enqueueIdempotencyKey === '00000000-0000-0000-0000-000000000000'
+  ) {
+    return sendError(res, 400, 'enqueueIdempotencyKey must be a nonzero UUID', { traceId, path });
   }
 
   if (typeof oid !== 'string' || !oid.trim() || oid.length > 20) {
@@ -65,7 +96,17 @@ export async function createAutoCall(req, res) {
   try {
     const platform = req.routing?.Platform ?? req.routing?.platform;
     const systemId = await repo.addToAutomatedCallQueue(
-      { activeAlarmId, oid, flowId, callStatus, priority, availableAt: scheduledAt, maxAttempts },
+      {
+        activeAlarmId,
+        oid,
+        flowId,
+        variables,
+        enqueueIdempotencyKey,
+        callStatus,
+        priority,
+        availableAt: scheduledAt,
+        maxAttempts
+      },
       { platform }
     );
 
@@ -81,7 +122,7 @@ export async function createAutoCall(req, res) {
 
     return sendError(
       res,
-      err?.httpStatus ?? 500,
+      err?.sqlState?.number === 51001 ? 409 : (err?.httpStatus ?? 500),
       err?.message || 'Failed to create automated call',
       {
         traceId,

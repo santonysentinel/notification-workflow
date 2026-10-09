@@ -73,6 +73,7 @@
         private readonly IConfiguration configuration;
         private readonly IRepository repository;
         private readonly INoteService noteService;
+        private readonly NotificationWorkflowService.Service.AutoCall.AutoCallEnqueueService autoCallService;
         private WorkflowReferenceData? pendingReferenceData;
 
         /// <summary>
@@ -92,11 +93,17 @@
         }
 
         public WorkFlowSteps(ILogger<WorkFlowSteps> logger, IConfiguration configuration, IRepository repository, INoteService noteService)
+            : this(logger, configuration, repository, noteService, null)
+        {
+        }
+
+        public WorkFlowSteps(ILogger<WorkFlowSteps> logger, IConfiguration configuration, IRepository repository, INoteService noteService, NotificationWorkflowService.Service.AutoCall.AutoCallEnqueueService? autoCallService)
         {
             this.log = logger;
             this.configuration = configuration;
             this.repository = repository;
             this.noteService = noteService;
+            this.autoCallService = autoCallService ?? new NotificationWorkflowService.Service.AutoCall.AutoCallEnqueueService(new AutoCallQueueRepository(configuration));
             setUpConnnectionStrings();
         }
 
@@ -780,6 +787,7 @@
                                 a.StateTime = pi.StateTime;
                                 a.NextStateNo = pi.NextState;
                                 a.Instruction = pi.Instruction;
+                                a.FlowId = pi.FlowId;
                                 a.ProfileName = p.ProfileName;
                                 a.ProfileID = p.ProfileID;
                                 a.RoleAction = pi.RoleAction;
@@ -840,6 +848,7 @@
             PriorityMapping.Add(16, "Alert Client - Text");
             PriorityMapping.Add(17, "Text All Victims");
             PriorityMapping.Add(18, "Add Note");
+            PriorityMapping.Add(19, "Auto Call Participant");
 
             Dictionary<int, String> RoleActionMapping = new Dictionary<int, String>();
             RoleActionMapping.Add(1, "Call");
@@ -931,6 +940,7 @@
 
         private sealed class ActionOperations(WorkFlowSteps parser) : IWorkflowActionOperations
         {
+            public Task EnqueueAutoCallAsync(ActiveAlarm alarm, string platform, CancellationToken cancellationToken = default) => parser.autoCallService.EnqueueAsync(alarm, platform, cancellationToken);
             public Task AddNoteAsync(string template, string oid, CancellationToken cancellationToken = default) => parser.noteService.AddNoteAsync(template, oid, cancellationToken);
             public Task SendNotificationsToOfficersInSameGroupAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.SendNotificationsToOfficersInSameGroupAsync(a, cancellationToken);
             public Task<bool> PushAlertToMcAppAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.PushAlertToMcAppAsync(a, cancellationToken);

@@ -433,6 +433,7 @@ public class WorkflowSelectionCharacterizationTests
         // second inside the exclusive step window, including at midnight rollover.
         EndTime = FixedDay.AddHours(23).AddMinutes(59).AddSeconds(59).AddTicks(1),
         StateNo = state,
+        FlowId = 12,
         Action = 2,
         Email = label + "@example.test",
         EmailJoin = 1,
@@ -471,6 +472,7 @@ public class WorkflowSelectionCharacterizationTests
         Assert.Equal(item.StateTime, alarm.StateTime);
         Assert.Equal(item.NextState, alarm.NextStateNo);
         Assert.Equal(item.Instruction, alarm.Instruction);
+        Assert.Equal(item.FlowId, alarm.FlowId);
         Assert.Equal("profile-" + profileId, alarm.ProfileName);
         Assert.Equal(profileId, alarm.ProfileID);
         Assert.Equal(item.RoleID, alarm.RoleID);

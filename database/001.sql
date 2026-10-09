@@ -31,6 +31,8 @@ CREATE TABLE dbo.AutomatedCallQueue
     ActiveAlarmID int NOT NULL,
     FlowId int NULL,
     CallStatus int NULL,
+    VariablesJSON nvarchar(max) NULL,
+    EnqueueIdempotencyKey uniqueidentifier NULL,
     CreatedDateTime datetime2(3) NOT NULL DEFAULT (SYSUTCDATETIME()),
     StartedDateTime datetime2(3) NULL,
     UpdatedDateTime datetime2(3) NULL,
@@ -106,6 +108,10 @@ CREATE TABLE dbo.AutomatedCallQueue
 
     CONSTRAINT FK_AutomatedCallQueue_OID FOREIGN KEY (OID) REFERENCES dbo.Client (OID),
     CONSTRAINT FK_AutomatedCallQueue_FlowId FOREIGN KEY (FlowId) REFERENCES dbo.CallFlowTemplates (SystemID),
+    CONSTRAINT CK_AutomatedCallQueue_RequestSnapshot CHECK (
+        EnqueueIdempotencyKey IS NULL OR
+        (VariablesJSON IS NOT NULL AND ISJSON(VariablesJSON)=1 AND LEFT(LTRIM(VariablesJSON),1)='{'
+         AND OID IS NOT NULL AND LEN(LTRIM(RTRIM(OID)))>0 AND FlowId IS NOT NULL AND FlowId>0)),
         
     CONSTRAINT CK_WorkerQueue_Status
         CHECK
@@ -128,6 +134,11 @@ CREATE TABLE dbo.AutomatedCallQueue
             AND AttemptCount <= MaxAttempts
         )
 );
+
+IF COL_LENGTH('dbo.AutomatedCallQueue','EnqueueIdempotencyKey') IS NOT NULL
+EXEC sys.sp_executesql N'
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id=OBJECT_ID(''dbo.AutomatedCallQueue'') AND name=''UX_AutomatedCallQueue_EnqueueIdempotencyKey'')
+CREATE UNIQUE INDEX UX_AutomatedCallQueue_EnqueueIdempotencyKey ON dbo.AutomatedCallQueue(EnqueueIdempotencyKey) WHERE EnqueueIdempotencyKey IS NOT NULL;';
 
 IF OBJECT_ID(N'dbo.AutomatedCalls', N'U') IS NULL
 CREATE TABLE dbo.AutomatedCalls

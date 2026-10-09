@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using NotificationWorkflowService.Entity;
 using NotificationWorkflowService.Parser;
 using NotificationWorkflowService.Repository;
+using NotificationWorkflowService.Service.AutoCall;
 using NotificationWorkflowService.Service.Notes;
 using Xunit;
 using NotificationSender = ActiveAlarmsParser.Service.NotificationService.NotificationService;
@@ -61,14 +62,17 @@ public class WorkflowOrchestrationCompatibilityTests
             }
         }
         var bridges = typeof(WorkFlowCommon).GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.Equal(2, bridges.Length);
-        foreach (int arity in new[] { 4, 5 })
+        Assert.Equal(3, bridges.Length);
+        foreach (int arity in new[] { 4, 5, 6 })
         {
             var bridge = Assert.Single(bridges, c => c.GetParameters().Length == arity);
             Assert.True(bridge.IsFamily);
-            Type[] expectedBridge = arity == 4
-                ? [typeof(ILogger), typeof(IConfiguration), typeof(NotificationSender), typeof(IRepository)]
-                : [typeof(ILogger), typeof(IConfiguration), typeof(NotificationSender), typeof(IRepository), typeof(INoteService)];
+            Type[] expectedBridge = arity switch
+            {
+                4 => [typeof(ILogger), typeof(IConfiguration), typeof(NotificationSender), typeof(IRepository)],
+                5 => [typeof(ILogger), typeof(IConfiguration), typeof(NotificationSender), typeof(IRepository), typeof(INoteService)],
+                _ => [typeof(ILogger), typeof(IConfiguration), typeof(NotificationSender), typeof(IRepository), typeof(INoteService), typeof(AutoCallEnqueueService)]
+            };
             Assert.Equal(expectedBridge, bridge.GetParameters().Select(p => p.ParameterType));
         }
         Assert.True(Field(typeof(WorkFlowCommon), "log").IsPrivate);
@@ -189,15 +193,17 @@ public class WorkflowOrchestrationCompatibilityTests
     private static void AssertConstructors(Type type, Type logger)
     {
         var constructors = type.GetConstructors();
-        Assert.Equal(3, constructors.Length);
-        foreach (int arity in new[] { 3, 4, 5 })
+        int[] arities = type == typeof(WorkFlowCommon) ? [3, 4, 5, 6] : [3, 4, 5];
+        Assert.Equal(arities.Length, constructors.Length);
+        foreach (int arity in arities)
         {
             var ctor = Assert.Single(constructors, c => c.GetParameters().Length == arity);
             Type[] expected = arity switch
             {
                 3 => [logger, typeof(IConfiguration), typeof(NotificationSender)],
                 4 => [logger, typeof(IConfiguration), typeof(NotificationSender), typeof(IRepository)],
-                _ => [logger, typeof(IConfiguration), typeof(NotificationSender), typeof(IRepository), typeof(INoteService)]
+                5 => [logger, typeof(IConfiguration), typeof(NotificationSender), typeof(IRepository), typeof(INoteService)],
+                _ => [logger, typeof(IConfiguration), typeof(NotificationSender), typeof(IRepository), typeof(INoteService), typeof(AutoCallEnqueueService)]
             };
             Assert.Equal(expected, ctor.GetParameters().Select(p => p.ParameterType));
         }

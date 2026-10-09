@@ -78,6 +78,8 @@ public static class AutoCallServiceCollectionExtensions
         services.AddSingleton<IAutoCallRoutingStore, RedisAutoCallRoutingStore>();
         services.AddSingleton<IAutoCallPhoneRepository, AutoCallPhoneRepository>();
         services.AddSingleton<AutoCallContactService>();
+        services.AddSingleton<IAutoCallQueueRepository, AutoCallQueueRepository>();
+        services.AddSingleton<AutoCallEnqueueService>();
         return services;
     }
 }

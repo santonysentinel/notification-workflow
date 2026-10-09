@@ -100,6 +100,7 @@ namespace NotificationWorkflowService.Parser
         private readonly NotificationSender notificationService;
         private readonly IRepository repository;
         private readonly INoteService noteService;
+        private readonly NotificationWorkflowService.Service.AutoCall.AutoCallEnqueueService autoCallService;
         private WorkflowReferenceData? pendingReferenceData;
 
 
@@ -122,6 +123,11 @@ namespace NotificationWorkflowService.Parser
         {
         }
 
+        public WorkFlowCommon(ILogger<WorkFlowCommon> logger, IConfiguration configuration, NotificationSender notificationService, IRepository repository, INoteService noteService, NotificationWorkflowService.Service.AutoCall.AutoCallEnqueueService autoCallService)
+            : this((ILogger)logger, configuration, notificationService, repository, noteService, autoCallService)
+        {
+        }
+
         protected WorkFlowCommon(ILogger logger, IConfiguration configuration, NotificationSender notificationService, IRepository repository)
             : this(logger, configuration, notificationService, repository,
                 new NoteService(repository, new UnavailableNoteLocationProvider(), new UnavailableNoteAddressResolver()))
@@ -129,12 +135,18 @@ namespace NotificationWorkflowService.Parser
         }
 
         protected WorkFlowCommon(ILogger logger, IConfiguration configuration, NotificationSender notificationService, IRepository repository, INoteService noteService)
+            : this(logger, configuration, notificationService, repository, noteService, null)
+        {
+        }
+
+        protected WorkFlowCommon(ILogger logger, IConfiguration configuration, NotificationSender notificationService, IRepository repository, INoteService noteService, NotificationWorkflowService.Service.AutoCall.AutoCallEnqueueService? autoCallService)
         {
             this.log = logger;
             this.configuration = configuration;
             this.notificationService = notificationService;
             this.repository = repository;
             this.noteService = noteService;
+            this.autoCallService = autoCallService ?? new NotificationWorkflowService.Service.AutoCall.AutoCallEnqueueService(new AutoCallQueueRepository(configuration));
             Platform = configuration["Platform"] ?? "";
             setUpConnnectionStrings();
         }
@@ -510,6 +522,7 @@ namespace NotificationWorkflowService.Parser
                                 a.StateTime = pi.StateTime;
                                 a.NextStateNo = pi.NextState;
                                 a.Instruction = pi.Instruction;
+                                a.FlowId = pi.FlowId;
                                 a.ProfileName = p.ProfileName;
                                 a.ProfileID = p.ProfileID;
                                 a.RoleAction = pi.RoleAction;
@@ -633,6 +646,7 @@ namespace NotificationWorkflowService.Parser
                 PriorityMapping.Add(16, "Alert Client - Text");
                 PriorityMapping.Add(17, "Text All Victims");
                 PriorityMapping.Add(18, "Add Note");
+                PriorityMapping.Add(19, "Auto Call Participant");
 
                 Dictionary<int, String> RoleActionMapping = new Dictionary<int, String>();
                 RoleActionMapping.Add(1, "Call");
@@ -785,6 +799,7 @@ namespace NotificationWorkflowService.Parser
 
         private sealed class ActionOperations(WorkFlowCommon parser) : IWorkflowActionOperations
         {
+            public Task EnqueueAutoCallAsync(ActiveAlarm alarm, string platform, CancellationToken cancellationToken = default) => parser.autoCallService.EnqueueAsync(alarm, platform, cancellationToken);
             public Task AddNoteAsync(string template, string oid, CancellationToken cancellationToken = default) => parser.noteService.AddNoteAsync(template, oid, cancellationToken);
             public Task SendNotificationsToOfficersInSameGroupAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.SendNotificationsToOfficersInSameGroupAsync(a, cancellationToken);
             public Task<bool> PushAlertToMcAppAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.PushAlertToMcAppAsync(a, cancellationToken);

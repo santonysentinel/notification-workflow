@@ -5,6 +5,8 @@ namespace NotificationWorkflowService.Parser.Actions;
 // Adapters delegate to the original helpers, including their exception contracts.
 internal interface IWorkflowActionOperations
 {
+    Task EnqueueAutoCallAsync(ActiveAlarm alarm, string platform, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("Auto-call enqueue operation is not configured.");
     Task AddNoteAsync(string template, string oid, CancellationToken cancellationToken = default);
     Task SendNotificationsToOfficersInSameGroupAsync(ActiveAlarm a, CancellationToken cancellationToken = default);
     Task<bool> PushAlertToMcAppAsync(ActiveAlarm a, CancellationToken cancellationToken = default);
