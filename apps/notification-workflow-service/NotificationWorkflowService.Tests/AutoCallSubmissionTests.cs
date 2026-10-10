@@ -198,17 +198,21 @@ public sealed class AutoCallSubmissionTests
         public AutoCallSubmissionRequest? Request { get; private set; }
         public Guid Marker { get; private set; }
         public bool FailSave { get; set; }
+        public string DurableState { get; private set; } = "READY";
         public Task<AutoCallSubmissionResult> BeginSubmissionAsync(AutoCallAttempt attempt, string workerId, Guid token, AutoCallSubmissionRequest request, CancellationToken cancellationToken)
         {
-            Calls.Add("marker"); Request = request; Marker = token;
-            return Task.FromResult(new AutoCallSubmissionResult { ShouldSubmit = ShouldSubmit, SubmissionToken = token,
-                OpeningExecutionId = PersistOpening ? request.OpeningStep?.ExecutionId : null, SubmissionState = ShouldSubmit ? "SUBMITTING" : "ACCEPTED" });
+            Calls.Add("marker");
+            bool authorize = ShouldSubmit && DurableState == "READY";
+            if (authorize) { Request = request; Marker = token; DurableState = "SUBMITTING"; }
+            return Task.FromResult(new AutoCallSubmissionResult { ShouldSubmit = authorize, SubmissionToken = Marker,
+                OpeningExecutionId = PersistOpening ? Request?.OpeningStep?.ExecutionId : null, SubmissionState = ShouldSubmit ? DurableState : "ACCEPTED" });
         }
         public Task<AutoCallSubmissionResult> SaveSubmissionAsync(AutoCallAttempt attempt, Guid token, string state, string? sid, string? errorCode, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested(); Assert.Equal(Marker, token);
-            Calls.Add("save"); State = state; SavedSid = sid;
+            Calls.Add("save");
             if (FailSave) throw new InvalidOperationException("private SQL failure");
+            State = state; SavedSid = sid; DurableState = state;
             return Task.FromResult(new AutoCallSubmissionResult { SubmissionState = state, ProviderCallId = sid, SubmissionToken = token });
         }
     }
@@ -325,6 +329,16 @@ public sealed class AutoCallSubmissionTests
         var service = new AutoCallSubmissionService(repository, new Client(repository), Options(), Worker());
         await Assert.ThrowsAsync<InvalidOperationException>(() => service.SubmitAsync(Attempt(), "worker", default));
         Assert.Equal(new[] { "marker", "http", "save" }, repository.Calls);
+        Assert.Equal("SUBMITTING", repository.DurableState);
+        Assert.Null(repository.SavedSid);
+        Guid originalMarker = repository.Marker;
+        repository.Calls.Clear();
+        repository.FailSave = false;
+        var replay = await service.SubmitAsync(Attempt(), "worker", default);
+        Assert.False(replay.ShouldSubmit);
+        Assert.Equal("SUBMITTING", replay.SubmissionState);
+        Assert.Equal(originalMarker, replay.SubmissionToken);
+        Assert.Equal(new[] { "marker" }, repository.Calls);
         repository.Calls.Clear();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.SubmitAsync(Attempt(), "worker", new CancellationToken(true)));
         Assert.Empty(repository.Calls);

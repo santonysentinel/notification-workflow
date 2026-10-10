@@ -1,9 +1,11 @@
 using System.Net;
+using System.Data;
 using System.Text;
 using System.Text.Json;
 using Dapper;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging.Abstractions;
 using NotificationWorkflowService.Repository;
 using NotificationWorkflowService.Service.AutoCall;
@@ -238,6 +240,10 @@ public sealed class AutoCallRecoveryTests
     }
 
     [Fact]
+    public void InitialRolloutDefaultsToOneConcurrentRequest()
+        => Assert.Equal(1, new AutoCallWorkerOptions().MaxConcurrency);
+
+    [Fact]
     public async Task WorkerDependencyInjectionSelectsRecoveryConstructor()
     {
         var harness = new Harness();
@@ -371,6 +377,131 @@ public sealed class AutoCallRecoveryTests
             Methods.Add(request.Method);
             Url = request.RequestUri!.AbsoluteUri;
             return Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") });
+        }
+    }
+}
+
+[Collection("AutoCall SQL rollout")]
+public sealed class AutoCallSqlConcurrencyTests
+{
+    internal const string ConnectionVariable = "AUTOCALL_TEST_SQL_CONNECTION";
+
+    public sealed class SqlFactAttribute : FactAttribute
+    {
+        public SqlFactAttribute()
+        {
+            if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(ConnectionVariable)))
+                Skip = "Set AUTOCALL_TEST_SQL_CONNECTION to the owned NotificationWorkflowVoiceTests database.";
+        }
+    }
+
+    [CollectionDefinition("AutoCall SQL rollout", DisableParallelization = true)]
+    public sealed class SqlCollection;
+
+    [SqlFact]
+    public Task ConcurrentReadyClaimsHaveExactlyOneOwner() => VerifyClaimsAsync(false);
+
+    [SqlFact]
+    public Task ConcurrentExpiredClaimsHaveExactlyOneReplacementOwner() => VerifyClaimsAsync(true);
+
+    [SqlFact]
+    public async Task ConcurrentDuplicateEnqueuesReturnOneImmutableJob()
+    {
+        await using var fixture = await SqlFixture.CreateAsync();
+        await using var first = await fixture.OpenAsync();
+        await using var second = await fixture.OpenAsync();
+        Guid key = Guid.NewGuid();
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        async Task<int> EnqueueAsync(SqlConnection connection)
+        {
+            await start.Task;
+            return await connection.QuerySingleAsync<int>(new CommandDefinition("dbo.activealarms_call_InsertJob",
+                new { ActiveAlarmID = 42, OID = fixture.Oid, FlowId = fixture.FlowId, VariablesJSON = "{\"name\":\"Alex & <Co>\"}", EnqueueIdempotencyKey = key },
+                commandType: CommandType.StoredProcedure, commandTimeout: 10));
+        }
+        var requests = new[] { EnqueueAsync(first), EnqueueAsync(second) };
+        start.SetResult();
+        int[] ids = await Task.WhenAll(requests).WaitAsync(TimeSpan.FromSeconds(20));
+        Assert.Equal(ids[0], ids[1]);
+        Assert.Equal(1, await first.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM dbo.AutomatedCallQueue WHERE OID=@Oid", new { fixture.Oid }));
+        Assert.Equal("{\"name\":\"Alex & <Co>\"}", await first.ExecuteScalarAsync<string>("SELECT VariablesJSON FROM dbo.AutomatedCallQueue WHERE SystemID=@Id", new { Id = ids[0] }));
+    }
+
+    private static async Task VerifyClaimsAsync(bool expired)
+    {
+        await using var fixture = await SqlFixture.CreateAsync();
+        await using var first = await fixture.OpenAsync();
+        await using var second = await fixture.OpenAsync();
+        Guid originalToken = Guid.NewGuid();
+        int queueId = await first.QuerySingleAsync<int>(new CommandDefinition("""
+            INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,VariablesJSON,EnqueueIdempotencyKey,Priority,Status,AttemptCount,LeaseToken,LockedBy,LockedUntil)
+            OUTPUT inserted.SystemID
+            VALUES(42,@Oid,@FlowId,N'{}',NEWID(),2147483647,@Status,@Attempts,@OriginalToken,'original-owner',DATEADD(second,-10,SYSUTCDATETIME()));
+            """, new { fixture.Oid, fixture.FlowId, Status = expired ? "PROCESSING" : "READY", Attempts = expired ? 1 : 0, OriginalToken = originalToken }, commandTimeout: 10));
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        async Task<IReadOnlyList<AutoCallJob>> ClaimAsync(SqlConnection connection, string worker)
+        {
+            await start.Task;
+            return (await connection.QueryAsync<AutoCallJob>(AutoCallRepository.ClaimCommand(1, worker, 5, default))).ToList();
+        }
+        var claims = new[] { ClaimAsync(first, "race-first"), ClaimAsync(second, "race-second") };
+        start.SetResult();
+        var results = await Task.WhenAll(claims).WaitAsync(TimeSpan.FromSeconds(20));
+        var winner = Assert.Single(results.SelectMany(result => result));
+        Assert.Equal(queueId, winner.SystemID);
+        Assert.NotEqual(originalToken, winner.LeaseToken);
+        Assert.Equal(1, winner.AttemptCount);
+        string owner = await first.ExecuteScalarAsync<string>("SELECT LockedBy FROM dbo.AutomatedCallQueue WHERE SystemID=@queueId", new { queueId });
+        Assert.Equal(results[0].Count == 1 ? "race-first" : "race-second", owner);
+        Assert.Equal(winner.LeaseToken, await first.ExecuteScalarAsync<Guid>("SELECT LeaseToken FROM dbo.AutomatedCallQueue WHERE SystemID=@queueId", new { queueId }));
+    }
+
+    private sealed class SqlFixture(string connectionString, string oid) : IAsyncDisposable
+    {
+        public string Oid { get; } = oid;
+        public int FlowId { get; private set; }
+
+        public static async Task<SqlFixture> CreateAsync()
+        {
+            string connectionString = Environment.GetEnvironmentVariable(ConnectionVariable)
+                ?? throw new InvalidOperationException("An owned scratch connection is required.");
+            var builder = new SqlConnectionStringBuilder(connectionString);
+            if (builder.InitialCatalog != "NotificationWorkflowVoiceTests" ||
+                !builder.DataSource.Equals(@"(localdb)\NotificationWorkflowVoiceTests", StringComparison.OrdinalIgnoreCase) || !builder.IntegratedSecurity)
+                throw new InvalidOperationException("SQL race tests only permit the owned LocalDB instance/database with integrated security.");
+            var fixture = new SqlFixture(connectionString, "rollout-" + Guid.NewGuid().ToString("N")[..12]);
+            try
+            {
+                await using var connection = await fixture.OpenAsync();
+                Assert.Equal(0, await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM dbo.AutomatedCallQueue WHERE Status IN('READY','PROCESSING')"));
+                await connection.ExecuteAsync("INSERT dbo.Client(OID) VALUES(@Oid)", new { fixture.Oid });
+                fixture.FlowId = await connection.QuerySingleAsync<int>("INSERT dbo.CallFlowTemplates(Name,TemplateJSON,TwiML,CreatedBy) OUTPUT inserted.SystemID VALUES(@Oid,N'{}',N'<CallFlow/>',N'rollout-test')", new { fixture.Oid });
+                return fixture;
+            }
+            catch
+            {
+                await fixture.DisposeAsync();
+                throw;
+            }
+        }
+
+        public async Task<SqlConnection> OpenAsync()
+        {
+            var connection = new SqlConnection(connectionString);
+            try { await connection.OpenAsync().WaitAsync(TimeSpan.FromSeconds(10)); return connection; }
+            catch { await connection.DisposeAsync(); throw; }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await using var connection = await OpenAsync();
+            await connection.ExecuteAsync("""
+                DELETE dbo.AutomatedCallEvents WHERE CallId IN(SELECT SystemID FROM dbo.AutomatedCalls WHERE OID=@Oid);
+                DELETE dbo.AutomatedCalls WHERE OID=@Oid;
+                DELETE dbo.AutomatedCallQueue WHERE OID=@Oid;
+                DELETE dbo.CallFlowTemplates WHERE SystemID=@FlowId;
+                DELETE dbo.Client WHERE OID=@Oid;
+                """, new { Oid, FlowId }, commandTimeout: 10);
         }
     }
 }

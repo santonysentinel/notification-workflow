@@ -281,7 +281,7 @@ The equivalent configuration structure is:
     },
     "Worker": {
       "Enabled": false,
-      "MaxConcurrency": 4,
+      "MaxConcurrency": 1,
       "LeaseMinutes": 5,
       "PollSeconds": 5,
       "PreparationTimeoutSeconds": 60,
@@ -361,4 +361,79 @@ sqlcmd -S "(localdb)\NotificationWorkflowVoiceTests" -E -I -b -d NotificationWor
 Offline tests use injected Redis/SQL boundaries, the real Redis adapter with mocked
 client interfaces, and data readers to verify SQL parameter/result contracts.
 Validate the deployed Redis entry and procedure with a tenant smoke test before
-enabling a future calling worker; live tenant infrastructure is not exercised by tests.
+enabling the calling worker; live tenant infrastructure is not exercised by tests.
+
+## Phase 5: Verification And Rollout
+
+Start with exactly one worker replica and `AutoCall:Worker:MaxConcurrency=1`
+(the application and options default). Each request selects only the first valid
+E.164 recipient; additional returned numbers are not dialed. The existing worker
+capacity check bounds preparation/submission/reconciliation tasks. This limit is
+per worker, not a fleet-wide limit, an active-call limit, or Twilio Calls Per Second.
+Keep Worker and Twilio disabled until the staging prerequisites are satisfied.
+
+### Verification Coverage
+
+| Risk | Repeatable verification |
+| --- | --- |
+| Concurrent READY/expired claims | `AutoCallSqlConcurrencyTests`: two independent SQL connections released together, exactly one owner/token; expired reclaim does not increment submission attempts. |
+| Duplicate enqueueing | Concurrent SQL enqueue test returns one ID and unchanged variables; `automatedcalls_QueueContract.test.sql` also covers replay and conflicting snapshots. |
+| XML escaping | `AutoCallPreparationTests.CreatesIdentityThenPersonalizesAndPersistsBeforeReturning` round-trips `&` and `<` through XML, without injecting markup. |
+| Missing variables | Enqueue validation and `MissingVariablesAndMismatchedGraphNeverSaveAPartialBundle` refuse incomplete snapshots before saving/sending. |
+| Early callbacks | Submission/Start/Next/Status SQL suites cover callback-before-SID-save, inline execution replay and both SID-save timing orders. |
+| Stale leases | Recovery SQL suite and C# heartbeat tests reject expired/replaced ownership and stop new work on lost or uncertain renewal. |
+| Shutdown during submission | Submission tests retain UNKNOWN or accepted SID using an independent persistence deadline after host cancellation. |
+| Acceptance followed by SQL failure | `PersistenceFailureDoesNotTriggerAnotherPostAndPreCancellationDoesNotMark` leaves the durable SUBMITTING marker, then replays without another POST or changing its identity. |
+| One recipient and bounded capacity | Preparation tests select the first of multiple valid contacts and claim only free slots; the rollout default is one concurrent request. |
+
+SQL race tests are opt-in and skipped explicitly when the connection environment
+variable is absent. They only accept the owned LocalDB instance/database below,
+integrated security, migrations through 017, and no existing READY/PROCESSING jobs.
+They create committed, uniquely named fixtures so separate connections can race,
+then remove only those fixtures in `finally`. Do not run alongside other database
+suites or a worker. No test in this suite places a Twilio call.
+
+```powershell
+sqllocaldb start NotificationWorkflowVoiceTests
+$env:AUTOCALL_TEST_SQL_CONNECTION = 'Server=(localdb)\NotificationWorkflowVoiceTests;Database=NotificationWorkflowVoiceTests;Integrated Security=true;TrustServerCertificate=true'
+dotnet test apps/notification-workflow-service/NotificationWorkflowService.Tests/NotificationWorkflowService.Tests.csproj --filter 'FullyQualifiedName~AutoCall' --verbosity minimal
+Remove-Item Env:AUTOCALL_TEST_SQL_CONNECTION
+sqllocaldb stop NotificationWorkflowVoiceTests
+```
+
+Also run the existing SQL suites and signed Start/Next/Status webhook tests before
+deployment. A skipped race test is not evidence that the concurrency gate passed.
+
+### Staging Twilio Gate
+
+1. Use a dedicated staging database/tenant, an approved Twilio account/sender,
+  secret-backed credentials, and one consenting test recipient. Apply migrations
+  through 017, verify tenant routing, and configure the exact public HTTPS callback
+  URLs and signature credentials on the feedback API. Isolate staging alarm inputs
+  so unrelated requests cannot enter the queue during the canary.
+2. Run one worker replica with `MaxConcurrency=1`. Enable Worker/Twilio only for the
+  controlled canary. Enqueue one request with a unique key and complete variables;
+  replay that same key and verify that it returns the same queue ID.
+3. Confirm one provider call/SID to the intended recipient. Check the spoken opening,
+  escaped variable text, Gather/Redirect transitions, signed status callbacks and
+  final queue state. Test recording callbacks only with recording consent enabled.
+  Inspect technical IDs/state without copying credentials or personal payloads into logs.
+4. In isolated staging, verify restart/shutdown after submission does not create a
+  second call. Suppress only the canary's terminal status delivery and verify known-SID
+  GET reconciliation finalizes it. Restore callback delivery afterward. For an unknown
+  SID outcome, verify no automatic redial and eventual operator/dead-letter handling;
+  use fault injection in the automated suite rather than provoking real duplicate calls.
+5. Record the deployment/migration version, queue/call IDs, SID, callback and
+  reconciliation observations, submission count and final outcome in the controlled
+  test record. Do not scale until the live canary passes without unexplained duplicate
+  calls, SID conflicts, invalid signatures or unresolved outcomes.
+6. Increase one setting at a time within the validated 1-100 per-worker bound,
+  taking account of worker count and Twilio account limits. Monitor queue age,
+  submission rate/20429 rejection, recovery failures and DEAD_LETTER rows at each step.
+  Stop new enqueueing and disable the worker if the gate regresses; disabling it
+  does not cancel provider calls already accepted. Keep the callback API available
+  so those calls can finish, and reconcile their existing SIDs before resuming.
+
+Mocked HTTP tests do not certify live Twilio credentials, sender authorization,
+network reachability, spoken TwiML or callback delivery. Live validation remains an
+operator gate; the repository does not automatically scale or mark that gate passed.

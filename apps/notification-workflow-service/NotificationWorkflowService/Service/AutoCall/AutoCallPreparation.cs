@@ -61,7 +61,7 @@ public interface IAutoCallProcessingService
 public sealed class AutoCallWorkerOptions
 {
     public bool Enabled { get; init; }
-    public int MaxConcurrency { get; init; } = 4;
+    public int MaxConcurrency { get; init; } = 1;
     public int LeaseMinutes { get; init; } = 5;
     public int PollSeconds { get; init; } = 5;
     public int PreparationTimeoutSeconds { get; init; } = 60;
