@@ -8,10 +8,15 @@ public sealed class AutoCallWorker(IAutoCallRepository repository, IAutoCallProc
 {
     private readonly List<Task> inFlight = [];
     private readonly IAutoCallSubmissionService? submission;
+    private readonly IAutoCallRecoveryService? recovery;
 
     public AutoCallWorker(IAutoCallRepository repository, IAutoCallProcessingService processing, AutoCallWorkerOptions options,
         ILogger<AutoCallWorker> logger, IAutoCallSubmissionService submission) : this(repository, processing, options, logger)
         => this.submission = submission;
+
+    public AutoCallWorker(IAutoCallRepository repository, IAutoCallProcessingService processing, AutoCallWorkerOptions options,
+        ILogger<AutoCallWorker> logger, IAutoCallSubmissionService submission, IAutoCallRecoveryService recovery)
+        : this(repository, processing, options, logger, submission) => this.recovery = recovery;
 
     internal async Task<int> RunCycleAsync(CancellationToken cancellationToken)
     {
@@ -57,6 +62,11 @@ public sealed class AutoCallWorker(IAutoCallRepository repository, IAutoCallProc
 
     private async Task ProcessAsync(AutoCallJob job, CancellationToken stoppingToken)
     {
+        if (recovery is not null)
+        {
+            await recovery.ProcessAsync(job, stoppingToken).ConfigureAwait(false);
+            return;
+        }
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(options.PreparationTimeoutSeconds));
         AutoCallAttempt attempt;

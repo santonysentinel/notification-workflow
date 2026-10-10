@@ -115,9 +115,9 @@ public sealed class AutoCallSubmissionTests
     }
 
     [Theory]
-    [InlineData(400, true)]
-    [InlineData(401, true)]
-    [InlineData(429, true)]
+    [InlineData(400, false)]
+    [InlineData(401, false)]
+    [InlineData(429, false)]
     [InlineData(408, false)]
     [InlineData(500, false)]
     [InlineData(302, false)]
@@ -127,7 +127,7 @@ public sealed class AutoCallSubmissionTests
         using var handler = new Handler((_, _) => Task.FromResult(Response((HttpStatusCode)status, "private-provider-error")));
         var exception = await Assert.ThrowsAsync<TwilioSubmissionException>(() => new TwilioCallClient(new Factory(handler), Options()).CreateAsync(Request(), default));
         Assert.Equal(rejected, exception.Rejected);
-        Assert.Equal("HTTP_" + status, exception.ErrorCode);
+        Assert.Equal(status is 400 or 401 or 429 ? "ACCEPTANCE_UNKNOWN" : "HTTP_" + status, exception.ErrorCode);
         Assert.DoesNotContain("private-provider-error", exception.ToString());
         Assert.Equal(1, handler.Count);
     }

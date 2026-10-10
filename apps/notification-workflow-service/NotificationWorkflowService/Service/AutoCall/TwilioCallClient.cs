@@ -11,7 +11,7 @@ public sealed class TwilioSubmissionException(bool rejected, string errorCode) :
     public string ErrorCode { get; } = errorCode;
 }
 
-public sealed class TwilioCallClient(IHttpClientFactory factory, AutoCallTwilioOptions options) : ITwilioCallClient
+public sealed class TwilioCallClient(IHttpClientFactory factory, AutoCallTwilioOptions options) : ITwilioCallClient, ITwilioCallLookup
 {
     internal const string ClientName = "AutoCallTwilio";
 
@@ -59,7 +59,17 @@ public sealed class TwilioCallClient(IHttpClientFactory factory, AutoCallTwilioO
             if (response.StatusCode != HttpStatusCode.Created)
             {
                 int status = (int)response.StatusCode;
-                throw new TwilioSubmissionException(status is >= 400 and < 500 && status != 408, "HTTP_" + status);
+                if (status is >= 400 and < 500 && status != 408)
+                {
+                    using var rejection = JsonDocument.Parse(await response.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false));
+                    if (rejection.RootElement.TryGetProperty("code", out var code) && code.TryGetInt32(out int number) && number is >= 20000 and <= 99999 &&
+                        rejection.RootElement.TryGetProperty("status", out var rejectedStatus) && rejectedStatus.TryGetInt32(out int httpStatus) && httpStatus == status &&
+                        (!rejection.RootElement.TryGetProperty("sid", out var rejectedSid) || rejectedSid.ValueKind == JsonValueKind.Null) &&
+                        (status != 429 || number == 20429) && (number != 20429 || status == 429))
+                        throw new TwilioSubmissionException(true, "TWILIO_" + number.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    throw new TwilioSubmissionException(false, "ACCEPTANCE_UNKNOWN");
+                }
+                throw new TwilioSubmissionException(false, "HTTP_" + status);
             }
             using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false));
             string? sid = body.RootElement.GetProperty("sid").GetString();
@@ -69,5 +79,42 @@ public sealed class TwilioCallClient(IHttpClientFactory factory, AutoCallTwilioO
         }
         catch (TwilioSubmissionException) { throw; }
         catch (Exception) { throw new TwilioSubmissionException(false, "ACCEPTANCE_UNKNOWN"); }
+    }
+
+    public async Task<TwilioCallObservation> GetAsync(AutoCallSubmissionRequest request, string sid, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!options.Enabled || request.AccountSid != options.AccountSid || !AutoCallTwilioOptions.ValidSid(request.AccountSid, "AC") ||
+            !AutoCallTwilioOptions.ValidSid(sid, "CA") || !AutoCallTwilioOptions.ValidPhone(request.To) ||
+            !AutoCallTwilioOptions.ValidPhone(request.From) || string.IsNullOrWhiteSpace(options.AuthToken) || options.TimeoutSeconds is < 1 or > 120)
+            throw new InvalidOperationException("Reconciliation requires the original account, SID and recipient.");
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(options.TimeoutSeconds));
+        using var client = factory.CreateClient(ClientName);
+        client.MaxResponseContentBufferSize = 65536;
+        using var message = new HttpRequestMessage(HttpMethod.Get, $"https://api.twilio.com/2010-04-01/Accounts/{request.AccountSid}/Calls/{sid}.json");
+        message.Headers.Authorization = new AuthenticationHeaderValue("Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes(options.AccountSid + ":" + options.AuthToken)));
+        message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        try
+        {
+            using var response = await client.SendAsync(message, HttpCompletionOption.ResponseContentRead, deadline.Token).ConfigureAwait(false);
+            if (response.StatusCode != HttpStatusCode.OK) throw new AutoCallReconciliationException();
+            using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false));
+            var root = body.RootElement;
+            string? status = root.GetProperty("status").GetString();
+            if (root.GetProperty("sid").GetString() != sid || root.GetProperty("account_sid").GetString() != request.AccountSid ||
+                root.GetProperty("to").GetString() != request.To || root.GetProperty("from").GetString() != request.From || !TwilioCallObservation.ValidStatus(status))
+                throw new AutoCallReconciliationException();
+            int? duration = null;
+            if (root.TryGetProperty("duration", out var value) && value.ValueKind != JsonValueKind.Null)
+            {
+                if (!int.TryParse(value.ToString(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int seconds))
+                    throw new AutoCallReconciliationException();
+                duration = seconds;
+            }
+            return new(sid, status!, duration);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception) { throw new AutoCallReconciliationException(); }
     }
 }

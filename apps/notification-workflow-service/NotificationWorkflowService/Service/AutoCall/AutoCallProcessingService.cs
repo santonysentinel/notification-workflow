@@ -17,7 +17,7 @@ public sealed class AutoCallProcessingService(IAutoCallRepository repository, Au
         string recipient = resolved.PhoneNumbers.FirstOrDefault(number => E164.IsMatch(number))
             ?? throw new InvalidOperationException("No E.164 recipient is available for this OID.");
         var attempt = await repository.BeginAttemptAsync(job, workerId, recipient, cancellationToken).ConfigureAwait(false);
-        if (attempt.CallId <= 0 || attempt.QueueId != job.SystemID || attempt.QueueLeaseToken != job.LeaseToken ||
+        if (attempt.CallId <= 0 || attempt.QueueId != job.SystemID || attempt.OwnershipToken != job.LeaseToken ||
             attempt.OID != job.OID || attempt.FlowId != job.FlowId || !E164.IsMatch(attempt.PhoneE164))
             throw new InvalidOperationException("Attempt identity does not match the owned claim.");
         if (attempt.IsPrepared) return attempt;
@@ -30,6 +30,7 @@ public sealed class AutoCallProcessingService(IAutoCallRepository repository, Au
         return new AutoCallAttempt
         {
             CallId = attempt.CallId, QueueId = attempt.QueueId, QueueLeaseToken = attempt.QueueLeaseToken,
+            CurrentLeaseToken = attempt.CurrentLeaseToken,
             OID = attempt.OID, PhoneE164 = attempt.PhoneE164, FlowId = attempt.FlowId,
             TwiML = bundle.TwiML, Parameters = bundle.Parameters,
             TemplateJson = attempt.TemplateJson, TemplateTwiML = attempt.TemplateTwiML, VariablesJson = attempt.VariablesJson

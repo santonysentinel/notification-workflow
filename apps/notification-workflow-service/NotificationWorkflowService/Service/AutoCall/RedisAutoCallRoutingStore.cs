@@ -90,6 +90,10 @@ public static class AutoCallServiceCollectionExtensions
             .RemoveAllLoggers();
         services.AddSingleton<ITwilioCallClient, TwilioCallClient>();
         services.AddSingleton<IAutoCallSubmissionService, AutoCallSubmissionService>();
+        services.AddSingleton<ITwilioCallLookup, TwilioCallClient>();
+        services.AddSingleton<IAutoCallRecoveryRepository, AutoCallRepository>();
+        services.AddSingleton(provider => AutoCallRecoveryOptions.Read(provider.GetRequiredService<IConfiguration>(), provider.GetRequiredService<AutoCallWorkerOptions>()));
+        services.AddSingleton<IAutoCallRecoveryService, AutoCallRecoveryService>();
         return services;
     }
 }

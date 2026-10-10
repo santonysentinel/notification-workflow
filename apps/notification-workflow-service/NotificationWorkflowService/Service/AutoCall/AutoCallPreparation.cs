@@ -12,6 +12,8 @@ public sealed class AutoCallJob
     public Guid EnqueueIdempotencyKey { get; init; }
     public int AttemptCount { get; init; }
     public int MaxAttempts { get; init; }
+    public int SubmissionCount { get; set; }
+    public int RecoveryCount { get; set; }
     public Guid LeaseToken { get; init; }
     public DateTime LockedUntil { get; init; }
 }
@@ -21,6 +23,8 @@ public sealed class AutoCallAttempt
     public int CallId { get; init; }
     public int QueueId { get; init; }
     public Guid QueueLeaseToken { get; init; }
+    public Guid CurrentLeaseToken { get; set; }
+    public Guid OwnershipToken => CurrentLeaseToken == Guid.Empty ? QueueLeaseToken : CurrentLeaseToken;
     public string OID { get; init; } = "";
     public string PhoneE164 { get; init; } = "";
     public int FlowId { get; init; }
@@ -29,6 +33,13 @@ public sealed class AutoCallAttempt
     public string TemplateJson { get; init; } = "";
     public string TemplateTwiML { get; init; } = "";
     public string VariablesJson { get; init; } = "";
+    public string? SubmissionState { get; init; }
+    public string? SubmissionErrorCode { get; init; }
+    public string? ProviderCallId { get; init; }
+    public string? SubmissionRequestJSON { get; init; }
+    public string? CallStatus { get; init; }
+    public int SubmissionCount { get; init; }
+    public int RecoveryCount { get; init; }
     public bool IsPrepared => TwiML is not null && Parameters is not null;
 }
 

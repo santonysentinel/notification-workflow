@@ -69,7 +69,7 @@ InsertJob requires a complete snapshot and returns the original/new `SystemID`.
 Claim results include `SystemID`, `ActiveAlarmID`, `OID`, `FlowId`, `VariablesJSON`,
 `EnqueueIdempotencyKey`, `AttemptCount`, `MaxAttempts`, `LeaseToken`, `LockedUntil`.
 Due READY jobs retain priority ordering, attempt limits and atomic lease ownership.
-Lease-expiry recovery is not implemented. The opt-in claiming worker is described below.
+Migration 017 adds expired-lease recovery, described in Phase 4 below.
 
 Legacy rows with no key or incomplete snapshots are never claimed, leased or
 incremented. They remain visible in their original state, including READY; there
@@ -132,13 +132,13 @@ valid, an unprepared claim becomes FAILED and its unsubmitted attempt becomes
 failed, atomically. Only a fixed error code/message is stored. Already prepared
 or provider-bound attempts are never failed by this path, including ambiguous
 save outcomes. Host cancellation does not dispose the claim as failed.
-Automatic retry, lease renewal/reclamation and restart recovery remain deferred.
+This is the pre-017 failure policy. Phase 4 replaces worker failure disposition
+with bounded recovery and dead-letter handling.
 
 With Twilio submission disabled, this stage does **not** dial, download recordings or submit transcription jobs.
-Prepared jobs remain PROCESSING with a queued, unsubmitted attempt and their
-original lease. Enable preparation alone only for controlled verification;
-expired or shutdown-interrupted claims require explicit
-operator handling rather than guessed ownership. Logs contain technical IDs and
+With 017, prepared jobs are rescheduled without dialing while submission is
+disabled, and eventually dead-lettered at the recovery age limit. Enable
+preparation alone only for controlled verification. Logs contain technical IDs and
 failure types, not phone numbers, variables, XML or connection strings.
 
 ## Phase 3: Twilio Submission
@@ -206,15 +206,64 @@ SID_CONFLICT/UNKNOWN outcome without overwriting callback identity. Submission
 state/timestamps never overwrite CallStatus, lifecycle fields or queue status.
 Twilio acceptance **does not complete the queue job**; terminal callbacks do that.
 
-A validated 201 response becomes ACCEPTED; explicit 4xx rejection (except 408)
-becomes REJECTED. Timeouts, transport failures, 5xx, redirects and malformed/oversized
+A validated 201 response becomes ACCEPTED; 4xx responses require a matching
+Twilio JSON error code/status to become REJECTED. Unvalidated 4xx bodies, 408,
+timeouts, transport failures, 5xx, redirects and malformed/oversized
 responses become UNKNOWN. Shutdown after POST still uses a separate five-second
 SQL persistence deadline to save the SID/outcome. If that save fails, SUBMITTING
-remains durable. None of these outcomes automatically redial or invoke preparation
-failure cleanup. REJECTED/UNKNOWN or callback-missing jobs remain PROCESSING until
-operator reconciliation; lease renewal/reclaim, restart recovery, retry/fallback
-numbers and provider reconciliation are not implemented. Do not simply reset a
-marker or create a fresh attempt after uncertain acceptance: that can place two calls.
+remains durable. Phase 4 handles restart recovery and missing terminal callbacks.
+Do not reset a marker or create a fresh attempt after uncertain acceptance:
+that can place two calls. Alternative-number retries remain unsupported.
+
+## Phase 4: Recovery And Retry Policy
+
+Deploy `database/017.sql` after 016 before updating/enabling the worker. It is
+rerunnable and replaces claim, preparation, submission and status procedures;
+do not redeploy older versions of those procedures afterward. Recovery is part
+of the existing opt-in worker, not a separate process. Both Worker and Twilio
+remain disabled by default in application settings.
+
+`AutoCall:Recovery` defaults are `RenewalSeconds=60`, `MaxSubmissionAttempts=3`,
+`MaxPreparationAttempts=3`, `InitialBackoffSeconds=30`, `MaxBackoffSeconds=900`,
+`ReconcileSeconds=120`, and `MaxRecoveryHours=24`. Renewal must occur sooner than
+half the configured lease duration. Five-minute leases remain the default.
+Backoff uses capped exponential ceilings with jitter between half and all of
+the ceiling, persisted as SQL UTC `AvailableAt`; it does not occupy a worker slot.
+
+Expired PROCESSING claims can be reclaimed atomically. The current queue token
+changes; the attempt's original `QueueLeaseToken`, prepared snapshot and submission
+token never do. `CurrentAttemptId` identifies the authoritative attempt. Renewal,
+preparation, submission authorization, recovery disposition and provider observations
+require the current unexpired token and exact worker identity. Renewal failure or
+uncertain ownership cancels new work. An already in-flight HTTP request cannot be
+undone; its late response still uses the immutable attempt/submission identity and
+an independent persistence deadline. Callback finalization does not require a lease.
+
+Validation failures dead-letter immediately with sanitized codes. Pre-submission
+infrastructure failures retry within the preparation budget. Only a validated
+HTTP 429 / Twilio `20429` rejection permits automatic resubmission; Twilio documents
+that these requests were not processed. Each permitted retry creates a fresh attempt
+using the original recipient, preserving the rejected attempt and opening execution.
+SubmissionCount, not claim/reconciliation count, enforces the provider budget; the
+queue's MaxAttempts is also an upper bound. Other definite rejections dead-letter.
+No alternative-number fallback is attempted.
+
+SUBMITTING/UNKNOWN without a SID wait for late responses/callbacks and never redial.
+SID-bound attempts use an authenticated GET for that exact SID and original account,
+recipient and sender. Missing callbacks, active calls, 404s, provider failures and
+credential/account changes never authorize another POST. Terminal GET observations
+finalize the authoritative queue and emit `CallReconciled`, without inventing callback
+sequence numbers or recording metadata. Terminal busy/no-answer/failed/canceled
+results end the job as FAILED, not as retryable submissions. Unresolved or still-active
+calls dead-letter after the recovery age limit; confirmed terminal observations can
+resolve them. A valid authoritative late callback can also resolve DEAD_LETTER.
+
+Existing modern attempts with recorded original lease identity are linked only when
+earlier submission history does not imply another unresolved/accepted call. Legacy
+or conflicting history requires operator disposition, never guessed identities.
+Inspect DEAD_LETTER rows and stored attempt/SID/request history; do not blindly clear
+tokens or reset jobs to READY. Verify provider state before any operator-approved redial.
+The worker does not log credentials, phone numbers, provider bodies or request snapshots.
 
 ## Configuration
 
@@ -265,8 +314,8 @@ preparation timeout positive and strictly shorter than the lease. FeedbackBaseUr
 must be absolute HTTPS without credentials, query or fragment. WorkerId defaults
 to a generated UUID-based identity; any configured value must be unique per live
 worker, nonblank and at most 100 characters. Environment activation is
-`AutoCall__Worker__Enabled=true`; keep it false until migration 014 is deployed.
-Submission additionally requires migrations 015/016, `AutoCall__Twilio__Enabled=true`
+`AutoCall__Worker__Enabled=true`; keep it false until migrations through 017 are deployed.
+Submission additionally requires migrations 015/016/017, `AutoCall__Twilio__Enabled=true`
 and secret-backed `AutoCall__Twilio__AuthToken`. Do not commit the auth token.
 Twilio timeout must be 1-120 seconds; preparation timeout plus Twilio timeout plus
 five seconds must remain strictly shorter than the lease. Keep submission disabled
