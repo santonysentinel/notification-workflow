@@ -121,6 +121,10 @@ public sealed class TranscriptionWork
     public int JobId { get; init; }
     public int RecordingId { get; init; }
     public Guid LeaseToken { get; init; }
+    public int? CurrentSubmissionId { get; init; }
+    public string? SubmissionStatus { get; init; }
+    public DateTime? SendStartedDateTime { get; init; }
+    public DateTime? CallbackDeadlineDateTime { get; init; }
     public string ConfigurationJSON { get; init; } = "";
     public int CallbackWaitMinutes { get; init; } = 60;
     public string Provider { get; init; } = "Twilio";
@@ -136,6 +140,7 @@ public sealed record TranscriptionCreation(string Outcome, int? SubmissionId, in
 public sealed record TranscriptionResult(string Outcome, string? RequestId = null, TranscriptionFailure? Failure = null, string? ErrorCode = null, bool Retryable = false);
 
 public interface ICallbackTokenClient { Task<CallbackCredential> AcquireAsync(TimeSpan minimumValidity, CancellationToken cancellationToken); }
+public interface ITranscriptionSubmissionService { Task<TranscriptionResult> SubmitAsync(TranscriptionWork work, string workerId, CancellationToken cancellationToken); }
 public interface ITwilioRecordingClient { Task<TranscriptionAudio> OpenAsync(TranscriptionWork work, CancellationToken cancellationToken); }
 public interface IDeepgramClient { Task<string> SubmitAsync(TranscriptionAudio audio, string configurationJSON, TranscriptionSubmissionIdentity identity, CallbackCredential credential, CancellationToken cancellationToken); }
 public interface ITranscriptionSubmissionRepository

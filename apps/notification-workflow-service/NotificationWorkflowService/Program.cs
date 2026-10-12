@@ -78,6 +78,8 @@ namespace ActiveAlarmsParser
                 services.AddNoteServices();
                 services.AddAutoCallContacts();
                 services.AddTranscriptionClients();
+                if (hostContext.Configuration.GetValue<bool>("Transcription:Worker:Enabled"))
+                    services.AddHostedService<TranscriptionWorker>();
                 if (hostContext.Configuration.GetValue<bool>("AutoCall:Worker:Enabled"))
                     services.AddHostedService<AutoCallWorker>();
                 services.AddSingleton<NotificationWorkflowService.Repository.INotificationRepository, NotificationWorkflowService.Repository.NotificationRepository>();

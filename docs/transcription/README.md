@@ -3,16 +3,17 @@
 ## Scope And Flow
 
 Audio stays at Twilio. An accepted recording-completed callback creates a READY
-transcription job. A future worker will claim it and use the submission service to stream audio
-to Deepgram's prerecorded API, supplies a callback URL, and records
+transcription job. The opt-in TranscriptionWorker claims it and uses the submission
+service to stream audio to Deepgram's prerecorded API, supplies a callback URL, and records
 the returned request ID. Deepgram later posts the result to this API. The callback
 does not download audio, contact Deepgram, schedule retries, or perform business actions.
-Enqueueing, provider clients and durable submission coordination are implemented;
-the hosted worker and runtime retry orchestration remain deferred.
+Enqueueing, provider clients, durable submission coordination and worker recovery/retry
+orchestration are implemented. Provider access and the hosted worker default to disabled.
 
 Migration 018 now supplies the database claim/submission/recovery lifecycle described
 under Phase 1 below. Phase 2 implements the C# provider clients and revised JWT
-contract; neither deploying the API nor installing the migration enables a worker.
+contract. Migration 019 adds global outstanding-capacity reservations and the fenced
+lease-token projection for the Phase 3 worker; installing migrations does not enable it.
 
 Schema migration `database/010.sql` defines logical jobs, independent submissions,
 and recording/submission-linked utterance rows with explicit millisecond timing.
@@ -113,7 +114,7 @@ different object-key order or whitespace equivalent. Duplicate callbacks return 
 without changing saved data; conflicting finalized callbacks return 409 without
 overwriting the first result. Provider request IDs must match when already known.
 An early callback can populate the request ID before acknowledgement is recorded.
-Future worker acknowledgement must not regress a finalized submission/job.
+Worker acknowledgement never regresses a finalized submission/job.
 
 The first valid success may win while the job is READY, PROCESSING or WAITING_CALLBACK,
 including from a TIMED_OUT submission. No active worker lease is required for callback
@@ -166,8 +167,8 @@ named pool never falls back to another database.
 
 Deploy migration 011 after 010, configure identity trust, and expose the route through
 TLS/rate-limited ingress. The submission service persists identity, JWT hash/expiry and
-the one-shot send marker before uploading audio. The future worker must claim jobs,
-renew leases and interpret submission outcomes. Until then,
+the one-shot send marker before uploading audio. The worker claims jobs, renews leases
+and interprets submission outcomes only when explicitly enabled. While disabled,
 there are no automatic transcription submissions. Raw responses and transcript text
 contain sensitive recording content; apply database access and retention controls.
 
@@ -189,7 +190,8 @@ Provider reference: https://developers.deepgram.com/docs/callback.
 
 Status: agreed design decisions. Phase 1 implements the database portion and Phase 2
 implements provider configuration/authentication and submission coordination. The hosted
-worker, retry orchestration and retention cleanup are not implemented or enabled.
+worker and retry orchestration are implemented in Phase 3 but remain opt-in. Retention
+cleanup is not implemented.
 
 ### Authentication
 
@@ -297,7 +299,8 @@ the worker, supply the actual feature permission ID, secret-backed login credent
 and signing-algorithm configuration, and verify issuance lifetime/JWKS compatibility
 against the deployed identity server. Do not invent a permission ID from the sample.
 Phase 2 replaces the old scope/custom-claim requirements with permission-ID validation
-and the restricted HTTP policy. Cleanup and hosted-worker orchestration remain future work.
+and the restricted HTTP policy. Phase 3 implements hosted-worker orchestration;
+retention cleanup remains future work.
 
 ## Phase 1 Database Lifecycle
 
@@ -378,7 +381,8 @@ explicitly skip, which is not sufficient for the Phase 1 exit gate.
 
 ## Phase 2 Provider Clients
 
-`Transcription:Enabled` defaults false. Registration adds no hosted transcription worker.
+`Transcription:Enabled` defaults false. Client registration alone adds no hosted worker;
+Phase 3 has a separate `Transcription:Worker:Enabled` opt-in.
 Use secret-backed environment settings or user secrets for `Transcription:DeepgramApiKey`,
 `Transcription:Identity:SignInName` / `Password` and Twilio credentials. Environment
 keys use double underscores, for example `Transcription__Identity__PermissionId`.
@@ -401,7 +405,7 @@ with known mono/stereo metadata are accepted. Bounded RIFF/WAVE PCM16 headers mu
 match recorded channels and duration; no conversion or silent downmix is performed.
 The complete stream is checked for truncation, excess bytes and the maximum byte bound.
 Defaults: 30-second media header timeout, 60-minute duration and 128 MiB audio bound.
-Zero-duration completion belongs to the future worker's local EMPTY path, not these clients.
+Zero-duration completion uses the worker's local EMPTY path, not these clients.
 
 The service validates the immutable snapshot, acquires a fresh callback token and
 validates media headers, then calls `transcription_CreateSubmission` (identity/hash/expiry),
@@ -426,8 +430,8 @@ responses never authorize immediate resubmission.
 | UncertainAcceptance | Interrupted/timeout/cancelled upload, 408/5xx, redirect, malformed/oversized or contradictory acknowledgement; WAIT for callback recovery |
 | Persistence | Never send after failed preparation/marker persistence; failed acceptance save preserves possible acceptance and must not immediately retry |
 
-The coordinator returns these classifications; Phase 3 must apply fenced SQL dispositions,
-callback waiting, budget checks and recovery. SQL timeout recovery already protects
+The coordinator returns these classifications; the Phase 3 worker applies fenced SQL
+dispositions, callback waiting and recovery. SQL budget checks and timeout recovery protect
 marked sends if the process exits. Never use a validation label to bypass the SQL
 definite-rejection requirement for a send that might have reached Deepgram.
 
@@ -451,6 +455,91 @@ insufficient expiry, send ordering and independent acceptance persistence. Local
 was stopped after fixture cleanup. No live identity, Twilio or Deepgram call was made;
 deployment smoke tests must verify the actual permission, signing key/algorithm,
 issuance lifetime, Twilio media format and provider/callback connectivity.
+
+## Phase 3 Worker
+
+Deploy `database/019.sql` after 018 before enabling the worker. It is rerunnable and
+does not modify job/submission identities, callbacks, recording metadata or existing
+worker procedures. Do not redeploy 018 afterward: its older claim/context procedures
+would remove the cap and immutable lease-token projection required by this worker.
+
+Program registers TranscriptionWorker only when `Transcription:Worker:Enabled=true`,
+independently of Normal/Step workflow mode and AutoCallWorker. Both this flag and
+`Transcription:Enabled` default false. Enabling the worker requires provider access
+to be enabled, valid secret-backed credentials and the identity trust configuration.
+Settings are bound for the host lifetime; restart the host to change worker settings.
+
+| Transcription:Worker setting | Default |
+| --- | --- |
+| Enabled | false |
+| UploadConcurrency | 1 |
+| MaxOutstandingSubmissions | 10 |
+| LeaseSeconds | 300 |
+| RenewalSeconds | 60 |
+| DatabaseTimeoutSeconds | 5 |
+| PollSeconds | 5 |
+| RecoveryBatchSize | 100 |
+| WorkerId | generated transcription-prefixed UUID; optional ASCII letters/digits/underscore/hyphen override |
+
+Lease duration must exceed RenewalSeconds plus twice DatabaseTimeoutSeconds. Worker
+database calls have bounded waits and cancellation even if the underlying operation
+does not promptly return. The SQL adapters still apply exact worker/lease fencing.
+Provider upload/identity/media limits remain independent under `Transcription`.
+
+Each poll first reaps finished upload tasks and runs bounded SQL timeout/budget
+recovery, including at startup and while upload slots are full. It then claims only
+available upload slots. A transaction-scoped database application lock serializes
+new outstanding reservations across replicas. The cap counts PROCESSING reservations
+and WAITING_CALLBACK jobs, including preparation and ambiguous sends. Expired
+PROCESSING ownership can be reclaimed without reserving a second slot, preserving
+the Phase 1 claim contract. Claims/reclaims still do not spend submission attempts.
+All replicas sharing the database must use the same outstanding limit. Lowering the
+limit does not cancel previously accepted work; it blocks new reservations until
+capacity is free. This bounds current logical submissions inside their callback/grace
+window, not historical timed-out requests that may still finish or incur duplicate billing.
+
+Before preparation, the worker verifies/renews ownership and reads the fenced work
+context. It renews through token/media preparation, upload and acknowledgement.
+A false renewal, exception, renewal timeout or conservative lease-expiry watchdog
+cancels preparation/upload. Cancellation checks prevent subsequent create/send/POST
+side effects. No stale worker disposition is attempted after ownership becomes
+uncertain. Already-persisted send markers remain for callback recovery; cancellation
+cannot prove a request was rejected. Watchdog timers are asynchronously disposed
+before their cancellation sources, and renewal tasks are joined before upload slots
+are released.
+
+Shutdown cancels polls and active preparation/uploads, starts no further work and
+drains in-flight tasks. A validated provider acceptance still uses the coordinator's
+independent bounded persistence token and immutable submission identity. An earlier
+callback or lost fence causes no worker retry/failure overwrite. Upload slots are
+released after submission/acknowledgement cleanup; they are never held during the
+60-minute callback wait. The separate SQL outstanding reservation remains until
+completion, definitive disposition or timeout recovery.
+
+Recovery preserves pending SUBMITTING/ACCEPTED deadlines, including a final allowed
+attempt; the worker uses WAIT rather than sending again. After an unsent restart,
+SQL schedules retry and a fresh identity/token is created when due, preserving the
+previous audit record. Preparation/transient failures use fenced RETRY; unsent
+validation/permanent definite rejection uses FAIL. Marked sends use WAIT unless a
+validated definite rejection permits RETRY/FAIL. Budgets/backoff remain SQL-owned.
+Zero-duration work completes locally with EMPTY origin and no provider attempt.
+Routine polling/job/disposition failures stay within this worker, log only generic
+stages/job IDs and leave persisted work recoverable; existing workers are unchanged.
+
+```powershell
+dotnet test apps/notification-workflow-service/NotificationWorkflowService.Tests/NotificationWorkflowService.Tests.csproj --filter FullyQualifiedName~TranscriptionWorkerTests
+```
+
+The full verified Phase 3 gate is 136 C# tests with zero skips: 44 worker cases,
+52 provider HTTP cases, 13 owned-SQL integration/concurrency cases and 27 existing
+AutoCall preparation/workflow-orchestration regressions. Worker cases cover shutdown,
+preparation cancellation, lease loss/timeout, lease watchdog, restart, bounded uploads,
+independent outstanding capacity and routine failure containment. Real SQL tests
+cover competing reservations, callback capacity release, marked/unsent restart,
+empty completion, dispositions and acceptance after an early callback. The standalone
+transcription lifecycle and Deepgram callback SQL suites also pass with 019 installed;
+fixture cleanup completed and LocalDB was stopped. No live provider or identity call
+was made. The canary, operational hardening and retention cleanup remain later phases.
 
 Research references:
 - https://developers.deepgram.com/reference/manage/requests/get

@@ -6,8 +6,81 @@ using NotificationWorkflowService.Service.Transcription;
 
 namespace NotificationWorkflowService.Repository;
 
-public sealed class TranscriptionSubmissionRepository(IConfiguration configuration) : ITranscriptionSubmissionRepository
+public sealed class TranscriptionSubmissionRepository(IConfiguration configuration) : ITranscriptionSubmissionRepository, ITranscriptionLifecycleRepository
 {
+    public async Task RecoverAsync(int batchSize, CancellationToken cancellationToken)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@BatchSize", batchSize, DbType.Int32);
+        _ = await ReadManyAsync<RecoveryRow>(Command("dbo.transcription_RecoverTimeouts", parameters, cancellationToken)).ConfigureAwait(false);
+    }
+
+    public Task<IReadOnlyList<TranscriptionClaim>> ClaimAsync(int capacity, string workerId, int leaseSeconds, int maxOutstanding, CancellationToken cancellationToken)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@BatchSize", capacity, DbType.Int32);
+        parameters.Add("@WorkerId", workerId, DbType.AnsiString, size: 100);
+        parameters.Add("@LeaseSeconds", leaseSeconds, DbType.Int32);
+        parameters.Add("@MaxOutstandingSubmissions", maxOutstanding, DbType.Int32);
+        return ReadManyAsync<TranscriptionClaim>(Command("dbo.transcription_ClaimJobs", parameters, cancellationToken));
+    }
+
+    public Task<bool> RenewAsync(TranscriptionClaim claim, string workerId, int leaseSeconds, CancellationToken cancellationToken)
+    {
+        var parameters = Fence(claim, workerId);
+        parameters.Add("@LeaseSeconds", leaseSeconds, DbType.Int32);
+        return ReadAsync<bool>(Command("dbo.transcription_RenewLease", parameters, cancellationToken));
+    }
+
+    public async Task<TranscriptionWork?> GetWorkAsync(TranscriptionClaim claim, string workerId, CancellationToken cancellationToken)
+    {
+        var work = (await ReadManyAsync<TranscriptionWork>(Command("dbo.transcription_GetWorkContext", Fence(claim, workerId), cancellationToken)).ConfigureAwait(false)).SingleOrDefault();
+        return work;
+    }
+
+    public Task<bool> CompleteEmptyAsync(TranscriptionClaim claim, string workerId, CancellationToken cancellationToken)
+        => ReadAsync<bool>(Command("dbo.transcription_CompleteEmpty", Fence(claim, workerId), cancellationToken));
+
+    public Task<bool> DispositionAsync(TranscriptionClaim claim, string workerId, int? submissionId, string disposition, string errorCode, bool definiteRejection, CancellationToken cancellationToken)
+    {
+        var parameters = Fence(claim, workerId);
+        parameters.Add("@SubmissionId", submissionId, DbType.Int32);
+        parameters.Add("@Disposition", disposition, DbType.AnsiString, size: 10);
+        parameters.Add("@ErrorCode", errorCode, DbType.AnsiString, size: 100);
+        parameters.Add("@DefiniteRejection", definiteRejection, DbType.Boolean);
+        return ReadAsync<bool>(Command("dbo.transcription_ScheduleRetry", parameters, cancellationToken));
+    }
+
+    private sealed class RecoveryRow { public int JobId { get; init; } public string Status { get; init; } = ""; }
+
+    private static DynamicParameters Fence(TranscriptionClaim claim, string workerId)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@JobId", claim.SystemID, DbType.Int32);
+        parameters.Add("@WorkerId", workerId, DbType.AnsiString, size: 100);
+        parameters.Add("@LeaseToken", claim.LeaseToken, DbType.Guid);
+        return parameters;
+    }
+
+    private async Task<IReadOnlyList<T>> ReadManyAsync<T>(CommandDefinition command)
+    {
+        command.CancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            await using var connection = Connection();
+            await connection.OpenAsync(command.CancellationToken).ConfigureAwait(false);
+            return (await connection.QueryAsync<T>(command).ConfigureAwait(false)).ToList();
+        }
+        catch (OperationCanceledException) when (command.CancellationToken.IsCancellationRequested) { throw new OperationCanceledException(command.CancellationToken); }
+        catch (Exception) { throw new TranscriptionException(TranscriptionFailure.Persistence, "TRANSCRIPTION_DATABASE_UNAVAILABLE"); }
+    }
+
+    private SqlConnection Connection()
+    {
+        string? connectionString = configuration.GetConnectionString("AutoCallDB");
+        if (string.IsNullOrWhiteSpace(connectionString)) throw new TranscriptionException(TranscriptionFailure.Persistence, "DATABASE_NOT_CONFIGURED");
+        return new SqlConnection(connectionString);
+    }
     public async Task<TranscriptionCreation> CreateAsync(TranscriptionWork work, string workerId, TranscriptionSubmissionIdentity identity,
         CallbackCredential credential, CancellationToken cancellationToken)
     {
@@ -30,12 +103,9 @@ public sealed class TranscriptionSubmissionRepository(IConfiguration configurati
     private async Task<T> ReadAsync<T>(CommandDefinition command)
     {
         command.CancellationToken.ThrowIfCancellationRequested();
-        string? connectionString = configuration.GetConnectionString("AutoCallDB");
-        if (string.IsNullOrWhiteSpace(connectionString))
-            throw new TranscriptionException(TranscriptionFailure.Persistence, "DATABASE_NOT_CONFIGURED");
         try
         {
-            await using var connection = new SqlConnection(connectionString);
+            await using var connection = Connection();
             await connection.OpenAsync(command.CancellationToken).ConfigureAwait(false);
             return await connection.QuerySingleAsync<T>(command).ConfigureAwait(false);
         }

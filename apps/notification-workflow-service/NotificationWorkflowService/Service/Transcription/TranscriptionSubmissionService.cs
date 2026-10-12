@@ -6,7 +6,7 @@ using NotificationWorkflowService.Repository;
 namespace NotificationWorkflowService.Service.Transcription;
 
 public sealed class TranscriptionSubmissionService(ITranscriptionSubmissionRepository repository, ICallbackTokenClient tokens,
-    ITwilioRecordingClient media, IDeepgramClient provider, TranscriptionOptions options)
+    ITwilioRecordingClient media, IDeepgramClient provider, TranscriptionOptions options) : ITranscriptionSubmissionService
 {
     public async Task<TranscriptionResult> SubmitAsync(TranscriptionWork work, string workerId, CancellationToken cancellationToken)
     {
@@ -24,13 +24,16 @@ public sealed class TranscriptionSubmissionService(ITranscriptionSubmissionRepos
             _ = DeepgramClient.SnapshotOptions(work.ConfigurationJSON, options.RequireModelImprovementOptOut);
             var credential = await tokens.AcquireAsync(TimeSpan.FromMinutes(work.CallbackWaitMinutes) + TimeSpan.FromSeconds(options.SubmissionTimeoutSeconds + 5), deadline.Token).ConfigureAwait(false);
             await using var audio = await media.OpenAsync(work, deadline.Token).ConfigureAwait(false);
+            deadline.Token.ThrowIfCancellationRequested();
             var creation = await repository.CreateAsync(work, workerId, identity, credential, deadline.Token).ConfigureAwait(false);
             if (creation.Outcome is not ("created" or "duplicate")) return new(creation.Outcome);
             if (creation.SubmissionId is null or <= 0) return new("persistence-failed", Failure: TranscriptionFailure.Persistence, ErrorCode: "INVALID_SUBMISSION_IDENTITY");
+            deadline.Token.ThrowIfCancellationRequested();
             if (!await repository.BeginAsync(work, workerId, identity, deadline.Token).ConfigureAwait(false)) return new("not-sent");
             string requestId;
             try
             {
+                deadline.Token.ThrowIfCancellationRequested();
                 requestId = await provider.SubmitAsync(audio, work.ConfigurationJSON, identity, credential, deadline.Token).ConfigureAwait(false);
             }
             catch (TranscriptionException failure)
@@ -80,8 +83,12 @@ public static class TranscriptionRegistration
         services.AddSingleton<ICallbackTokenClient, CallbackTokenClient>();
         services.AddSingleton<ITwilioRecordingClient, TwilioRecordingClient>();
         services.AddSingleton<IDeepgramClient, DeepgramClient>();
-        services.AddSingleton<ITranscriptionSubmissionRepository, TranscriptionSubmissionRepository>();
+        services.AddSingleton<TranscriptionSubmissionRepository>();
+        services.AddSingleton<ITranscriptionSubmissionRepository>(provider => provider.GetRequiredService<TranscriptionSubmissionRepository>());
+        services.AddSingleton<ITranscriptionLifecycleRepository>(provider => provider.GetRequiredService<TranscriptionSubmissionRepository>());
         services.AddTransient<TranscriptionSubmissionService>();
+        services.AddTransient<ITranscriptionSubmissionService>(provider => provider.GetRequiredService<TranscriptionSubmissionService>());
+        services.AddSingleton(provider => TranscriptionWorkerOptions.Read(provider.GetRequiredService<IConfiguration>()));
         return services;
     }
 }
