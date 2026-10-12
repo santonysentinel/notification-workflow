@@ -87,14 +87,14 @@ BEGIN TRY
         SET @CaseSubmission=SCOPE_IDENTITY(); DELETE @Outcome;
         DECLARE @Success bit=CASE WHEN @Case IN (2,3) THEN 0 ELSE 1 END;
         INSERT @Outcome EXEC dbo.transcription_CompleteCallback @CaseCorrelation,@RecordingId,@Token,@CaseRequest,@Hash,@Success,N'{}',N'[]','REMOTE_CONTENT_ERROR',N'Deepgram reported a transcription error';
-        IF @Case=2 AND NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallTranscriptionJobs WHERE SystemID=@CaseJob AND Status='FAILED')
-            THROW 51000, 'Current attempt failure must fail active job.', 1;
+        IF @Case=2 AND NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallTranscriptionJobs WHERE SystemID=@CaseJob AND Status='READY' AND AvailableAt>SYSUTCDATETIME())
+            THROW 51000, 'Retryable current attempt failure must schedule active job.', 1;
         IF @Case=3 AND NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallTranscriptionJobs WHERE SystemID=@CaseJob AND Status='WAITING_CALLBACK')
             THROW 51000, 'Stale failure cannot fail newer attempt.', 1;
-        IF @Case IN (4,5) AND NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallTranscriptionJobs WHERE SystemID=@CaseJob AND Status=@CaseStatus AND CompletedSubmissionId IS NULL)
-            THROW 51000, 'Terminal job must not be reopened.', 1;
-        IF @Case IN (6,7) AND NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallTranscriptionJobs WHERE SystemID=@CaseJob AND Status='COMPLETED' AND CompletedSubmissionId=@CaseSubmission)
-            THROW 51000, 'Silence and late success must complete an active job.', 1;
+        IF @Case=4 AND NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallTranscriptionJobs WHERE SystemID=@CaseJob AND Status=@CaseStatus AND CompletedSubmissionId IS NULL)
+            THROW 51000, 'Permanent failure must not be reopened.', 1;
+        IF @Case IN (5,6,7) AND NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallTranscriptionJobs WHERE SystemID=@CaseJob AND Status='COMPLETED' AND CompletedSubmissionId=@CaseSubmission)
+            THROW 51000, 'Silence and late success must complete active or dead-letter jobs.', 1;
         SET @Case+=1;
     END;
     IF @OriginalCall<>(SELECT * FROM dbo.AutomatedCalls WHERE SystemID=@CallId FOR JSON PATH)
