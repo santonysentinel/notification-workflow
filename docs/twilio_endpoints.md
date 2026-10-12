@@ -8,10 +8,16 @@ The feedback API implements `POST /webhooks/twilio/voice/start`,
 It also implements trusted internal `GET`/`HEAD /api/v1/auto-call/recordings/:recordingId/content`.
 `/start` issues the opening step; `/next` resolves a transition and issues its
 destination; `/status` records call progress and closes the owning queue job.
-The recording callback persists recording metadata and an audit event only.
+The recording callback persists recording metadata and an audit event; with
+migration 012, an applied completed recording also atomically enqueues a READY
+transcription job with frozen provider options. It does not download or submit audio.
 Business actions, worker-service feedback, retry scheduling, alternative-number
-selection, human/machine branching, local recording storage, and transcription
-remain deferred. Audio remains at Twilio and can be streamed through the internal content endpoint.
+selection and human/machine branching are outside these webhook handlers. Audio
+remains at Twilio and can be streamed through the internal content endpoint.
+The separately opt-in transcription worker, authenticated Deepgram callback,
+recovery, metrics and operator procedures are implemented through Phase 4 and
+documented in the [transcription guide](transcription/README.md). Worker retry
+orchestration is independent of the webhook request; no local audio storage is added.
 
 The [flow contract](twilio_flow_contract.md) documents the storage change and the
 complete version-1 TemplateJSON with its matching personalized XML bundle.
@@ -385,6 +391,15 @@ by `(Provider, AccountSid, RecordingSid)` and cannot move between attempts.
 Each recording has its own row, so one attempt can have multiple recordings.
 Metadata includes status, media URL, duration, channels, optional start/source/track,
 and UTC receipt/update timestamps. No audio bytes or transcription are stored.
+
+With migration 012, an applied `completed` update inserts a READY job in
+`AutomatedCallTranscriptionJobs` in this same transaction. The API supplies complete
+immutable version-2 provider options. Zero-duration recordings are included; call
+completion alone does not enqueue transcription. Metadata/event/enqueue failures
+roll back together so Twilio can retry. Duplicate completed callbacks do not reset
+attempts or create another configuration version. See the
+[transcription job contract](transcription/README.md#job-creation) for recovery,
+snapshot and explicit retranscription rules.
 
 The event key is `recording:status:<RecordingSid>:<RecordingStatus>`, scoped to the
 attempt. An exact status retry returns 204 without changing the first event or

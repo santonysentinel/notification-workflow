@@ -1,5 +1,9 @@
 # Auto-Call Worker
 
+Recording transcription is a separate opt-in workflow. Its deployment, producer/API
+configuration, callbacks, recovery, metrics and audited retranscription procedures
+are documented in the [transcription guide](../transcription/README.md).
+
 ## Phase 0: Tenant Routing And Phone Lookup
 
 The C# service registers `AutoCallContactService` for use by the future auto-call
@@ -289,8 +293,8 @@ The equivalent configuration structure is:
     },
     "Twilio": {
       "Enabled": false,
-      "AccountSid": "AC0123456789abcdef0123456789abcdef",
-      "FromNumber": "+15551234567",
+      "AccountSid": "<account_sid>",
+      "FromNumber": "<account_no>",
       "TimeoutSeconds": 30,
       "RecordCalls": false
     }

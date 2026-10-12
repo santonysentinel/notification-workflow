@@ -1,12 +1,37 @@
 # Asynchronous Deepgram Transcription
 
+## Guide Navigation
+
+- [Deployment And Readiness](#deployment-and-readiness)
+- [Configuration Reference](#configuration-reference)
+- [Job Creation](#job-creation)
+- [Callback Contract](#callback-contract)
+- [Payload And Persistence](#payload-and-persistence)
+- [Data And Implementation](#data-and-implementation)
+- [Database Lifecycle](#phase-1-database-lifecycle)
+- [Provider Clients](#phase-2-provider-clients)
+- [Worker And Capacity](#phase-3-worker)
+- [Durable State Outcomes](#durable-state-outcomes)
+- [Metrics](#metrics)
+- [Operator Recovery](#operator-recovery)
+- [Reviewed Retranscription](#reviewed-retranscription)
+- [Verification](#verification)
+
+This is the current transcription reference through Phase 4. Phase sections
+retain implementation history; the deployment checklist and state tables describe
+the current contract. Related guides: [documentation index](../README.md),
+[auto-call worker](../autocall/README.md), [Twilio endpoints](../twilio_endpoints.md)
+and [flow contract](../twilio_flow_contract.md).
+
 ## Scope And Flow
 
 Audio stays at Twilio. An accepted recording-completed callback creates a READY
 transcription job. The opt-in TranscriptionWorker claims it and uses the submission
 service to stream audio to Deepgram's prerecorded API, supplies a callback URL, and records
 the returned request ID. Deepgram later posts the result to this API. The callback
-does not download audio, contact Deepgram, schedule retries, or perform business actions.
+does not download audio, contact Deepgram or perform business actions. Callback SQL
+atomically schedules an allowlisted transient failure for retry; the worker performs
+the later upload, never the callback request itself.
 Enqueueing, provider clients, durable submission coordination and worker recovery/retry
 orchestration are implemented. Provider access and the hosted worker default to disabled.
 
@@ -14,12 +39,128 @@ Migration 018 now supplies the database claim/submission/recovery lifecycle desc
 under Phase 1 below. Phase 2 implements the C# provider clients and revised JWT
 contract. Migration 019 adds global outstanding-capacity reservations and the fenced
 lease-token projection for the Phase 3 worker; installing migrations does not enable it.
+Migration 020 adds read-only metrics and audited operator retranscription. Phases
+0-4 are implemented and locally verified. Live canary/production connectivity and
+retention cleanup are not implemented or certified by those local tests.
 
 Schema migration `database/010.sql` defines logical jobs, independent submissions,
 and recording/submission-linked utterance rows with explicit millisecond timing.
 Deploy `database/011.sql` for callback persistence and a nullable callback payload hash.
 Deploy `database/012.sql` after 011 to replace the recording-status procedure with
 atomic transcription enqueueing. Do not redeploy the older procedure from 008 afterward.
+
+```mermaid
+flowchart LR
+	Twilio[Twilio recording] -->|Signed completion callback| API[Feedback API]
+	API -->|Atomic recording and READY job| SQL[(AutoCallDB)]
+	Worker[Opt-in transcription worker] -->|Claim and renew lease| SQL
+	Worker -->|Scoped JWT| Identity[Identity server]
+	Worker -->|Authenticated WAV stream| Twilio
+	Worker -->|Identity and send marker before POST| SQL
+	Worker -->|WAV and authenticated callback URL| Deepgram[Deepgram]
+	Deepgram -->|Request ID acceptance| Worker
+	Worker -->|Independent acceptance persistence| SQL
+	Deepgram -->|Result, possibly before acceptance save| API
+	API -->|Verify JWT and hash, commit winner or retry| SQL
+	Worker -->|Bounded timeout recovery and metrics| SQL
+```
+
+## Deployment And Readiness
+
+1. Apply the repository's ordered AutoCallDB migrations through
+	[020](../../database/020.sql). Transcription prerequisites are
+	[010](../../database/010.sql), [011](../../database/011.sql) and
+	[012](../../database/012.sql), followed by shared auto-call migrations 013-017
+	and transcription [018](../../database/018.sql),
+	[019](../../database/019.sql) and 020. Fresh databases also need schema 001 and
+	all preceding applicable migrations. Do not overwrite newer procedures with
+	older migrations: 008 removes atomic enqueueing, 011 removes the newer callback
+	policy, and 018 removes 019's claim cap/context projection when applied afterward.
+2. Configure the feedback API's central database pool and callback JWT trust.
+	Deploy its public HTTPS callback route before any producer upload. Verify the
+	external URL/path prefix and that ingress preserves Authorization, permits an
+	8 MiB JSON body, and does not log credentials or redirect the callback.
+3. Configure the producer's central `ConnectionStrings:AutoCallDB`, identity,
+	Twilio media credentials and Deepgram secret. API pool and producer must point
+	to the same database. Transcription does not use tenant routing/Redis.
+4. Keep `Transcription:Enabled=false` and `Transcription:Worker:Enabled=false`
+	during deployment. Recording callbacks can still enqueue READY jobs while
+	transcription is disabled; monitor that backlog rather than assuming no work
+	exists. Existing Normal/Step/AutoCall workers have independent enablement.
+5. Before an approved canary, verify real permission ID, issuer/audience, asymmetric
+	algorithm/JWKS rotation, issued token lifetime, account/media access, WAV channels,
+	regional provider endpoint and public callback delivery. Obtain recording consent,
+	data-processing/region approval and duplicate-billing approval.
+6. Only after approval enable both transcription flags, retaining upload concurrency
+	one and a uniform outstanding limit across replicas. Observe persistence before
+	POST, request identity, callback completion/winner, backlog and metric freshness.
+	Mock/SQL success is not evidence of live provider interoperability.
+
+To stop new submissions, disable both flags in deployment configuration and restart
+the host (settings are read for its lifetime). Shutdown drains/cancels worker tasks;
+persisted send markers still mean possible provider acceptance. Leave the callback
+API and identity verification available for outstanding and late results. Disabling
+the worker does not cancel provider processing, clear jobs or stop enqueueing.
+
+## Configuration Reference
+
+Producer settings live in the C# `Transcription` section. Use secret injection,
+not committed values. Environment overrides replace each colon with double
+underscores, for example `Transcription__Identity__PermissionId`. The callback API
+uses separate settings in [Responses And Operations](#responses-and-operations);
+producer trust does not configure the API. Match issuer, audience, permission and
+algorithm on both sides.
+
+| Producer key | Default / requirement |
+| --- | --- |
+| Transcription:Enabled | false; provider coordination, not worker registration |
+| Transcription:CallbackUrl | https://feedback.example.com/webhooks/deepgram/transcriptions/completed; replace with the real public route including any ingress prefix |
+| Transcription:DeepgramBaseUrl | https://api.deepgram.com; approved HTTPS regional origin with root path; no query, fragment or credentials |
+| Transcription:DeepgramApiKey | Empty; required secret when enabled |
+| Transcription:SubmissionTimeoutSeconds | 600; whole submission deadline; allowed 1-3600 |
+| Transcription:MediaHeaderTimeoutSeconds | 30; allowed 1-120 |
+| Transcription:MaxDurationSeconds | 3600; allowed 1-86400 |
+| Transcription:MaxAudioBytes | 134217728 (128 MiB); allowed 44-1073741824 |
+| Transcription:RequireModelImprovementOptOut | true; require snapshot mip_opt_out=true; changing policy needs data-processing approval |
+| Transcription:Identity:BaseUrl | http://172.27.112.243:8085; HTTP requires explicit opt-in; prefer approved HTTPS |
+| Transcription:Identity:JwtJwksPath | /.well-known/jwks.json; configured identity origin only |
+| Transcription:Identity:AllowInsecureIdentityHttp | false; restricted issuance/JWKS exception, never provider/callback HTTP |
+| Transcription:Identity:SignInName | Empty; required secret-backed identity login |
+| Transcription:Identity:Password | Empty; required secret |
+| Transcription:Identity:PermissionId | Empty; required exact positive-decimal ID; no sample/default permission |
+| Transcription:Identity:Issuer | sentineldna.com |
+| Transcription:Identity:Audience | sentineldna.com |
+| Transcription:Identity:Algorithm | RS256; only RS256 or ES256 |
+| Transcription:Identity:TokenValidityMinutes | 120 target; allowed 1-1440; cannot extend server-issued expiry |
+| Transcription:Identity:TimeoutSeconds | 30; allowed 1-120 |
+| Transcription:Twilio:AccountSid | Empty; required AC-prefixed SID matching the recording account |
+| Transcription:Twilio:ApiKeySid | Empty; optional SK-prefixed API key SID, preferred with ApiKeySecret |
+| Transcription:Twilio:ApiKeySecret | Empty; required secret when ApiKeySid is supplied |
+| Transcription:Twilio:AuthToken | Empty; required fallback secret only when no ApiKeySid is supplied |
+
+Configured callback URLs must be credential-free HTTPS without query/fragment,
+on port 443, 8080 or 8443. The client supplies Basic correlation/JWT credentials
+only for the provider request; never commit that resulting URL. Deepgram API keys
+and identity passwords are not required by the callback API. Twilio media credentials
+are separate from the API's Twilio webhook-signature configuration.
+
+Model/version/language/detection and output flags belong to immutable job
+`ConfigurationJSON`, not mutable producer options. Supply model, version, utterances,
+multichannel, diarize, punctuate, smart_format, mip_opt_out and fixed language or
+enabled language detection; unsupported, missing or duplicate properties fail closed.
+`utterances` and `multichannel` must be true; output flags are JSON booleans, not
+strings. Model/version/language tokens are 1-100 ASCII letters, digits, hyphens,
+underscores or dots. The client requires mip_opt_out=true under the default policy;
+operator retranscription SQL always requires it, even if the client policy is changed.
+`latest` selects the provider's current model version at submission time, not a
+pinned binary revision. Retain returned metadata for reproducibility.
+
+Worker defaults/lease constraints are in [Phase 3 Worker](#phase-3-worker).
+Metrics use `Transcription:Metrics:Enabled=true`, `RefreshSeconds=60` and
+`MaxSampleAgeSeconds=120`; refresh is 1-3600 seconds, maximum age must be at least
+refresh and no more than 7200 seconds. SQL per-job policy, not worker settings,
+owns MaxAttempts, MaxJobAgeMinutes, CallbackWaitMinutes, RetryBaseSeconds and
+RetryMaxSeconds. Existing job policy/snapshots are not rewritten on host restart.
 
 ## Job Creation
 
@@ -65,8 +206,8 @@ https://<correlationId>:<JWT>@feedback.example.com/webhooks/deepgram/transcripti
 ```
 
 The credential identifies the submission, so no query parameter is necessary.
-Query parameters are rejected. Deepgram supports callback ports 80, 443, 8080,
-and 8443; use HTTPS at ingress.
+Query parameters are rejected. This producer permits HTTPS callback ports 443,
+8080 and 8443 only, even though Deepgram also documents HTTP port 80.
 Do not log or persist credential-bearing URLs. Deepgram's optional `dg-token` is
 supplementary only; it does not replace JWT validation.
 
@@ -85,7 +226,9 @@ requires the exact stored hash, and derives recording identity from the trusted 
 row, not token or payload claims. Tokens remain reusable for authenticated retries
 until expiry. Expiry must cover upload, provider queue/processing, callback retries,
 and a margin. SQL callback deadlines and JWT expiry are independent; expired tokens
-are rejected even for otherwise eligible late results. Reconciliation is future work.
+are rejected even for otherwise eligible late results. Recovery and reviewed
+retranscription are implemented in [Phase 4](#phase-4-failure-recovery-and-operations);
+there is no provider transcript-retrieval reconciliation or JWT-expiry bypass.
 
 ## Payload And Persistence
 
@@ -126,6 +269,46 @@ active attempt for retry with backoff when allowlisted as transient (or DEAD_LET
 when budgets expire); other failures become permanently FAILED. Failures from older
 attempts do not terminate newer work. Call, queue, and recording statuses are unchanged.
 
+## Data And Implementation
+
+| Table | Purpose / invariants |
+| --- | --- |
+| AutomatedCallRecordings | Trusted call/account/recording SID, completion, duration and channel metadata; audio remains at Twilio |
+| AutomatedCallTranscriptionJobs | Logical recording/provider/configuration-version identity, immutable options, finite policy, lease/current attempt and terminal winner |
+| AutomatedCallTranscriptionSubmissions | Independent numbered attempts with immutable correlation/submission-token, JWT hash/expiry, send marker, request ID/deadline and callback audit |
+| AutomatedCallTranscripts | Winning provider utterances linked to recording/submission, explicit AudioChannel and integer millisecond offsets; legacy rows are not reinterpreted |
+| AutomatedCallTranscriptionOperations | Reviewed retranscription source/new job IDs, operator/reason/time; preserve references in retention planning |
+
+Consumers select the intended recording/provider/configuration version and join
+its `CompletedSubmissionId` to transcript `SubmissionId`. Never select all transcript
+rows for a recording without version/winner selection. `CompletionOrigin=EMPTY`
+has no provider winner or transcript rows; provider silence can also have zero rows
+but uses `CompletionOrigin=PROVIDER`. Zero rows alone do not distinguish successful
+silence, local empty completion, pending work and failure. No transcript read API,
+business-action integration or automatic retention deletion is introduced here.
+
+| Owning code | Responsibility |
+| --- | --- |
+| [Worker](../../apps/notification-workflow-service/NotificationWorkflowService/TranscriptionWorker.cs) | Poll, recovery, capacity, leases, cancellation/shutdown and dispositions |
+| [Provider contracts/settings](../../apps/notification-workflow-service/NotificationWorkflowService/Service/Transcription/TranscriptionContracts.cs) | Options, safe result types and provider/repository interfaces |
+| [Worker settings](../../apps/notification-workflow-service/NotificationWorkflowService/Service/Transcription/TranscriptionWorkerOptions.cs) | Independent limits and lifecycle repository contract |
+| [Submission coordinator](../../apps/notification-workflow-service/NotificationWorkflowService/Service/Transcription/TranscriptionSubmissionService.cs) | Token/media preparation, persisted identity/marker, single POST and independent acceptance save |
+| [Identity client](../../apps/notification-workflow-service/NotificationWorkflowService/Service/Transcription/CallbackTokenClient.cs) | Scoped JWT acquisition, pinned JWKS and signature/permission/lifetime validation |
+| [Twilio media client](../../apps/notification-workflow-service/NotificationWorkflowService/Service/Transcription/TwilioRecordingClient.cs) | Direct authenticated bounded WAV stream and explicit channel/header validation |
+| [Deepgram client](../../apps/notification-workflow-service/NotificationWorkflowService/Service/Transcription/DeepgramClient.cs) | Snapshot-driven POST and definite versus uncertain acceptance classification |
+| [SQL adapter](../../apps/notification-workflow-service/NotificationWorkflowService/Repository/TranscriptionSubmissionRepository.cs) | Typed async central procedures and immutable/fenced identity |
+| [Metrics](../../apps/notification-workflow-service/NotificationWorkflowService/Service/Transcription/TranscriptionMetrics.cs) | Tag-free bounded refresh and stale-sample suppression |
+| [Callback route](../../apps/notification-feedback-api/app/routes/deepgramTranscriptions.js) | Public route, trust settings and bounded JSON parser |
+| [Callback authentication](../../apps/notification-feedback-api/app/middleware/requireDeepgramCallbackJwt.js) | Basic parsing and asymmetric JWT verification |
+| [Callback controller](../../apps/notification-feedback-api/app/controllers/deepgramCallbackController.js) | Stored hash/recording binding and durable response handling |
+| [Normalization](../../apps/notification-feedback-api/app/utils/deepgramTranscription.js) | Payload validation, canonical hash, channels and millisecond utterances |
+| [Shared API repository](../../pkg/repository/automatedCallRepository.js) | Atomic recording enqueue snapshot and typed callback SQL calls |
+
+The producer streams directly from Twilio's authenticated recording resource. It
+does not call `GET /api/v1/auto-call/recordings/:recordingId/content`, write local
+audio files, transcode or silently downmix. That internal endpoint is a separate
+recording-access workflow documented in [Twilio endpoints](../twilio_endpoints.md).
+
 ## Responses And Operations
 
 | HTTP | Meaning |
@@ -165,8 +348,9 @@ and `allowInsecureIdentityHttp`. Environment settings take precedence.
 Database selection falls back to `twilio.database` and then AutoCallDB; a missing
 named pool never falls back to another database.
 
-Deploy migration 011 after 010, configure identity trust, and expose the route through
-TLS/rate-limited ingress. The submission service persists identity, JWT hash/expiry and
+Follow the [deployment checklist](#deployment-and-readiness) through migration 020,
+configure identity trust and expose the route through TLS/rate-limited ingress.
+The submission service persists identity, JWT hash/expiry and
 the one-shot send marker before uploading audio. The worker claims jobs, renews leases
 and interprets submission outcomes only when explicitly enabled. While disabled,
 there are no automatic transcription submissions. Raw responses and transcript text
@@ -174,10 +358,35 @@ contain sensitive recording content; apply database access and retention control
 
 ## Verification
 
+Run from the repository root after installing the workspace's existing pnpm and
+.NET dependencies. Fast HTTP/worker tests make no live provider requests:
+
 ```powershell
+dotnet test apps/notification-workflow-service/NotificationWorkflowService.Tests/NotificationWorkflowService.Tests.csproj --filter 'FullyQualifiedName~TranscriptionHttpTests|FullyQualifiedName~TranscriptionWorkerTests'
 pnpm --dir apps/notification-feedback-api exec mocha --timeout 10000 test/deepgramCallback.test.js
-sqlcmd -S "(localdb)\NotificationWorkflowVoiceTests" -E -I -b -d NotificationWorkflowVoiceTests -i database/test/deepgramCallback.test.sql
 ```
+
+For durable recovery/races, use the existing owned, isolated LocalDB database with
+all migrations through 020 and an idle transcription queue. Never point tests at
+a deployment database. Without the exact opt-in connection, SQL C# tests skip;
+skips do not satisfy the recovery gate. Do not run transactional SQL suites and
+committed concurrency fixtures in parallel.
+
+```powershell
+SqlLocalDB start NotificationWorkflowVoiceTests
+$env:AUTOCALL_TEST_SQL_CONNECTION = 'Server=(localdb)\NotificationWorkflowVoiceTests;Database=NotificationWorkflowVoiceTests;Integrated Security=true;TrustServerCertificate=true'
+dotnet test apps/notification-workflow-service/NotificationWorkflowService.Tests/NotificationWorkflowService.Tests.csproj --filter 'FullyQualifiedName~Transcription|FullyQualifiedName~AutoCall|FullyQualifiedName~WorkflowOrchestrationCompatibility'
+pnpm --dir apps/notification-feedback-api exec mocha --timeout 10000 test/autoCall.test.js test/deepgramCallback.test.js test/twilioRecordingStatus.test.js test/twilioRecordings.test.js
+sqlcmd -S "(localdb)\NotificationWorkflowVoiceTests" -E -I -b -d NotificationWorkflowVoiceTests -i database/test/deepgramCallback.test.sql
+sqlcmd -S "(localdb)\NotificationWorkflowVoiceTests" -E -I -b -d NotificationWorkflowVoiceTests -i database/test/transcriptionLifecycle.test.sql
+sqlcmd -S "(localdb)\NotificationWorkflowVoiceTests" -E -I -b -d NotificationWorkflowVoiceTests -i database/test/transcriptionSchema.test.sql
+SqlLocalDB stop NotificationWorkflowVoiceTests
+```
+
+All other guarded scripts under [database/test](../../database/test/)
+form the shared auto-call SQL regression gate; run them sequentially too when
+changing shared procedures/schema. Confirm fixtures are removed before stopping
+LocalDB. Do not enable workers, relax database guards or call providers to run tests.
 
 Tests use generated RSA/ECDSA keys and mocked HTTP repository calls. The SQL suite
 runs only in owned scratch databases, exercises winner/retry/terminal policies and
@@ -238,10 +447,9 @@ cleanup is not implemented.
 
 - Every completed recording is eligible and gets its own job, including multiple
 	recordings for one call. This is a new application; no historical backfill is planned.
-- Zero-duration recordings complete with an empty result. Proposed implementation:
-	local completion with zero transcript rows and an explicit completion origin,
-	without fabricating a Deepgram request ID or response. The existing winner-required
-	completion constraint needs a deliberate migration for this path.
+- Zero-duration recordings complete locally with zero transcript rows and explicit
+	EMPTY completion origin, without fabricating a Deepgram request ID or response.
+	Migration 018 supplies the constraint/procedure and Phase 3 implements the worker path.
 - Five maximum submission attempts; claims and renewals do not consume attempts.
 	Stop creating submissions after a configurable total job age of 24 hours.
 	Preparation retries also need bounded backoff and the total-age guard.
@@ -251,7 +459,7 @@ cleanup is not implemented.
 - Missing callbacks and ambiguous acceptance may trigger a fresh submission;
 	duplicate provider processing and billing are accepted. Keep each submission's
 	identity and credential hash so an authenticated older result can still win.
-- Retry rate limits, provider outages and transient media failures. Proposed
+- Retry rate limits, provider outages and transient media failures. Implemented
 	exponential backoff with jitter: 30-second initial ceiling, capped at 15 minutes.
 	Treat permanently missing media, invalid audio and invalid configuration separately;
 	do not blindly retry them. Surface authentication/configuration failures to operators.
@@ -267,9 +475,10 @@ cleanup is not implemented.
 
 ### Tunable Initial Defaults
 
-These are proposed initial operational defaults, not changes to existing snapshots
-or active application settings. Freeze effective provider options per job/configuration
-version; later tuning must not mutate queued jobs or submissions.
+These defaults are implemented in application settings, new version-2 snapshots or
+SQL per-job policy unless explicitly marked proposed. Retention periods remain
+proposals, not cleanup automation. Freeze effective options per job/configuration
+version; tuning must not mutate queued jobs or submissions.
 
 | Setting | Initial value |
 | --- | --- |
@@ -317,6 +526,8 @@ and the highest numbered submission is selected as current. Noncontiguous or
 over-budget history aborts migration instead of inventing or deleting attempts.
 Reruns preserve existing identities, row versions, counters and deadlines.
 
+Current procedure contracts, including the later capacity and operations updates:
+
 | Procedure | Contract |
 | --- | --- |
 | transcription_ClaimJobs | Atomically claim due READY or expired PROCESSING work; return a fresh lease without incrementing attempts |
@@ -328,7 +539,10 @@ Reruns preserve existing identities, row versions, counters and deadlines.
 | transcription_ScheduleRetry | Fenced RETRY, FAIL or WAIT; jittered bounded backoff; definite rejection required to retry a marked send immediately |
 | transcription_RecoverTimeouts | Bounded lock-protected sweep of waiting/expired/aged work; preserve pending deadlines, then schedule retry or dead-letter |
 | transcription_CompleteEmpty | Fenced local zero-duration completion without a fabricated provider ID, submission or transcript row |
+| transcription_GetCallbackContext | Resolve immutable correlation to trusted recording, credential hash, request ID, options and channels for API authentication/normalization |
 | transcription_CompleteCallback | Preserve auth/hash/request deduplication and atomic transcript writes; schedule transient failures and permit late DEAD_LETTER success |
+| transcription_GetQueueMetrics | Read-only SQL-UTC aggregate; no credentials, audio or transcript content |
+| transcription_RequestRetranscription | Operator-only reviewed new highest configuration version with audit, idempotency and active/late-credential guards; no old state reset |
 
 Creation returns created, duplicate, stale-lease, pending-submission or exhausted.
 The worker must use the durable send procedure even after creation succeeds;
@@ -481,8 +695,12 @@ Settings are bound for the host lifetime; restart the host to change worker sett
 | RecoveryBatchSize | 100 |
 | WorkerId | generated transcription-prefixed UUID; optional ASCII letters/digits/underscore/hyphen override |
 
-Lease duration must exceed RenewalSeconds plus twice DatabaseTimeoutSeconds. Worker
-database calls have bounded waits and cancellation even if the underlying operation
+Lease duration must exceed RenewalSeconds plus twice DatabaseTimeoutSeconds.
+UploadConcurrency is 1-100; MaxOutstandingSubmissions must be at least concurrency
+and no more than 10000. LeaseSeconds is 10-3600, RenewalSeconds at least one,
+DatabaseTimeoutSeconds 1-30, PollSeconds 1-300 and RecoveryBatchSize 1-1000.
+WorkerId is nonblank, at most 100 ASCII letters/digits/underscores/hyphens.
+Worker database calls have bounded waits and cancellation even if the underlying operation
 does not promptly return. The SQL adapters still apply exact worker/lease fencing.
 Provider upload/identity/media limits remain independent under `Transcription`.
 
@@ -539,7 +757,8 @@ cover competing reservations, callback capacity release, marked/unsent restart,
 empty completion, dispositions and acceptance after an early callback. The standalone
 transcription lifecycle and Deepgram callback SQL suites also pass with 019 installed;
 fixture cleanup completed and LocalDB was stopped. No live provider or identity call
-was made. The canary, operational hardening and retention cleanup remain later phases.
+was made. Phase 4 supplies operational hardening below; the canary and retention
+cleanup remain separate future gates.
 
 ## Phase 4 Failure Recovery And Operations
 
@@ -586,6 +805,9 @@ a read-only SQL aggregate at most once per `Transcription:Metrics:RefreshSeconds
 I/O when the transcription worker is disabled. Collection is bounded by the
 worker database timeout and failure never blocks recovery/claiming. No metric has
 job, recording, correlation, credential, URI, transcript or other per-item labels.
+Each worker replica observes the same database-global queue/state gauges. Deduplicate
+by database or use a maximum across replicas; do not sum them. Collection failures
+and sample freshness are process-local and should be monitored per replica.
 
 | Instrument | Definition |
 | --- | --- |
