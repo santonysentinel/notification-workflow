@@ -541,6 +541,175 @@ transcription lifecycle and Deepgram callback SQL suites also pass with 019 inst
 fixture cleanup completed and LocalDB was stopped. No live provider or identity call
 was made. The canary, operational hardening and retention cleanup remain later phases.
 
+## Phase 4 Failure Recovery And Operations
+
+Deploy rerunnable `database/020.sql` after 019. It adds aggregate metrics and an
+operator audit table/procedure only; it does not reset existing jobs or alter
+auto-call/callback procedures. Keep both transcription enable flags false until
+the separately approved live canary. Grant the worker EXECUTE on
+`transcription_GetQueueMetrics`; grant `transcription_RequestRetranscription` only
+to the designated operator role, not the callback API. Existing application roles
+need no direct write access to `AutomatedCallTranscriptionOperations`.
+
+### Durable State Outcomes
+
+| Job state | Recovery or terminal outcome |
+| --- | --- |
+| READY | Claim when AvailableAt is due; bounded retry backoff may defer it. Age/attempt exhaustion goes to DEAD_LETTER, even if preparation never created a submission. |
+| PROCESSING | Exact-fence renewal protects active work. After lease expiry, recover unsent work to READY with backoff or DEAD_LETTER; potentially sent work retains its callback deadline. A callback may complete it before acceptance persistence. |
+| WAITING_CALLBACK | Success completes; classified current-attempt failure retries or fails. Missing callback waits to its durable deadline, then READY/backoff or DEAD_LETTER. A final attempt still receives its grace window unless the maximum job age is exhausted. |
+| COMPLETED | Immutable winner, or local EMPTY result. Duplicate callback is harmless; another attempt cannot replace the winner. Explicit retranscription creates a separate version, never reopens this row. |
+| FAILED | Permanent outcome; authenticated later results can be audited but cannot reopen it. Review cause before requesting a new version. |
+| DEAD_LETTER | Budget/age terminal for automatic processing; no further claims. First authenticated late success may still complete it. Otherwise retain history and request a reviewed new version only after late-result credentials expire. |
+
+| Submission state | Recovery or terminal outcome |
+| --- | --- |
+| PREPARED | No send marker means no authorized POST. Lease loss/restart replaces it with a fresh identity/token after backoff; the old record becomes TIMED_OUT and remains audit history. Creation, not claiming, spends one attempt. |
+| SUBMITTING | Marker means potentially accepted, including failed SQL acknowledgement persistence. Never blindly resend it. Preserve callback grace; acknowledgement may record identity later without changing a callback winner. Definite rejection alone permits immediate fenced RETRY/FAIL. |
+| ACCEPTED | Await callback without holding upload capacity. Duplicate acceptance does not extend deadlines. Recovery after the deadline makes it TIMED_OUT. |
+| TIMED_OUT | Keep identity/hash/request history. A valid late callback can record a result; only an eligible job without a winner can apply a success. Expired JWT is always rejected at the API, before SQL access. |
+| COMPLETED | Recorded provider success, including non-winning older results. Duplicate payload returns duplicate; changed request/payload returns conflict without mutation. Only the winning submission has normalized transcript rows. |
+| FAILED | Recorded provider failure or definite rejection. Only a current-attempt callback failure can affect an active job; an older failure never regresses a replacement or winner. |
+
+Attempts default to five and maximum job age to 24 hours. The exponential ceiling
+is `min(RetryMaxSeconds, RetryBaseSeconds * 2^(AttemptCount-1))`, with exponent zero
+before any submission. Equal jitter chooses an integer delay between half the
+ceiling (rounded down) and the ceiling; defaults are 30 seconds base / 900 cap.
+Transient preparation without a persisted submission does not consume attempts,
+but still terminates at the age limit. Lease claims/renewals never replenish budgets.
+
+### Metrics
+
+The .NET meter is `NotificationWorkflowService.Transcription`. Worker polls refresh
+a read-only SQL aggregate at most once per `Transcription:Metrics:RefreshSeconds`
+(default 60), even while uploads are full. `Enabled` defaults true but performs no
+I/O when the transcription worker is disabled. Collection is bounded by the
+worker database timeout and failure never blocks recovery/claiming. No metric has
+job, recording, correlation, credential, URI, transcript or other per-item labels.
+
+| Instrument | Definition |
+| --- | --- |
+| transcription.queue.ready | READY jobs, including those deferred by backoff |
+| transcription.queue.oldest_age | Seconds since creation of the oldest READY job; zero for an empty queue. Advances between snapshots, not just since its latest retry. |
+| transcription.submissions.outstanding | PROCESSING + WAITING_CALLBACK logical reservations, including preparation/uncertain acceptance. Not a count of every historical provider request still running. |
+| transcription.callbacks.timed_out_unresolved | Overdue sent SUBMITTING/ACCEPTED/TIMED_OUT records without a callback payload hash, including historical attempts. This is a backlog gauge, not a timeout event rate; it can remain nonzero after credential expiry or another attempt wins. |
+| transcription.jobs.dead_letter | Current DEAD_LETTER jobs; valid late completion can reduce it |
+| transcription.metrics.sample_age | Seconds since the last successful aggregate read |
+| transcription.metrics.collection_failures | Counter of failed non-cancellation collection attempts; no raw exception data. Cancellation/timeouts remain visible through stale/missing samples. |
+
+SQL aggregates are approximate under concurrent updates. Before the first sample,
+gauges emit no measurement. On collection failure retain the sample, not fabricated
+zeros; after `MaxSampleAgeSeconds` (default 120), withhold all queue/state gauges
+while sample_age continues to expose staleness. Alert on missing/stale samples as
+well as increasing queue age, saturation, timeout backlog and any dead letters.
+Use the deployment's existing MeterListener/OpenTelemetry collector, subscribing
+to this meter; no exporter or public metrics endpoint is enabled by this change.
+For an interactive local diagnostic with dotnet-counters already installed:
+
+```powershell
+dotnet-counters monitor --process-id <worker-pid> --counters NotificationWorkflowService.Transcription
+```
+
+When the worker is intentionally disabled, operator inspection remains available
+without starting it: `EXEC dbo.transcription_GetQueueMetrics;`. Suppression of stale
+samples is not proof that the queue is empty.
+
+### Operator Recovery
+
+1. Diagnose only safe job/submission metadata: Status, AttemptCount/MaxAttempts,
+	CreatedDateTime, AvailableAt, LockedUntil, CurrentSubmissionId, LastErrorCode,
+	SendStartedDateTime, CallbackDeadlineDateTime, CallbackTokenExpiresAt and
+	ProviderRequestId. Do not export callback URLs/JWTs, raw responses or transcripts
+	into logs or tickets. Compare with SQL UTC (`SYSUTCDATETIME()`), not laptop time.
+2. Restore SQL/connectivity/identity/provider configuration first. For authentication
+	errors check actual issuer/audience/permission, signing key and issuance lifetime.
+	Replacing login credentials cannot extend already-issued callback JWTs. Never
+	disable expiry/signature/permission/hash verification to rescue a late callback.
+3. A failed acceptance save retains SUBMITTING: leave identity intact and await
+	callback/deadline. If an acknowledgement was independently validated and retained
+	securely, `transcription_SaveAcceptance` can replay its exact JobId, CorrelationId,
+	SubmissionToken and request UUID; never fabricate them from guesses. A request
+	usage lookup is not transcript retrieval and is not permission to resend.
+4. Resume the configured worker to sweep and claim persisted eligible work. If
+	running a manual sweep instead, keep worker enablement unchanged and execute
+	`EXEC dbo.transcription_RecoverTimeouts @BatchSize=100;` in approved controlled
+	batches. It touches only due/expired/budget-exhausted work and preserves active
+	leases/pending grace. Review returned outcomes between batches; do not tight-loop
+	against an outage. It does not create submissions or call a provider.
+5. Review FAILED/DEAD_LETTER causes and billing/data-access approval. DEAD_LETTER
+	cannot auto-retry; valid late success is allowed but FAILED is not reopened.
+	If no usable result arrives, use explicit retranscription below, or retain the
+	terminal record as the final outcome when media/configuration cannot be recovered.
+
+Never UPDATE Status/AttemptCount/AvailableAt/lease fields to force processing,
+delete/reuse a correlation or credential hash, clear a winner, or edit an immutable
+snapshot. Do not replay the provider POST using an old identity. SQL persistence
+failures after a marker do not prove the provider rejected audio.
+
+### Reviewed Retranscription
+
+`transcription_RequestRetranscription` takes a terminal source job, a new highest
+configuration version, complete approved JSON options, operator identity and a
+reason. It creates one fresh READY job for the same completed recording and copies
+the source's finite retry/age policy. It preserves all old attempts, transcripts,
+winners, hashes and timestamps. This explicitly authorizes a new billing/age budget;
+it is not an automatic dead-letter retry or historical bulk backfill.
+
+The procedure serializes operator requests per recording, rejects another active
+version, and blocks while any DEAD_LETTER send for the recording has no callback
+and an unexpired credential. It never shortens that expiry. A repeated request with
+the same source/version and byte-identical JSON returns the original JobId even
+after it starts; conflicting options/version ownership fail. The first request's
+operator/reason/time is retained in `AutomatedCallTranscriptionOperations`.
+Store the returned JobId in the approved recovery ticket. Audit references must be
+included in future retention planning, not deleted to make cleanup pass.
+
+Use the pinned model/region/channel/language policy and verify audio still exists
+with authorized access. Do not mutate an incomplete legacy snapshot: supply complete
+options on the new version. Consumers must select the intended configuration
+version and its CompletedSubmissionId; do not combine transcripts from old/new jobs.
+Operator identity/reason must not contain credentials, URLs or transcript content.
+
+```sql
+DECLARE @SourceJobId int = 0; -- Replace with the reviewed terminal job ID.
+DECLARE @NewVersion int = 0; -- Replace with an approved new highest version.
+EXEC dbo.transcription_RequestRetranscription
+	 @SourceJobId=@SourceJobId, @ConfigurationVersion=@NewVersion,
+	 @ConfigurationJSON=N'{"model":"nova-3","version":"latest","language":"en","utterances":true,"multichannel":true,"diarize":false,"punctuate":false,"smart_format":false,"mip_opt_out":true}',
+	 @RequestedBy=N'approved-operator', @Reason=N'Approved recovery ticket reference';
+```
+
+The zero placeholders intentionally fail closed. Retry the identical procedure
+request if its SQL acknowledgement is lost; do not choose another version to bypass
+idempotency. The worker remains opt-in and must be enabled only through the approved
+deployment/canary procedure, not by this operator command.
+
+### Failure-Recovery Verification
+
+Real-SQL coordinator tests inject acknowledgement-save failure after provider
+acceptance and deliver a callback before save. Both preserve one attempt/POST and
+the completed winner. Missing-callback tests repeatedly expire fixture deadlines,
+verify bounded backoff and exhaustion, and prove an older valid late winner plus
+duplicate cannot regress history. Operator tests cover audited idempotency,
+active/conflicting snapshot rejection and late-credential blocking. Worker metric
+tests cover throttled reads, no labels, stale sample withholding and failure
+containment. Public-router tests reject an expired stored-identity JWT without any
+repository read/write. Existing SQL callback tests cover conflicting payload/request,
+older failure/success, permanent failure and transactional rollback.
+
+These are isolated failure-injection tests, not live provider acceptance evidence.
+No worker is enabled and no identity, Twilio or Deepgram request is made by this
+phase. Canary and retention cleanup remain separate gates.
+
+Verified Phase 4 gate: 265 C# transcription/auto-call/worker regression tests with
+zero skips, 117 Node auto-call/callback/recording tests, and all 12 guarded SQL
+regression suites passed. Migration 020 rerun, scoped callback lint, editor
+diagnostics and whitespace checks passed. Committed transcription and operator-audit
+fixtures were removed; the owned LocalDB instance was stopped afterward. Editor
+test discovery still reports unmatched source locations; the complete C# gate was
+verified through filtered VSTest instead. Both worker/provider enable flags remain
+false and upload concurrency remains one.
+
 Research references:
 - https://developers.deepgram.com/reference/manage/requests/get
 - https://developers.deepgram.com/trust-security/your-data

@@ -86,6 +86,9 @@ public static class TranscriptionRegistration
         services.AddSingleton<TranscriptionSubmissionRepository>();
         services.AddSingleton<ITranscriptionSubmissionRepository>(provider => provider.GetRequiredService<TranscriptionSubmissionRepository>());
         services.AddSingleton<ITranscriptionLifecycleRepository>(provider => provider.GetRequiredService<TranscriptionSubmissionRepository>());
+        services.AddSingleton<ITranscriptionMetricsRepository>(provider => provider.GetRequiredService<TranscriptionSubmissionRepository>());
+        services.AddSingleton(provider => TranscriptionMetricsOptions.Read(provider.GetRequiredService<IConfiguration>()));
+        services.AddSingleton<TranscriptionMetrics>();
         services.AddTransient<TranscriptionSubmissionService>();
         services.AddTransient<ITranscriptionSubmissionService>(provider => provider.GetRequiredService<TranscriptionSubmissionService>());
         services.AddSingleton(provider => TranscriptionWorkerOptions.Read(provider.GetRequiredService<IConfiguration>()));

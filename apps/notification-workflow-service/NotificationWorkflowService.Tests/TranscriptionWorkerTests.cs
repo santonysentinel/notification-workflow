@@ -1,4 +1,5 @@
 using ActiveAlarmsParser;
+using System.Diagnostics.Metrics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -23,6 +24,84 @@ public sealed class TranscriptionWorkerTests
     };
     private static TranscriptionWork Work(TranscriptionClaim claim, string? status = null, int duration = 1) => new()
     { JobId = claim.SystemID, LeaseToken = claim.LeaseToken, RecordingId = claim.SystemID, ConfigurationJSON = Snapshot, DurationSeconds = duration, CurrentSubmissionId = status is null ? null : 1, SubmissionStatus = status };
+
+    [Fact]
+    public async Task QueueMetricsAreBoundedTagFreeAndWithholdStaleSamples()
+    {
+        var clock = new FakeTimeProvider();
+        var repository = new QueueMetricsRepository();
+        using var metrics = new TranscriptionMetrics(repository, new() { RefreshSeconds = 10, MaxSampleAgeSeconds = 20 }, clock);
+        using var listener = new MeterListener();
+        var values = new Dictionary<string, long>();
+        listener.InstrumentPublished = (instrument, current) =>
+        {
+            if (instrument.Meter.Name == TranscriptionMetrics.MeterName) current.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, value, tags, _) =>
+        { Assert.Equal(0, tags.Length); values[instrument.Name] = value; });
+        listener.Start();
+        listener.RecordObservableInstruments();
+        Assert.Empty(values);
+        await metrics.RefreshAsync(default);
+        listener.RecordObservableInstruments();
+        Assert.Equal(30, values["transcription.queue.oldest_age"]);
+        Assert.Equal(2, values["transcription.submissions.outstanding"]);
+        Assert.Equal(3, values["transcription.callbacks.timed_out_unresolved"]);
+        Assert.Equal(4, values["transcription.jobs.dead_letter"]);
+        clock.Advance(TimeSpan.FromSeconds(9));
+        await metrics.RefreshAsync(default);
+        Assert.Equal(1, repository.Calls);
+        listener.RecordObservableInstruments();
+        Assert.Equal(39, values["transcription.queue.oldest_age"]);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        repository.Fail = true;
+        await Assert.ThrowsAsync<TranscriptionException>(() => metrics.RefreshAsync(default));
+        Assert.Equal(1, values["transcription.metrics.collection_failures"]);
+        clock.Advance(TimeSpan.FromSeconds(11));
+        values.Clear();
+        listener.RecordObservableInstruments();
+        Assert.Single(values);
+        Assert.Equal(21, values["transcription.metrics.sample_age"]);
+        repository.Fail = false;
+        repository.Empty = true;
+        await metrics.RefreshAsync(default);
+        listener.RecordObservableInstruments();
+        Assert.Equal(0, values["transcription.queue.oldest_age"]);
+    }
+
+    [Fact]
+    public async Task MetricsFailureDoesNotBlockRecoveryOrClaimAndDisabledMetricsDoNoIo()
+    {
+        var source = new QueueMetricsRepository { Fail = true };
+        using var disabled = new TranscriptionMetrics(source, new() { Enabled = false });
+        await disabled.RefreshAsync(default);
+        Assert.Equal(0, source.Calls);
+        using var metrics = new TranscriptionMetrics(source, new());
+        var repository = new Lifecycle(1);
+        var submission = new Submission(repository);
+        var logs = new Logs();
+        using var worker = new TranscriptionWorker(repository, submission, Options(), Providers(), logs, metrics: metrics);
+        await worker.RunCycleAsync(default);
+        await Finish(worker.DrainAsync());
+        Assert.Equal(1, source.Calls);
+        Assert.Equal(1, repository.Recoveries);
+        Assert.Equal(1, submission.Calls);
+        Assert.DoesNotContain("TOKEN", string.Join('\n', logs.Messages));
+    }
+
+    private sealed class QueueMetricsRepository : ITranscriptionMetricsRepository
+    {
+        public int Calls { get; private set; }
+        public bool Fail { get; set; }
+        public bool Empty { get; set; }
+        public Task<TranscriptionQueueSnapshot> GetMetricsAsync(CancellationToken cancellationToken)
+        {
+            Calls++;
+            if (Fail) throw new InvalidOperationException("TOKEN credential transcript");
+            return Task.FromResult(Empty ? new TranscriptionQueueSnapshot() : new TranscriptionQueueSnapshot
+            { ReadyJobs = 1, QueueAgeSeconds = 30, OutstandingSubmissions = 2, CallbackTimeoutSubmissions = 3, DeadLetterJobs = 4 });
+        }
+    }
 
     [Fact]
     public async Task DisabledWorkerHasNoDatabaseOrProviderActivity()

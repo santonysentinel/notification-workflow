@@ -5,7 +5,8 @@ using NotificationWorkflowService.Service.Transcription;
 namespace NotificationWorkflowService;
 
 public sealed class TranscriptionWorker(ITranscriptionLifecycleRepository repository, ITranscriptionSubmissionService submissions,
-    TranscriptionWorkerOptions options, TranscriptionOptions providers, ILogger<TranscriptionWorker> logger, TimeProvider? timeProvider = null) : BackgroundService
+    TranscriptionWorkerOptions options, TranscriptionOptions providers, ILogger<TranscriptionWorker> logger, TimeProvider? timeProvider = null,
+    TranscriptionMetrics? metrics = null) : BackgroundService
 {
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
     private readonly List<Task> inFlight = [];
@@ -20,6 +21,12 @@ public sealed class TranscriptionWorker(ITranscriptionLifecycleRepository reposi
             if (!inFlight[index].IsCompleted) continue;
             await inFlight[index].ConfigureAwait(false);
             inFlight.RemoveAt(index);
+        }
+        if (metrics is not null)
+        {
+            try { await DatabaseAsync(metrics.RefreshAsync, cancellationToken).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception) { logger.LogWarning("Transcription queue metrics could not be collected."); }
         }
         await DatabaseAsync(token => repository.RecoverAsync(options.RecoveryBatchSize, token), cancellationToken).ConfigureAwait(false);
         int capacity = options.UploadConcurrency - inFlight.Count;

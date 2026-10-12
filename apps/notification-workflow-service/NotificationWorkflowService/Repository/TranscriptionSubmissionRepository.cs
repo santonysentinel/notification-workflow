@@ -6,8 +6,11 @@ using NotificationWorkflowService.Service.Transcription;
 
 namespace NotificationWorkflowService.Repository;
 
-public sealed class TranscriptionSubmissionRepository(IConfiguration configuration) : ITranscriptionSubmissionRepository, ITranscriptionLifecycleRepository
+public sealed class TranscriptionSubmissionRepository(IConfiguration configuration) : ITranscriptionSubmissionRepository, ITranscriptionLifecycleRepository, ITranscriptionMetricsRepository
 {
+    public Task<TranscriptionQueueSnapshot> GetMetricsAsync(CancellationToken cancellationToken)
+        => ReadAsync<TranscriptionQueueSnapshot>(Command("dbo.transcription_GetQueueMetrics", new DynamicParameters(), cancellationToken));
+
     public async Task RecoverAsync(int batchSize, CancellationToken cancellationToken)
     {
         var parameters = new DynamicParameters();

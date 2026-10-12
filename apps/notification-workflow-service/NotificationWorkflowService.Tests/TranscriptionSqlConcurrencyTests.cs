@@ -12,6 +12,174 @@ namespace NotificationWorkflowService.Tests;
 [Collection("AutoCall SQL rollout")]
 public sealed class TranscriptionSqlConcurrencyTests
 {
+    private const string RecoverySnapshot = "{\"model\":\"nova-3\",\"version\":\"latest\",\"language\":\"en\",\"utterances\":true,\"multichannel\":true,\"diarize\":false,\"punctuate\":false,\"smart_format\":false,\"mip_opt_out\":true}";
+
+    [AutoCallSqlConcurrencyTests.SqlFact]
+    public async Task MissingCallbacksExhaustFiniteBudgetWithBoundedBackoffAndLateWinner()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await using var connection = await fixture.OpenAsync();
+        await connection.ExecuteAsync("UPDATE dbo.AutomatedCallTranscriptionJobs SET MaxAttempts=3,RetryBaseSeconds=10,RetryMaxSeconds=12 WHERE SystemID=@JobId", new { fixture.JobId });
+        Guid firstCorrelation = Guid.Empty;
+        string firstRequest = "";
+        for (int attempt = 1; attempt <= 3; attempt++)
+        {
+            var claim = await fixture.ClaimAsync(connection);
+            Guid correlation = Guid.NewGuid(), identity = Guid.NewGuid();
+            var creation = await fixture.CreateSubmissionAsync(connection, claim, correlation, identity, DateTime.UtcNow.AddHours(2));
+            Assert.True(await fixture.BeginAsync(connection, claim, correlation, identity));
+            string request = Guid.NewGuid().ToString("D");
+            await fixture.AcceptAsync(connection, correlation, identity, request);
+            if (attempt == 1) { firstCorrelation = correlation; firstRequest = request; }
+            await fixture.ExpireCallbackAsync(connection, creation.SubmissionId);
+            await Adapter().RecoverAsync(1, default);
+            Assert.Equal(attempt == 3 ? "DEAD_LETTER" : "READY", await fixture.StatusAsync(connection));
+            Assert.Equal(attempt, await connection.ExecuteScalarAsync<int>("SELECT AttemptCount FROM dbo.AutomatedCallTranscriptionJobs WHERE SystemID=@JobId", new { fixture.JobId }));
+            Assert.Equal("TIMED_OUT", await connection.ExecuteScalarAsync<string>("SELECT Status FROM dbo.AutomatedCallTranscriptionSubmissions WHERE SystemID=@SubmissionId", creation));
+            if (attempt < 3)
+            {
+                double delay = await connection.ExecuteScalarAsync<double>("SELECT DATEDIFF_BIG(millisecond,UpdatedDateTime,AvailableAt)/1000.0 FROM dbo.AutomatedCallTranscriptionJobs WHERE SystemID=@JobId", new { fixture.JobId });
+                Assert.InRange(delay, attempt == 1 ? 5 : 6, attempt == 1 ? 10 : 12);
+                await connection.ExecuteAsync("UPDATE dbo.AutomatedCallTranscriptionJobs SET AvailableAt=DATEADD(second,-1,SYSUTCDATETIME()) WHERE SystemID=@JobId", new { fixture.JobId });
+            }
+        }
+        var snapshot = await Adapter().GetMetricsAsync(default);
+        Assert.Equal(0, snapshot.OutstandingSubmissions);
+        Assert.Equal(3, snapshot.CallbackTimeoutSubmissions);
+        Assert.True(snapshot.DeadLetterJobs >= 1);
+        Assert.Empty(await Adapter().ClaimAsync(1, "transcription-race", 300, 10, default));
+        byte[] terminalVersion = await connection.ExecuteScalarAsync<byte[]>("SELECT Version FROM dbo.AutomatedCallTranscriptionJobs WHERE SystemID=@JobId", new { fixture.JobId });
+        await Adapter().RecoverAsync(1, default);
+        Assert.Equal(terminalVersion, await connection.ExecuteScalarAsync<byte[]>("SELECT Version FROM dbo.AutomatedCallTranscriptionJobs WHERE SystemID=@JobId", new { fixture.JobId }));
+        await fixture.CompleteAsync(connection, firstCorrelation, firstRequest);
+        Assert.Equal("COMPLETED", await fixture.StatusAsync(connection));
+        byte[] winnerVersion = await connection.ExecuteScalarAsync<byte[]>("SELECT Version FROM dbo.AutomatedCallTranscriptionJobs WHERE SystemID=@JobId", new { fixture.JobId });
+        await fixture.CompleteAsync(connection, firstCorrelation, firstRequest);
+        Assert.Equal(winnerVersion, await connection.ExecuteScalarAsync<byte[]>("SELECT Version FROM dbo.AutomatedCallTranscriptionJobs WHERE SystemID=@JobId", new { fixture.JobId }));
+    }
+
+    [AutoCallSqlConcurrencyTests.SqlFact]
+    public async Task RetranscriptionIsAuditedIdempotentAndDoesNotResetTerminalHistory()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await using var connection = await fixture.OpenAsync();
+        var arguments = new { SourceJobId = fixture.JobId, ConfigurationVersion = 2, ConfigurationJSON = RecoverySnapshot, RequestedBy = "test-operator", Reason = "Reviewed corrected snapshot" };
+        await Assert.ThrowsAsync<SqlException>(async () => await connection.QuerySingleAsync<RetranscriptionResult>(Command("dbo.transcription_RequestRetranscription", arguments)));
+        await connection.ExecuteAsync("UPDATE dbo.AutomatedCallTranscriptionJobs SET Status='FAILED' WHERE SystemID=@JobId", new { fixture.JobId });
+        byte[] version = await connection.ExecuteScalarAsync<byte[]>("SELECT Version FROM dbo.AutomatedCallTranscriptionJobs WHERE SystemID=@JobId", new { fixture.JobId });
+        var created = await connection.QuerySingleAsync<RetranscriptionResult>(Command("dbo.transcription_RequestRetranscription", arguments));
+        Assert.Equal("created", created.Outcome);
+        var duplicate = await connection.QuerySingleAsync<RetranscriptionResult>(Command("dbo.transcription_RequestRetranscription", arguments));
+        Assert.Equal("duplicate", duplicate.Outcome);
+        Assert.Equal(created.JobId, duplicate.JobId);
+        Assert.Equal(version, await connection.ExecuteScalarAsync<byte[]>("SELECT Version FROM dbo.AutomatedCallTranscriptionJobs WHERE SystemID=@JobId", new { fixture.JobId }));
+        Assert.Equal(1, await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM dbo.AutomatedCallTranscriptionOperations WHERE NewJobId=@JobId AND RequestedBy='test-operator' AND Reason='Reviewed corrected snapshot'", created));
+        Assert.Equal("READY", await connection.ExecuteScalarAsync<string>("SELECT Status FROM dbo.AutomatedCallTranscriptionJobs WHERE SystemID=@JobId AND AttemptCount=0 AND CurrentSubmissionId IS NULL", created));
+        await Assert.ThrowsAsync<SqlException>(async () => await connection.QuerySingleAsync<RetranscriptionResult>(Command("dbo.transcription_RequestRetranscription", new
+        { arguments.SourceJobId, ConfigurationVersion = 3, arguments.ConfigurationJSON, arguments.RequestedBy, arguments.Reason })));
+        foreach (string invalid in new[] { "{}", RecoverySnapshot.Replace("nova-3", "nova-2"), RecoverySnapshot.Replace("\"utterances\":true", "\"utterances\":true,\"utterances\":true") })
+            await Assert.ThrowsAsync<SqlException>(async () => await connection.QuerySingleAsync<RetranscriptionResult>(Command("dbo.transcription_RequestRetranscription", new
+            { arguments.SourceJobId, arguments.ConfigurationVersion, ConfigurationJSON = invalid, arguments.RequestedBy, arguments.Reason })));
+        var snapshot = await Adapter().GetMetricsAsync(default);
+        Assert.Equal(1, snapshot.ReadyJobs);
+        Assert.Equal(0, snapshot.OutstandingSubmissions);
+    }
+
+    [AutoCallSqlConcurrencyTests.SqlFact]
+    public async Task RetranscriptionWaitsForLateEligibleDeadLetterCredentialsToExpire()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await using var connection = await fixture.OpenAsync();
+        var claim = await fixture.ClaimAsync(connection);
+        Guid correlation = Guid.NewGuid(), identity = Guid.NewGuid();
+        var creation = await fixture.CreateSubmissionAsync(connection, claim, correlation, identity, DateTime.UtcNow.AddHours(2));
+        Assert.True(await fixture.BeginAsync(connection, claim, correlation, identity));
+        await connection.ExecuteAsync("UPDATE dbo.AutomatedCallTranscriptionJobs SET CreatedDateTime=DATEADD(day,-2,SYSUTCDATETIME()),LockedUntil=DATEADD(second,-1,SYSUTCDATETIME()) WHERE SystemID=@JobId", new { fixture.JobId });
+        await Adapter().RecoverAsync(1, default);
+        Assert.Equal("DEAD_LETTER", await fixture.StatusAsync(connection));
+        var arguments = new { SourceJobId = fixture.JobId, ConfigurationVersion = 2, ConfigurationJSON = RecoverySnapshot, RequestedBy = "test-operator", Reason = "Reviewed missing callback" };
+        await Assert.ThrowsAsync<SqlException>(async () => await connection.QuerySingleAsync<RetranscriptionResult>(Command("dbo.transcription_RequestRetranscription", arguments)));
+        await connection.ExecuteAsync("UPDATE dbo.AutomatedCallTranscriptionSubmissions SET CallbackTokenExpiresAt=DATEADD(second,-1,SYSUTCDATETIME()) WHERE SystemID=@SubmissionId", creation);
+        Assert.Equal("created", (await connection.QuerySingleAsync<RetranscriptionResult>(Command("dbo.transcription_RequestRetranscription", arguments))).Outcome);
+    }
+
+    private sealed class RetranscriptionResult
+    {
+        public string Outcome { get; set; } = "";
+        public int JobId { get; set; }
+    }
+
+    [AutoCallSqlConcurrencyTests.SqlFact]
+    public async Task RealCoordinatorPreservesAcceptanceAcrossSqlFailureAndEarlyCallback()
+    {
+        foreach (bool earlyCallback in new[] { false, true })
+        {
+            await using var fixture = await Fixture.CreateAsync();
+            await using var connection = await fixture.OpenAsync();
+            await connection.ExecuteAsync("UPDATE dbo.AutomatedCallTranscriptionJobs SET ConfigurationJSON=@snapshot WHERE SystemID=@JobId", new { snapshot = RecoverySnapshot, fixture.JobId });
+            var claim = await fixture.ClaimAsync(connection);
+            var repository = Adapter();
+            var work = await repository.GetWorkAsync(new() { SystemID = claim.SystemID, LeaseToken = claim.LeaseToken }, "transcription-race", default);
+            Assert.NotNull(work);
+            var faulty = new AcceptanceFailure(repository) { FailSave = !earlyCallback };
+            string request = Guid.NewGuid().ToString("D");
+            var clients = new RecoveryClients(request, async identity =>
+            {
+                if (earlyCallback) await fixture.CompleteAsync(connection, identity.CorrelationId, request);
+            });
+            var options = new TranscriptionOptions
+            {
+                Enabled = true, DeepgramApiKey = "test-only",
+                Identity = new() { BaseUrl = "https://identity.example", SignInName = "test", Password = "test", PermissionId = "1188" },
+                Twilio = new() { AccountSid = "AC" + new string('a', 32), AuthToken = "test-only" }
+            };
+            var coordinator = new TranscriptionSubmissionService(faulty, clients, clients, clients, options);
+            var result = await coordinator.SubmitAsync(work, "transcription-race", default);
+            Assert.Equal(earlyCallback ? "accepted" : "acceptance-not-saved", result.Outcome);
+            Assert.Equal(request, result.RequestId);
+            Assert.Equal(1, clients.Posts);
+            Assert.NotNull(faulty.Identity);
+            if (!earlyCallback)
+            {
+                Assert.Equal("PROCESSING", await fixture.StatusAsync(connection));
+                Assert.Equal("SUBMITTING", await connection.ExecuteScalarAsync<string>("SELECT Status FROM dbo.AutomatedCallTranscriptionSubmissions WHERE CorrelationId=@CorrelationId", faulty.Identity));
+                Assert.Null(await connection.ExecuteScalarAsync<DateTime?>("SELECT SubmittedDateTime FROM dbo.AutomatedCallTranscriptionSubmissions WHERE CorrelationId=@CorrelationId", faulty.Identity));
+                Assert.Equal("pending-submission", (await coordinator.SubmitAsync(work, "transcription-race", default)).Outcome);
+                Assert.Equal(1, clients.Posts);
+                await fixture.CompleteAsync(connection, faulty.Identity.CorrelationId, request);
+                byte[] winnerVersion = await connection.ExecuteScalarAsync<byte[]>("SELECT Version FROM dbo.AutomatedCallTranscriptionJobs WHERE SystemID=@JobId", new { fixture.JobId });
+                Assert.Equal("saved", await repository.SaveAcceptanceAsync(faulty.Identity, request, default));
+                Assert.Equal(winnerVersion, await connection.ExecuteScalarAsync<byte[]>("SELECT Version FROM dbo.AutomatedCallTranscriptionJobs WHERE SystemID=@JobId", new { fixture.JobId }));
+            }
+            Assert.Equal("COMPLETED", await fixture.StatusAsync(connection));
+            Assert.Equal(1, await connection.ExecuteScalarAsync<int>("SELECT AttemptCount FROM dbo.AutomatedCallTranscriptionJobs WHERE SystemID=@JobId", new { fixture.JobId }));
+        }
+    }
+
+    private sealed class AcceptanceFailure(ITranscriptionSubmissionRepository inner) : ITranscriptionSubmissionRepository
+    {
+        public bool FailSave { get; init; }
+        public TranscriptionSubmissionIdentity? Identity { get; private set; }
+        public Task<TranscriptionCreation> CreateAsync(TranscriptionWork work, string workerId, TranscriptionSubmissionIdentity identity, CallbackCredential credential, CancellationToken cancellationToken)
+        {
+            Identity ??= identity;
+            return inner.CreateAsync(work, workerId, identity, credential, cancellationToken);
+        }
+        public Task<bool> BeginAsync(TranscriptionWork work, string workerId, TranscriptionSubmissionIdentity identity, CancellationToken cancellationToken)
+            => inner.BeginAsync(work, workerId, identity, cancellationToken);
+        public Task<string> SaveAcceptanceAsync(TranscriptionSubmissionIdentity identity, string requestId, CancellationToken cancellationToken)
+            => FailSave ? Task.FromException<string>(new InvalidOperationException("Injected SQL acknowledgement failure")) : inner.SaveAcceptanceAsync(identity, requestId, cancellationToken);
+    }
+
+    private sealed class RecoveryClients(string requestId, Func<TranscriptionSubmissionIdentity, Task> callback) : ICallbackTokenClient, ITwilioRecordingClient, IDeepgramClient
+    {
+        public int Posts { get; private set; }
+        public Task<CallbackCredential> AcquireAsync(TimeSpan minimumValidity, CancellationToken cancellationToken) => Task.FromResult(RaceCredential());
+        public Task<TranscriptionAudio> OpenAsync(TranscriptionWork work, CancellationToken cancellationToken) => Task.FromResult(new TranscriptionAudio(new MemoryStream([1]), 1));
+        public async Task<string> SubmitAsync(TranscriptionAudio audio, string configurationJSON, TranscriptionSubmissionIdentity identity, CallbackCredential credential, CancellationToken cancellationToken)
+        { Posts++; await callback(identity); return requestId; }
+    }
+
     [AutoCallSqlConcurrencyTests.SqlFact]
     public async Task ConcurrentWorkersReserveOneOutstandingSlotAndCallbacksReleaseIt()
     {
@@ -421,6 +589,8 @@ public sealed class TranscriptionSqlConcurrencyTests
                     CompletedSubmissionId=NULL,CompletedDateTime=NULL,CompletionOrigin=NULL WHERE RecordingId=@RecordingId;
                 DELETE dbo.AutomatedCallTranscripts WHERE RecordingId=@RecordingId;
                 DELETE dbo.AutomatedCallTranscriptionSubmissions WHERE RecordingId=@RecordingId;
+                DELETE dbo.AutomatedCallTranscriptionOperations WHERE SourceJobId IN
+                    (SELECT SystemID FROM dbo.AutomatedCallTranscriptionJobs WHERE RecordingId=@RecordingId);
                 DELETE dbo.AutomatedCallTranscriptionJobs WHERE RecordingId=@RecordingId;
                 DELETE dbo.AutomatedCallRecordings WHERE CallId=@CallId;
                 DELETE dbo.AutomatedCalls WHERE SystemID=@CallId;

@@ -221,6 +221,34 @@ describe('Deepgram callback JWT', () => {
       fetchStub.restore();
     }
   });
+  it('rejects expired late-result credentials before reading or completing a persisted submission', async () => {
+    const jwt = await token({}, { expiry: Math.floor(Date.now() / 1000) - 60 });
+    const repo = {
+      getDeepgramCallbackContext: sinon.stub().resolves({
+        RecordingId: 7,
+        CallbackTokenHash: createHash('sha256').update(jwt).digest(),
+        Channels: 1,
+        ConfigurationJSON: '{"model":"nova-3"}'
+      }),
+      completeDeepgramCallback: sinon.stub().resolves({ Outcome: 'recorded', Applied: true })
+    };
+    app = express();
+    app.use(
+      '/webhooks/deepgram/transcriptions',
+      createDeepgramTranscriptionsRouter({ repository: repo, getConfig: () => config })
+    );
+    const response = await request(app)
+      .post('/webhooks/deepgram/transcriptions/completed')
+      .set('Authorization', 'Basic ' + Buffer.from(correlationId + ':' + jwt).toString('base64'))
+      .send({
+        metadata: { request_id: '33333333-3333-4333-8333-333333333333', channels: 1, duration: 2 },
+        results: { channels: [{ alternatives: [{ transcript: '' }] }], utterances: [] }
+      })
+      .expect(401);
+    expect(repo.getDeepgramCallbackContext.called).to.equal(false);
+    expect(repo.completeDeepgramCallback.called).to.equal(false);
+    expect(JSON.stringify(response.body)).not.to.include(jwt);
+  });
   it('persists a signed JSON callback through the public router and keeps unrelated routes protected', async () => {
     const jwt = await token();
     const repo = {
