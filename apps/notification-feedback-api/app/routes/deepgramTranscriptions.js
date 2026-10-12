@@ -8,10 +8,18 @@ export function readDeepgramCallbackConfig() {
   return {
     issuer: process.env.DEEPGRAM_CALLBACK_JWT_ISSUER ?? nconf.get('deepgram:callback:issuer'),
     audience: process.env.DEEPGRAM_CALLBACK_JWT_AUDIENCE ?? nconf.get('deepgram:callback:audience'),
-    scope:
-      process.env.DEEPGRAM_CALLBACK_JWT_SCOPE ??
-      nconf.get('deepgram:callback:scope') ??
-      'transcriptions:callback',
+    permissionId:
+      process.env.DEEPGRAM_CALLBACK_PERMISSION_ID ?? nconf.get('deepgram:callback:permissionId'),
+    identityBaseUrl:
+      process.env.DEEPGRAM_IDENTITY_BASE_URL ?? nconf.get('deepgram:callback:identityBaseUrl'),
+    jwtJwksPath:
+      process.env.DEEPGRAM_IDENTITY_JWKS_PATH ??
+      nconf.get('deepgram:callback:jwtJwksPath') ??
+      '/.well-known/jwks.json',
+    allowInsecureIdentityHttp:
+      process.env.DEEPGRAM_IDENTITY_ALLOW_HTTP === undefined
+        ? nconf.get('deepgram:callback:allowInsecureIdentityHttp') === true
+        : process.env.DEEPGRAM_IDENTITY_ALLOW_HTTP === 'true',
     algorithm:
       process.env.DEEPGRAM_CALLBACK_JWT_ALGORITHM ??
       nconf.get('deepgram:callback:algorithm') ??

@@ -15,7 +15,9 @@ export function createDeepgramCallbackController(repo = repository) {
       );
       if (
         !submission ||
-        submission.RecordingId !== auth.recordingId ||
+        !Number.isInteger(submission.RecordingId) ||
+        submission.RecordingId <= 0 ||
+        submission.RecordingId > 2147483647 ||
         !Buffer.isBuffer(submission.CallbackTokenHash) ||
         submission.CallbackTokenHash.length !== 32 ||
         !timingSafeEqual(submission.CallbackTokenHash, auth.tokenHash)
@@ -29,7 +31,7 @@ export function createDeepgramCallbackController(repo = repository) {
         {
           ...normalized,
           correlationId: auth.correlationId,
-          recordingId: auth.recordingId,
+          recordingId: submission.RecordingId,
           tokenHash: auth.tokenHash
         },
         options

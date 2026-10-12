@@ -1,6 +1,9 @@
 using System.Data;
 using Dapper;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Configuration;
+using NotificationWorkflowService.Repository;
+using NotificationWorkflowService.Service.Transcription;
 using Xunit;
 
 namespace NotificationWorkflowService.Tests;
@@ -8,6 +11,34 @@ namespace NotificationWorkflowService.Tests;
 [Collection("AutoCall SQL rollout")]
 public sealed class TranscriptionSqlConcurrencyTests
 {
+    [AutoCallSqlConcurrencyTests.SqlFact]
+    public async Task SubmissionAdapterPersistsExactCredentialHashAndOneShotSendIdentity()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await using var connection = await fixture.OpenAsync();
+        var claim = await fixture.ClaimAsync(connection);
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        { ["ConnectionStrings:AutoCallDB"] = Environment.GetEnvironmentVariable(AutoCallSqlConcurrencyTests.ConnectionVariable) }).Build();
+        var repository = new TranscriptionSubmissionRepository(configuration);
+        var work = new TranscriptionWork { JobId = fixture.JobId, LeaseToken = claim.LeaseToken };
+        var identity = new TranscriptionSubmissionIdentity(fixture.JobId, Guid.NewGuid(), Guid.NewGuid());
+        var credential = new CallbackCredential("sql-adapter-test-token", DateTime.UtcNow.AddHours(2));
+        var creation = await repository.CreateAsync(work, "transcription-race", identity, credential, default);
+        Assert.Equal("created", creation.Outcome);
+        Assert.Equal(1, creation.AttemptNumber);
+        Assert.True(creation.SubmissionId > 0);
+        Assert.Equal(credential.Hash, await connection.ExecuteScalarAsync<byte[]>("SELECT CallbackTokenHash FROM dbo.AutomatedCallTranscriptionSubmissions WHERE SystemID=@SubmissionId", creation));
+        Assert.Equal(identity.CorrelationId, await connection.ExecuteScalarAsync<Guid>("SELECT CorrelationId FROM dbo.AutomatedCallTranscriptionSubmissions WHERE SystemID=@SubmissionId", creation));
+        Assert.Null(await connection.ExecuteScalarAsync<DateTime?>("SELECT SendStartedDateTime FROM dbo.AutomatedCallTranscriptionSubmissions WHERE SystemID=@SubmissionId", creation));
+        Assert.Equal("duplicate", (await repository.CreateAsync(work, "transcription-race", identity, credential, default)).Outcome);
+        Assert.True(await repository.BeginAsync(work, "transcription-race", identity, default));
+        Assert.False(await repository.BeginAsync(work, "transcription-race", identity, default));
+        string request = Guid.NewGuid().ToString("D");
+        Assert.Equal("saved", await repository.SaveAcceptanceAsync(identity, request, default));
+        Assert.Equal("duplicate", await repository.SaveAcceptanceAsync(identity, request, default));
+        Assert.Equal("WAITING_CALLBACK", await fixture.StatusAsync(connection));
+    }
+
     [AutoCallSqlConcurrencyTests.SqlFact]
     public Task ConcurrentReadyClaimsHaveOneOwner() => VerifyClaimsAsync(false);
 

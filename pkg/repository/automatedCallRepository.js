@@ -430,6 +430,21 @@ export async function recordAutomatedCallRecordingStatus(
       RecordingStartTime: { type: sql.DateTime2(3), val: recordingStartTime },
       RecordingSource: { type: sql.VarChar(100), val: recordingSource },
       RecordingTrack: { type: sql.VarChar(20), val: recordingTrack },
+      TranscriptionConfigurationVersion: { type: sql.Int, val: 2 },
+      TranscriptionConfigurationJSON: {
+        type: sql.NVarChar(sql.MAX),
+        val: JSON.stringify({
+          model: "nova-3",
+          version: "latest",
+          language: "en",
+          utterances: true,
+          multichannel: true,
+          diarize: false,
+          punctuate: false,
+          smart_format: false,
+          mip_opt_out: true,
+        }),
+      },
       ParametersJSON: {
         type: sql.NVarChar(sql.MAX),
         val: JSON.stringify(parameters ?? {}),

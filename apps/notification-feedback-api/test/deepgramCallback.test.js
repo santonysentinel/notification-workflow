@@ -22,7 +22,7 @@ describe('Deepgram callback JWT', () => {
     config = {
       issuer: 'https://identity.example',
       audience: 'deepgram-callback',
-      scope: 'transcriptions:callback',
+      permissionId: '1188',
       algorithm: 'RS256',
       publicKey: await exportSPKI(keys.publicKey),
       database: 'AutoCallDB'
@@ -31,16 +31,13 @@ describe('Deepgram callback JWT', () => {
     app.post('/callback', requireDeepgramCallbackJwt({ getConfig: () => config }), (req, res) =>
       res.json({
         correlationId: req.deepgramCallback.correlationId,
-        recordingId: req.deepgramCallback.recordingId
+        tokenHash: req.deepgramCallback.tokenHash.toString('hex')
       })
     );
   });
   async function token(claims = {}, options = {}) {
     return new SignJWT({
-      jti: 'token-1',
-      scope: config.scope,
-      submission_id: correlationId,
-      recording_id: 7,
+      permissions: '12,1188',
       ...claims
     })
       .setProtectedHeader({ alg: 'RS256' })
@@ -54,17 +51,21 @@ describe('Deepgram callback JWT', () => {
       .post('/callback')
       .set('Authorization', 'Basic ' + Buffer.from(username + ':' + jwt).toString('base64'));
   }
-  it('accepts a submission-bound asymmetric JWT transported as Basic credentials', async () => {
-    const response = await send(await token());
+  it('accepts a permission-bearing asymmetric JWT without custom identity claims', async () => {
+    const jwt = await token();
+    const response = await send(jwt);
     expect(response.status).to.equal(200);
-    expect(response.body).to.deep.equal({ correlationId, recordingId: 7 });
+    expect(response.body).to.deep.equal({
+      correlationId,
+      tokenHash: createHash('sha256').update(jwt).digest('hex')
+    });
   });
   for (const claims of [
-    { scope: 'other' },
-    { recording_id: '7' },
-    { recording_id: 0 },
-    { submission_id: 'bad' },
-    { jti: '' }
+    { permissions: '11188' },
+    { permissions: ['1188'] },
+    { permissions: '' },
+    { permissions: '1188,' },
+    { permissions: 'bad,1188' }
   ]) {
     it(`rejects invalid claims ${JSON.stringify(claims)}`, async () => {
       expect((await send(await token(claims))).status).to.equal(401);
@@ -79,11 +80,68 @@ describe('Deepgram callback JWT', () => {
       expect((await send(await token({}, options))).status).to.equal(401);
     });
   }
-  it('rejects a different Basic username and missing authentication', async () => {
-    expect((await send(await token(), '22222222-2222-4222-8222-222222222222')).status).to.equal(
-      401
-    );
+  it('rejects an invalid Basic username and missing authentication', async () => {
+    expect((await send(await token(), 'bad-correlation')).status).to.equal(401);
     await request(app).post('/callback').expect(401);
+  });
+  it('requires an explicitly configured complete permission ID and accepts trimmed CSV entries', async () => {
+    const jwt = await token({ permissions: '12, 1188 ,13' });
+    expect((await send(jwt)).status).to.equal(200);
+    for (const permissionId of [undefined, '', '0', '01188', '1188,12', ' 1188']) {
+      config.permissionId = permissionId;
+      expect((await send(jwt)).status).to.equal(503);
+    }
+  });
+  it('allows HTTP JWKS only at the exact explicitly configured identity endpoint', async () => {
+    const jwt = await token();
+    const jwk = await exportJWK(keys.publicKey);
+    const fetchStub = sinon
+      .stub(globalThis, 'fetch')
+      .callsFake(async () => new Response(JSON.stringify({ keys: [jwk] }), { status: 200 }));
+    config.publicKey = undefined;
+    config.identityBaseUrl = 'http://172.27.112.243:8085';
+    config.jwtJwksPath = '/.well-known/jwks.json';
+    try {
+      expect((await send(jwt)).status).to.equal(503);
+      expect(fetchStub.callCount).to.equal(0);
+      config.allowInsecureIdentityHttp = true;
+      expect((await send(jwt)).status).to.equal(200);
+      expect(String(fetchStub.firstCall.args[0])).to.equal(
+        config.identityBaseUrl + config.jwtJwksPath
+      );
+      expect(fetchStub.firstCall.args[1].redirect).to.equal('error');
+      for (const jwksUrl of [
+        'http://172.27.112.243:8086/.well-known/jwks.json',
+        'http://other.example:8085/.well-known/jwks.json',
+        'http://172.27.112.243:8085/other-keys'
+      ]) {
+        config.jwksUrl = jwksUrl;
+        expect((await send(jwt)).status).to.equal(503);
+      }
+      expect(fetchStub.callCount).to.equal(1);
+    } finally {
+      fetchStub.restore();
+    }
+  });
+  it('bounds unknown-length JWKS responses and masks redirect failures', async () => {
+    const jwt = await token();
+    config.publicKey = undefined;
+    config.jwksUrl = 'https://identity.example/oversized-keys';
+    const fetchStub = sinon
+      .stub(globalThis, 'fetch')
+      .callsFake(async () => new Response('x'.repeat(65537), { status: 200 }));
+    try {
+      const oversized = await send(jwt);
+      expect(oversized.status).to.equal(503);
+      expect(JSON.stringify(oversized.body)).not.to.include(jwt);
+      config.jwksUrl = 'https://identity.example/redirected-keys';
+      fetchStub.rejects(new TypeError('credentials and upstream URL must be masked'));
+      const redirected = await send(jwt);
+      expect(redirected.status).to.equal(503);
+      expect(JSON.stringify(redirected.body)).not.to.include('upstream URL');
+    } finally {
+      fetchStub.restore();
+    }
   });
   it('fails closed for missing keys and unsupported algorithms', async () => {
     const jwt = await token();
@@ -95,10 +153,7 @@ describe('Deepgram callback JWT', () => {
   });
   it('rejects a different signing key, a symmetric token, missing expiry and a future not-before', async () => {
     const claims = {
-      jti: 'test',
-      scope: config.scope,
-      submission_id: correlationId,
-      recording_id: 7
+      permissions: config.permissionId
     };
     const otherKeys = await generateKeyPair('RS256');
     const signed = (privateKey) =>
@@ -131,10 +186,7 @@ describe('Deepgram callback JWT', () => {
     config.algorithm = 'ES256';
     config.publicKey = await exportSPKI(ecKeys.publicKey);
     const jwt = await new SignJWT({
-      jti: 'test',
-      scope: config.scope,
-      submission_id: correlationId,
-      recording_id: 7
+      permissions: config.permissionId
     })
       .setProtectedHeader({ alg: 'ES256' })
       .setIssuer(config.issuer)
@@ -217,6 +269,12 @@ describe('Deepgram callback JWT', () => {
       Channels: 1,
       ConfigurationJSON: '{}'
     });
+    await callback(body).expect(204);
+    expect(repo.completeDeepgramCallback.lastCall.args[0].recordingId).to.equal(8);
+    repo.getDeepgramCallbackContext.resolves({
+      RecordingId: 0,
+      CallbackTokenHash: createHash('sha256').update(jwt).digest()
+    });
     await callback(body).expect(401);
     repo.getDeepgramCallbackContext.resolves({
       RecordingId: 7,
@@ -259,6 +317,46 @@ describe('Deepgram callback JWT', () => {
 });
 
 describe('Deepgram callback repository', () => {
+  it('freezes complete version-2 provider options when enqueueing a new recording', async () => {
+    const pools = await initialize();
+    const original = pools.AUTOCALLDB;
+    const fakeRequest = {
+      input: sinon.stub().returnsThis(),
+      execute: sinon.stub().resolves({ recordset: [{ Outcome: 'recorded' }] })
+    };
+    pools.AUTOCALLDB = Promise.resolve({ request: () => fakeRequest });
+    try {
+      await callbackRepository.recordAutomatedCallRecordingStatus({
+        callId: 1,
+        providerCallId: 'CA' + '1'.repeat(32),
+        accountSid: 'AC' + '2'.repeat(32),
+        recordingSid: 'RE' + '3'.repeat(32),
+        recordingStatus: 'completed',
+        durationSeconds: 1,
+        channels: 2,
+        parameters: { model: 'untrusted', mip_opt_out: false }
+      });
+      const bindings = Object.fromEntries(
+        fakeRequest.input.args.map(([name, , value]) => [name, value])
+      );
+      expect(bindings.TranscriptionConfigurationVersion).to.equal(2);
+      expect(JSON.parse(bindings.TranscriptionConfigurationJSON)).to.deep.equal({
+        model: 'nova-3',
+        version: 'latest',
+        language: 'en',
+        utterances: true,
+        multichannel: true,
+        diarize: false,
+        punctuate: false,
+        smart_format: false,
+        mip_opt_out: true
+      });
+      expect(fakeRequest.execute.firstCall.args[0]).to.equal('dbo.automatedcalls_RecordingStatus');
+    } finally {
+      if (original === undefined) delete pools.AUTOCALLDB;
+      else pools.AUTOCALLDB = original;
+    }
+  });
   it('binds typed callback parameters to the strict configured SQL pool', async () => {
     const pools = await initialize();
     const original = pools.AUTOCALLDB;

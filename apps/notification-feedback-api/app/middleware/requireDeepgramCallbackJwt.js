@@ -1,27 +1,73 @@
 import { createHash } from 'node:crypto';
-import { createRemoteJWKSet, importSPKI, jwtVerify } from 'jose';
+import { createRemoteJWKSet, customFetch, importSPKI, jwtVerify } from 'jose';
 import { sendError } from '../../configure/errors.js';
 
 export const correlationPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 let cachedTrust;
+
+async function fetchKeys(url, options) {
+  const timeout = AbortSignal.timeout(5000);
+  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+  const response = await fetch(url, { ...options, signal, redirect: 'error' });
+  if (response.status !== 200) return response;
+  if (Number(response.headers.get('content-length')) > 65536 || !response.body) {
+    await response.body?.cancel();
+    throw new TypeError('Key response unavailable');
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      signal.throwIfAborted();
+      length += value.length;
+      if (length > 65536) throw new TypeError('Key response unavailable');
+      chunks.push(Buffer.from(value));
+    }
+    return new Response(Buffer.concat(chunks), {
+      status: response.status,
+      headers: response.headers
+    });
+  } finally {
+    await reader.cancel();
+    reader.releaseLock();
+  }
+}
 
 export async function verifyDeepgramCallbackJwt(token, config) {
   const algorithm = config.algorithm ?? 'RS256';
   let jwksUrl;
   if (!config.publicKey) {
     try {
-      jwksUrl = new URL(config.jwksUrl);
+      jwksUrl = config.jwksUrl
+        ? new URL(config.jwksUrl)
+        : new URL(config.jwtJwksPath ?? '/.well-known/jwks.json', config.identityBaseUrl);
     } catch {
       throw Object.assign(new Error('Configuration unavailable'), { status: 503 });
     }
     if (
-      jwksUrl.protocol !== 'https:' ||
+      !['https:', 'http:'].includes(jwksUrl.protocol) ||
       jwksUrl.username ||
       jwksUrl.password ||
       jwksUrl.search ||
       jwksUrl.hash
     ) {
       throw Object.assign(new Error('Configuration unavailable'), { status: 503 });
+    }
+    if (jwksUrl.protocol === 'http:') {
+      let expected;
+      try {
+        const base = new URL(config.identityBaseUrl);
+        if (base.username || base.password || base.search || base.hash) throw new Error();
+        expected = new URL(config.jwtJwksPath ?? '/.well-known/jwks.json', base);
+        if (expected.origin !== base.origin) throw new Error();
+      } catch {
+        throw Object.assign(new Error('Configuration unavailable'), { status: 503 });
+      }
+      if (config.allowInsecureIdentityHttp !== true || expected.href !== jwksUrl.href)
+        throw Object.assign(new Error('Configuration unavailable'), { status: 503 });
     }
   }
   if (
@@ -30,8 +76,7 @@ export async function verifyDeepgramCallbackJwt(token, config) {
     !config.issuer.trim() ||
     typeof config.audience !== 'string' ||
     !config.audience.trim() ||
-    typeof config.scope !== 'string' ||
-    !config.scope.trim()
+    !/^[1-9]\d*$/.test(String(config.permissionId ?? ''))
   ) {
     throw Object.assign(new Error('Configuration unavailable'), { status: 503 });
   }
@@ -43,7 +88,8 @@ export async function verifyDeepgramCallbackJwt(token, config) {
         : createRemoteJWKSet(jwksUrl, {
             timeoutDuration: 5000,
             cooldownDuration: 30000,
-            cacheMaxAge: 600000
+            cacheMaxAge: 600000,
+            [customFetch]: fetchKeys
           });
       cachedTrust = { identity, key };
     } catch {
@@ -55,19 +101,17 @@ export async function verifyDeepgramCallbackJwt(token, config) {
       algorithms: [algorithm],
       issuer: config.issuer,
       audience: config.audience,
-      requiredClaims: ['exp', 'jti', 'scope', 'submission_id', 'recording_id'],
+      requiredClaims: ['exp', 'permissions'],
       clockTolerance: 5
     });
     if (
-      typeof payload.jti !== 'string' ||
-      !payload.jti.trim() ||
-      typeof payload.scope !== 'string' ||
-      !payload.scope.split(/\s+/).includes(config.scope) ||
-      typeof payload.submission_id !== 'string' ||
-      !correlationPattern.test(payload.submission_id) ||
-      !Number.isInteger(payload.recording_id) ||
-      payload.recording_id <= 0 ||
-      payload.recording_id > 2147483647
+      typeof payload.permissions !== 'string' ||
+      payload.permissions.length > 16000 ||
+      !payload.permissions.split(',').every((value) => /^[1-9]\d*$/.test(value.trim())) ||
+      !payload.permissions
+        .split(',')
+        .map((value) => value.trim())
+        .includes(String(config.permissionId))
     ) {
       throw new Error('Invalid claims');
     }
@@ -75,6 +119,7 @@ export async function verifyDeepgramCallbackJwt(token, config) {
   } catch (err) {
     const unavailable =
       err?.code === 'ERR_JWKS_TIMEOUT' ||
+      ['AbortError', 'TimeoutError'].includes(err?.name) ||
       err instanceof TypeError ||
       (jwksUrl && ['ERR_JOSE_GENERIC', 'ERR_JWKS_INVALID', 'ERR_JWK_INVALID'].includes(err?.code));
     throw Object.assign(new Error('Callback verification failed'), {
@@ -114,12 +159,9 @@ export default function requireDeepgramCallbackJwt({
       const config = getConfig();
       if (typeof config.database !== 'string' || !config.database.trim())
         throw Object.assign(new Error('Configuration unavailable'), { status: 503 });
-      const claims = await verifyJwt(token, config);
-      if (claims.submission_id.toLowerCase() !== correlationId)
-        return sendError(res, 401, 'Invalid callback authentication', context);
+      await verifyJwt(token, config);
       req.deepgramCallback = {
         correlationId,
-        recordingId: claims.recording_id,
         tokenHash: createHash('sha256').update(token, 'utf8').digest(),
         database: config.database
       };

@@ -3,15 +3,16 @@
 ## Scope And Flow
 
 Audio stays at Twilio. An accepted recording-completed callback creates a READY
-transcription job. A future worker claims it, creates a submission, streams audio
+transcription job. A future worker will claim it and use the submission service to stream audio
 to Deepgram's prerecorded API, supplies a callback URL, and records
 the returned request ID. Deepgram later posts the result to this API. The callback
 does not download audio, contact Deepgram, schedule retries, or perform business actions.
-Enqueueing is implemented; submission, worker claims and retries remain deferred.
+Enqueueing, provider clients and durable submission coordination are implemented;
+the hosted worker and runtime retry orchestration remain deferred.
 
 Migration 018 now supplies the database claim/submission/recovery lifecycle described
-under Phase 1 below. The C# worker/provider clients and revised JWT contract are
-still deferred; installing the migration does not enable outbound transcription.
+under Phase 1 below. Phase 2 implements the C# provider clients and revised JWT
+contract; neither deploying the API nor installing the migration enables a worker.
 
 Schema migration `database/010.sql` defines logical jobs, independent submissions,
 and recording/submission-linked utterance rows with explicit millisecond timing.
@@ -29,15 +30,20 @@ in-progress/absent/failed statuses, and ignored terminal conflicts do not enqueu
 If job creation fails, metadata and the event roll back, and the webhook returns
 an error so Twilio can retry rather than acknowledging unscheduled work.
 
-The default immutable configuration snapshot is version 1:
+The API freezes the following immutable configuration snapshot as version 2 for
+new recording-completed jobs:
 
 ```json
-{"model":"nova-3","utterances":true,"multichannel":true}
+{"model":"nova-3","version":"latest","language":"en","utterances":true,"multichannel":true,"diarize":false,"punctuate":false,"smart_format":false,"mip_opt_out":true}
 ```
 
 The SQL procedure accepts optional trusted `@TranscriptionConfigurationVersion`
 and `@TranscriptionConfigurationJSON` arguments; the HTTP callback does not accept
 these settings from Twilio. Use a new version when intentionally changing configuration.
+Direct SQL callers must explicitly supply complete versioned options: migration 012's
+legacy procedure defaults remain version 1. Existing jobs are never rewritten or
+backfilled. The Phase 2 client rejects incomplete snapshots before creating a submission;
+review legacy jobs explicitly before enabling the Phase 3 worker.
 Jobs start READY with zero attempts, no lease or submission, and availability at
 creation time. Existing jobs with the same recording/provider/version are preserved.
 Repeated completed callbacks neither reset jobs nor create another configuration
@@ -63,16 +69,19 @@ and 8443; use HTTPS at ingress.
 Do not log or persist credential-bearing URLs. Deepgram's optional `dg-token` is
 supplementary only; it does not replace JWT validation.
 
-Required JWT claims are `iss`, `aud`, `exp`, `jti`, `scope`, `submission_id` (the
-CorrelationId), and positive integer `recording_id`. `scope` must contain the
-configured callback permission. The issuer, audience and signing algorithm are
+Required JWT claims are `iss`, `aud`, `exp` and `permissions`. Permissions are
+comma-separated positive decimal IDs; complete trimmed entries must match the
+configured feature permission ID exactly. No custom identity claims, `scope` or
+`jti` are required. The issuer, audience and signing algorithm are
 configured explicitly; only RS256 or ES256 are accepted. A configured public key
-or trusted HTTPS JWKS endpoint supplies verification keys. Token-provided key URLs
+or trusted JWKS endpoint supplies verification keys. HTTPS is required unless the
+explicit identity HTTP exception below is enabled. Token-provided key URLs
 are never used. The signing private key stays at the identity server.
 
-Before contacting Deepgram, the future worker stores SHA-256 of the exact JWT text
-in `CallbackTokenHash`. The API verifies the JWT and requires its hash and recording
-identity to match that submission. Tokens remain reusable for authenticated retries
+Before contacting Deepgram, the submission service stores SHA-256 of the exact JWT text
+in `CallbackTokenHash`. The API verifies the JWT, looks up the Basic correlation UUID,
+requires the exact stored hash, and derives recording identity from the trusted database
+row, not token or payload claims. Tokens remain reusable for authenticated retries
 until expiry. Expiry must cover upload, provider queue/processing, callback retries,
 and a margin. SQL callback deadlines and JWT expiry are independent; expired tokens
 are rejected even for otherwise eligible late results. Reconciliation is future work.
@@ -134,24 +143,31 @@ Do not log authorization headers, tokens, callback URLs, transcript text, or raw
 payloads. Deepgram retries non-2xx callbacks, so return 204 only after durable commit.
 
 Configuration uses `DEEPGRAM_CALLBACK_JWT_ISSUER`, `DEEPGRAM_CALLBACK_JWT_AUDIENCE`,
-`DEEPGRAM_CALLBACK_JWT_SCOPE` (default `transcriptions:callback`),
+`DEEPGRAM_CALLBACK_PERMISSION_ID` (required; no inferred/default permission),
 `DEEPGRAM_CALLBACK_JWT_ALGORITHM` (default `RS256`), and either
 `DEEPGRAM_CALLBACK_JWT_PUBLIC_KEY` (PEM) or `DEEPGRAM_CALLBACK_JWKS_URL` (HTTPS).
+Alternatively set `DEEPGRAM_IDENTITY_BASE_URL` and `DEEPGRAM_IDENTITY_JWKS_PATH`
+(default `/.well-known/jwks.json`). `DEEPGRAM_IDENTITY_ALLOW_HTTP=true` explicitly
+permits only the exact base host/port and configured JWKS path; other HTTP URLs and
+redirects are rejected. Configure issuer and audience as `sentineldna.com` for the
+agreed identity server, independently of its network address.
 `AUTO_CALL_DATABASE` selects the strict database pool and defaults to AutoCallDB.
 Missing trust configuration fails closed. Deepgram's outbound API key is not needed
 by the callback endpoint.
 JWT verification permits five seconds of clock skew. JWKS fetches use a five-second
-timeout and cached keys; publish overlapping keys during identity-server rotation.
+timeout, a 64 KiB response bound and cached keys; publish overlapping keys during identity-server rotation.
 An unknown signing key or invalid signature is rejected, never accepted on key-service failure.
 
 Equivalent configuration-file keys are under `deepgram.callback`: `issuer`, `audience`,
-`scope`, `algorithm`, `publicKey`, and `jwksUrl`. Environment settings take precedence.
+`permissionId`, `algorithm`, `publicKey`, `jwksUrl`, `identityBaseUrl`, `jwtJwksPath`
+and `allowInsecureIdentityHttp`. Environment settings take precedence.
 Database selection falls back to `twilio.database` and then AutoCallDB; a missing
 named pool never falls back to another database.
 
 Deploy migration 011 after 010, configure identity trust, and expose the route through
-TLS/rate-limited ingress. The future worker must claim the existing job and persist its submission,
-including the exact JWT hash and callback deadline, before sending audio. Until then,
+TLS/rate-limited ingress. The submission service persists identity, JWT hash/expiry and
+the one-shot send marker before uploading audio. The future worker must claim jobs,
+renew leases and interpret submission outcomes. Until then,
 there are no automatic transcription submissions. Raw responses and transcript text
 contain sensitive recording content; apply database access and retention controls.
 
@@ -171,9 +187,9 @@ Provider reference: https://developers.deepgram.com/docs/callback.
 
 ## Phase 0 Worker Contract
 
-Status: agreed design decisions for the future worker. Phase 1 below implements
-the database portion; worker/provider configuration and authentication changes
-are not implemented. Defaults below do not change active application settings.
+Status: agreed design decisions. Phase 1 implements the database portion and Phase 2
+implements provider configuration/authentication and submission coordination. The hosted
+worker, retry orchestration and retention cleanup are not implemented or enabled.
 
 ### Authentication
 
@@ -205,13 +221,13 @@ are not implemented. Defaults below do not change active application settings.
 	`isSuccessful: true` and a nonempty JWT. Supply credentials through secrets, not
 	committed application settings. The JWKS path supplies verification keys, not tokens.
 - Internal HTTP token issuance and JWKS retrieval are explicitly approved for now.
-	Proposed setting `AllowInsecureIdentityHttp` defaults false and must be enabled
+	Setting `AllowInsecureIdentityHttp` defaults false and must be enabled
 	for this deployment. Restrict the exception to the configured identity host,
 	port and paths; reject redirects and token-provided key URLs. Do not apply it to
 	Deepgram or public callback ingress, which remain HTTPS. The accepted residual
 	risks are credential interception and verification-key substitution; a private
-	IP alone does not prevent them. Prefer HTTPS when available. Current callback
-	verification still rejects HTTP until the planned implementation changes it.
+	IP alone does not prevent them. Prefer HTTPS when available. Both the C# client and
+	callback API require independent explicit opt-in for this exception.
 - Replace a provably unsent submission after restart with a fresh correlation ID
 	and token on the same logical job. Preserve prior audit records and credential
 	hashes. Do not change the credential on an already-sent submission.
@@ -280,9 +296,8 @@ Phase 0 authentication and lifecycle design decisions are settled. Before enabli
 the worker, supply the actual feature permission ID, secret-backed login credentials
 and signing-algorithm configuration, and verify issuance lifetime/JWKS compatibility
 against the deployed identity server. Do not invent a permission ID from the sample.
-The current callback's scope/custom-claim requirements and HTTPS-only JWKS policy
-must be updated and tested in the planned implementation. Cleanup, worker settings
-and provider option wiring remain future work; no runtime changes are made in Phase 0.
+Phase 2 replaces the old scope/custom-claim requirements with permission-ID validation
+and the restricted HTTP policy. Cleanup and hosted-worker orchestration remain future work.
 
 ## Phase 1 Database Lifecycle
 
@@ -360,6 +375,82 @@ Race fixtures are committed to exercise genuine concurrency, then removed. Tests
 refuse non-owned connections or a non-idle transcription queue; do not run them
 concurrently with transactional SQL suites. Without the environment setting they
 explicitly skip, which is not sufficient for the Phase 1 exit gate.
+
+## Phase 2 Provider Clients
+
+`Transcription:Enabled` defaults false. Registration adds no hosted transcription worker.
+Use secret-backed environment settings or user secrets for `Transcription:DeepgramApiKey`,
+`Transcription:Identity:SignInName` / `Password` and Twilio credentials. Environment
+keys use double underscores, for example `Transcription__Identity__PermissionId`.
+Never commit credentials. The actual permission ID is intentionally unset.
+
+Identity login POSTs `{signInName,password}` to `accounts/authenticate2`, requires
+`isSuccessful=true` and verifies the returned JWT against bounded, pinned JWKS keys.
+RS256 or ES256, issuer, audience, expiry/not-before and exact CSV permission matching
+are enforced. Tokens must outlive the job's callback wait plus the whole submission
+timeout and five seconds. `TokenValidityMinutes=120` is the configured validity target,
+not a way to extend server-issued tokens. Insufficient expiry fails before a send marker.
+The approved internal HTTP deployment requires `Identity:AllowInsecureIdentityHttp=true`
+and the callback API's separate HTTP opt-in. Redirects and token-provided key URLs are
+never followed. The accepted credential-interception/key-substitution risk remains.
+
+Twilio retrieval uses pinned `https://api.twilio.com` account/recording SID paths and
+`.wav?RequestedChannels=1` or `2`, never an untrusted recording URL. Prefer an API key
+SID/secret; Account SID/AuthToken is also supported. Only completed nonempty recordings
+with known mono/stereo metadata are accepted. Bounded RIFF/WAVE PCM16 headers must
+match recorded channels and duration; no conversion or silent downmix is performed.
+The complete stream is checked for truncation, excess bytes and the maximum byte bound.
+Defaults: 30-second media header timeout, 60-minute duration and 128 MiB audio bound.
+Zero-duration completion belongs to the future worker's local EMPTY path, not these clients.
+
+The service validates the immutable snapshot, acquires a fresh callback token and
+validates media headers, then calls `transcription_CreateSubmission` (identity/hash/expiry),
+`transcription_BeginSubmission` (one-shot send marker), and only then Deepgram POST
+`/v1/listen`. A pending/exhausted/stale creation or replayed marker never sends audio.
+The upload uses WAV bytes, the exact snapshot options, a Basic-auth HTTPS callback,
+POST callback method and correlation tag. The tag is not an idempotency key. No POST
+retry policy is installed. A trusted regional Deepgram base URL can be configured;
+there is no regional fallback. Default whole-submission deadline is ten minutes.
+
+Validated acceptance is a JSON 200 response with a UUID request ID. The immutable
+identity acknowledgement uses an independent five-second persistence token, even
+after host cancellation. A failed save leaves the send marker intact for recovery.
+JSON provider responses/JWKS/login bodies are bounded to 64 KiB; ambiguous or invalid
+responses never authorize immediate resubmission.
+
+| Failure | Phase 3 handling |
+| --- | --- |
+| Validation | No upload for invalid configuration, token, recording or media header; review permanent failures |
+| TransientPreparation | Bounded retry for media 404/429/5xx, transport/header timeout or identity availability |
+| DefiniteRejection | Validated provider 4xx error (excluding 408); 429 is retryable, other rejection is permanent |
+| UncertainAcceptance | Interrupted/timeout/cancelled upload, 408/5xx, redirect, malformed/oversized or contradictory acknowledgement; WAIT for callback recovery |
+| Persistence | Never send after failed preparation/marker persistence; failed acceptance save preserves possible acceptance and must not immediately retry |
+
+The coordinator returns these classifications; Phase 3 must apply fenced SQL dispositions,
+callback waiting, budget checks and recovery. SQL timeout recovery already protects
+marked sends if the process exits. Never use a validation label to bypass the SQL
+definite-rejection requirement for a send that might have reached Deepgram.
+
+Named identity/Twilio/Deepgram HTTP clients disable request loggers, redirects, cookies,
+proxy use and automatic decompression. Exceptions/results use fixed safe codes without
+raw response bodies, URLs, credentials or transcripts. Do not enable URI/header/body
+logging or export unredacted HTTP diagnostic payloads for these endpoints; preserve
+.NET's URI query redaction. The JWT itself and credential-bearing callback URL are
+never persisted. Only the exact SHA-256 hash and expiry are stored.
+
+```powershell
+dotnet test apps/notification-workflow-service/NotificationWorkflowService.Tests/NotificationWorkflowService.Tests.csproj --filter FullyQualifiedName~TranscriptionHttpTests
+pnpm --dir apps/notification-feedback-api exec mocha --timeout 10000 test/deepgramCallback.test.js test/twilioRecordingStatus.test.js test/twilioRecordings.test.js
+```
+
+Verified Phase 2 gate: 52 C# HTTP/JWT/streaming tests, 89 Node callback/recording tests
+and seven owned-database transcription integration/concurrency tests. Coverage includes
+mono/stereo preservation, missing media, invalid responses, rate limits, interrupted
+uploads, timeouts/cancellation, credential redaction, exact permission matching,
+insufficient expiry, send ordering and independent acceptance persistence. LocalDB
+was stopped after fixture cleanup. No live identity, Twilio or Deepgram call was made;
+deployment smoke tests must verify the actual permission, signing key/algorithm,
+issuance lifetime, Twilio media format and provider/callback connectivity.
 
 Research references:
 - https://developers.deepgram.com/reference/manage/requests/get
