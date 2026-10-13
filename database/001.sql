@@ -10,9 +10,11 @@ IF OBJECT_ID(N'dbo.CallFlowTemplates', N'U') IS NULL
 CREATE TABLE dbo.CallFlowTemplates
 (
     SystemID int IDENTITY(1, 1) NOT NULL PRIMARY KEY,
+    FlowID uniqueidentifier NULL,
     Name varchar(200) NULL,
     Version int NULL,
     POGroupNum int NULL,
+    Platform varchar(20) NULL,
     TemplateJSON nvarchar(max) NULL,
     TwiML nvarchar(max) NULL,
     CreatedDateTime datetime2(3) NOT NULL DEFAULT (SYSUTCDATETIME()),
@@ -22,6 +24,12 @@ CREATE TABLE dbo.CallFlowTemplates
     UpdatedBy nvarchar(200) NULL,
     DeletedBy nvarchar(200) NULL
 );
+
+IF COL_LENGTH('dbo.CallFlowTemplates', 'FlowID') IS NOT NULL
+EXEC sys.sp_executesql N'
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id=OBJECT_ID(''dbo.CallFlowTemplates'') AND name=''UX_CallFlowTemplates_FlowID_Version'')
+CREATE UNIQUE INDEX UX_CallFlowTemplates_FlowID_Version ON dbo.CallFlowTemplates(FlowID,Version)
+WHERE FlowID IS NOT NULL AND Version IS NOT NULL;';
 
 IF OBJECT_ID(N'dbo.AutomatedCallQueue', N'U') IS NULL
 CREATE TABLE dbo.AutomatedCallQueue
@@ -106,7 +114,7 @@ CREATE TABLE dbo.AutomatedCallQueue
     -- Useful for optimistic concurrency / diagnostics.
     Version             ROWVERSION,
 
-    CONSTRAINT FK_AutomatedCallQueue_OID FOREIGN KEY (OID) REFERENCES dbo.Client (OID),
+   
     CONSTRAINT FK_AutomatedCallQueue_FlowId FOREIGN KEY (FlowId) REFERENCES dbo.CallFlowTemplates (SystemID),
     CONSTRAINT CK_AutomatedCallQueue_RequestSnapshot CHECK (
         EnqueueIdempotencyKey IS NULL OR
@@ -168,7 +176,7 @@ CREATE TABLE dbo.AutomatedCalls
     StartedDateTime datetime2(3) NULL,
     UpdatedDateTime datetime2(3) NULL,
     CONSTRAINT FK_AutomatedCalls_AutomatedCallQueueId FOREIGN KEY (AutomatedCallQueueId) REFERENCES dbo.AutomatedCallQueue (SystemID),
-    CONSTRAINT FK_AutomatedCalls_OID FOREIGN KEY (OID) REFERENCES dbo.Client (OID),
+   
     CONSTRAINT FK_AutomatedCalls_FlowId FOREIGN KEY (FlowId) REFERENCES dbo.CallFlowTemplates (SystemID),
     CONSTRAINT CK_AutomatedCalls_SubmissionState CHECK
         (SubmissionState IS NULL OR SubmissionState COLLATE Latin1_General_100_BIN2 IN('READY','SUBMITTING','ACCEPTED','REJECTED','UNKNOWN'))

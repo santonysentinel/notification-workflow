@@ -18,7 +18,6 @@ CREATE INDEX IX_WorkerQueue_ExpiredLease
 ON dbo.AutomatedCallQueue
 (
     LockedUntil,
-    QueueName,
     SystemID
 )
 INCLUDE
