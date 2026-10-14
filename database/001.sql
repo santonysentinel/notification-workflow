@@ -13,7 +13,7 @@ CREATE TABLE dbo.CallFlowTemplates
     FlowID uniqueidentifier NULL,
     Name varchar(200) NULL,
     Version int NULL,
-    POGroupNum int NULL,
+    POGroupNum varchar(20) NULL,
     Platform varchar(20) NULL,
     TemplateJSON nvarchar(max) NULL,
     TwiML nvarchar(max) NULL,
