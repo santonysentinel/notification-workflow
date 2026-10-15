@@ -2,11 +2,9 @@ SET ANSI_NULLS ON;
 SET QUOTED_IDENTIFIER ON;
 GO
 
-IF OBJECT_ID(N'dbo.AutoCall_PublishFlow', N'P') IS NULL
-    EXEC(N'CREATE PROCEDURE dbo.AutoCall_PublishFlow AS RETURN 0;');
-GO
 
-ALTER PROCEDURE dbo.AutoCall_PublishFlow
+
+CREATE OR ALTER PROCEDURE dbo.AutoCall_PublishFlow
     @FlowID uniqueidentifier,
     @ExpectedVersion int,
     @TemplateJSON nvarchar(max),
