@@ -1,0 +1,1020 @@
+openapi: 3.0.3
+info:
+  title: Notification Feedback API
+  version: 0.11.0
+  description: |
+    Enqueues automated calls, processes provider callbacks, and streams recordings.
+    Paths are relative to the deployed service root.
+
+    Twilio callbacks require a signature calculated over the configured public HTTPS
+    callback URL (including the original query string) and all form fields.
+    Deepgram callbacks use HTTP Basic authentication, not bearer authentication.
+    Recording playback is currently mounted before the bearer-token middleware
+    and does not require authentication in this service.
+
+    Requests may supply X-Request-Id; otherwise a request identifier is generated
+    (or taken from X-Correlation-Id). Responses include X-Request-Id.
+servers:
+  - url: /
+    description: Current service origin
+tags:
+  - name: Automated calls
+    description: Automated call queue submission.
+  - name: Twilio
+    description: Signed form-urlencoded voice and recording callbacks.
+  - name: Deepgram
+    description: Authenticated transcription completion callbacks.
+  - name: Recordings
+    description: Recording media playback.
+  - name: Health
+    description: Liveness and dependency readiness probes.
+paths:
+  /api/v1/autocall:
+    post:
+      operationId: createAutoCall
+      tags: [Automated calls]
+      summary: Enqueue an automated call
+      description: |
+        Creates a queue job using a nonzero enqueue idempotency key. Reusing a key
+        with conflicting job data returns 409. A middleware-provided OID takes
+        precedence over the body OID; otherwise the body must supply it.
+        The current service middleware checks for a nonempty bearer token.
+        The JSON body limit is 50 MB.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AutoCallRequest'
+            example:
+              activeAlarmId: 123
+              oid: client-1
+              flowId: 5
+              variables:
+                OffenderName: Alex
+              enqueueIdempotencyKey: d148c0a7-7c0b-822a-982b-2a637f9a2776
+      responses:
+        '201':
+          description: Queue job identity, including for an accepted idempotent replay.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [systemId]
+                properties:
+                  systemId:
+                    type: integer
+                    description: SystemID returned by the queue insertion procedure.
+                    example: 42
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: A nonempty bearer token was not provided.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error]
+                properties:
+                  error:
+                    type: string
+                    example: Unauthorized. ****** required.
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/ParserError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        default:
+          description: Repository error with its propagated HTTP status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /webhooks/twilio/voice/start:
+    post:
+      operationId: startTwilioVoice
+      tags: [Twilio]
+      summary: Start an automated call and return its opening TwiML
+      description: Accepts signed form data up to 32 KB.
+      security:
+        - twilioSignature: []
+      parameters:
+        - $ref: '#/components/parameters/CallId'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TwilioVoiceForm'
+      responses:
+        '200':
+          $ref: '#/components/responses/TwiML'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/InvalidTwilioSignature'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/ParserError'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /webhooks/twilio/voice/next:
+    post:
+      operationId: advanceTwilioVoice
+      tags: [Twilio]
+      summary: Advance a call using redirect, DTMF, speech, or no-input transitions
+      description: |
+        Accepts signed form data up to 32 KB. The executionId identifies the
+        current step execution. Digits take precedence over SpeechResult.
+      security:
+        - twilioSignature: []
+      parameters:
+        - $ref: '#/components/parameters/CallId'
+        - name: executionId
+          in: query
+          required: true
+          description: UUID of the step execution being advanced.
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/TwilioVoiceForm'
+                - type: object
+                  properties:
+                    Digits:
+                      type: string
+                      pattern: '^[0-9*#]*$'
+                      default: ''
+                    SpeechResult:
+                      type: string
+                      default: ''
+                    Confidence:
+                      type: string
+                      description: Nonempty numeric string between 0 and 1 inclusive.
+                      example: '0.95'
+      responses:
+        '200':
+          $ref: '#/components/responses/TwiML'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/InvalidTwilioSignature'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/ParserError'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /webhooks/twilio/voice/status:
+    post:
+      operationId: recordTwilioVoiceStatus
+      tags: [Twilio]
+      summary: Record a call lifecycle status
+      description: Accepts signed form data up to 32 KB. Duplicate events are acknowledged.
+      security:
+        - twilioSignature: []
+      parameters:
+        - $ref: '#/components/parameters/CallId'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/TwilioVoiceForm'
+                - type: object
+                  required: [CallStatus, SequenceNumber, Timestamp]
+                  properties:
+                    CallStatus:
+                      type: string
+                      enum:
+                        - queued
+                        - initiated
+                        - ringing
+                        - in-progress
+                        - completed
+                        - busy
+                        - failed
+                        - no-answer
+                        - canceled
+                    SequenceNumber:
+                      $ref: '#/components/schemas/NonnegativeIntegerString'
+                    Timestamp:
+                      type: string
+                      description: Valid RFC 2822 UTC timestamp with GMT, UTC, or +0000 zone.
+                      example: Thu, 15 Oct 2026 12:00:00 +0000
+                    CallDuration:
+                      $ref: '#/components/schemas/NonnegativeIntegerString'
+                    SipResponseCode:
+                      type: string
+                      pattern: '^[1-6][0-9]{2}$'
+      responses:
+        '204':
+          $ref: '#/components/responses/Acknowledged'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/InvalidTwilioSignature'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/ParserError'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /webhooks/twilio/recordings/status:
+    post:
+      operationId: recordTwilioRecordingStatus
+      tags: [Twilio]
+      summary: Record recording availability and metadata
+      description: |
+        Accepts signed form data up to 32 KB. Duplicate events are acknowledged.
+        Completed recordings require RecordingUrl, RecordingDuration, and RecordingChannels.
+        Other statuses may omit those fields or send empty strings.
+      security:
+        - twilioSignature: []
+      parameters:
+        - $ref: '#/components/parameters/CallId'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TwilioRecordingForm'
+      responses:
+        '204':
+          $ref: '#/components/responses/Acknowledged'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/InvalidTwilioSignature'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/ParserError'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /webhooks/deepgram/transcriptions/completed:
+    post:
+      operationId: completeDeepgramTranscription
+      tags: [Deepgram]
+      summary: Save a transcription result or provider error
+      description: |
+        Requires application/json, no query parameters, and a body no larger than
+        8 MB. Basic-auth username is the submission correlation UUID; password is
+        the issued callback JWT. The JWT must have the configured issuer, audience,
+        algorithm (RS256 or ES256), expiration, and comma-separated permissions
+        claim containing the configured permission ID. Its SHA-256 hash must match
+        the saved submission token hash.
+
+        Identical callbacks are acknowledged with 204. A different request ID or
+        payload for an already saved result returns 409. Success payload channel
+        counts must match the saved recording and multichannel configuration.
+        Nonempty speech requires utterances. Utterance end times must not precede
+        their start or exceed duration by more than 0.01 seconds; word times must
+        be within the utterance with the same tolerance.
+      security:
+        - deepgramCallbackAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/DeepgramSuccess'
+                - $ref: '#/components/schemas/DeepgramFailure'
+      responses:
+        '204':
+          $ref: '#/components/responses/Acknowledged'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Missing or invalid callback credentials, claims, or saved token hash.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          description: Callback payload exceeds 8 MB.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/v1/auto-call/recordings/{recordingId}/content:
+    parameters:
+      - name: recordingId
+        in: path
+        required: true
+        description: Positive SQL integer identifying a saved recording.
+        schema:
+          $ref: '#/components/schemas/SqlId'
+      - name: Range
+        in: header
+        description: One byte range only; multipart ranges are not supported.
+        schema:
+          type: string
+          pattern: '^bytes=(?:\d+-\d*|-\d+)$'
+          example: bytes=0-1023
+    get:
+      operationId: getRecordingContent
+      tags: [Recordings]
+      summary: Stream a completed recording as MP3
+      description: |
+        Proxies media from Twilio without exposing provider credentials or redirecting
+        the client. Responses are not cached. This route currently has no service-level
+        authentication. A failed stream after headers are sent closes the connection.
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/RecordingAudio'
+        '206':
+          $ref: '#/components/responses/PartialRecordingAudio'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '410':
+          description: Recording media is no longer available from Twilio.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '416':
+          $ref: '#/components/responses/RangeNotSatisfiable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+    head:
+      operationId: headRecordingContent
+      tags: [Recordings]
+      summary: Retrieve recording media headers without a response body
+      description: |
+        Express implicitly supports HEAD on the GET route. Uses the same validation,
+        range handling, and Twilio lookup as GET, but never returns a response body.
+        This route currently has no service-level authentication.
+      security: []
+      responses:
+        '200':
+          description: Full recording headers.
+          headers:
+            Content-Type:
+              schema:
+                type: string
+                enum: [audio/mpeg]
+            Content-Length:
+              $ref: '#/components/headers/ContentLength'
+            Accept-Ranges:
+              $ref: '#/components/headers/AcceptRanges'
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+        '206':
+          description: Partial recording headers, including Content-Range.
+          headers:
+            Content-Range:
+              $ref: '#/components/headers/ContentRange'
+            Content-Length:
+              $ref: '#/components/headers/ContentLength'
+            Accept-Ranges:
+              $ref: '#/components/headers/AcceptRanges'
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+        '400':
+          description: Invalid recording ID or byte range.
+        '404':
+          description: Recording not found.
+        '409':
+          description: Recording is not completed or has no media URL.
+        '410':
+          description: Recording media is no longer available.
+        '416':
+          description: Requested range cannot be satisfied.
+          headers:
+            Content-Range:
+              description: Unsatisfied range, if supplied by Twilio.
+              schema:
+                type: string
+                example: bytes */4096
+        '500':
+          description: Recording lookup failed.
+        '502':
+          description: Invalid media location, upstream response, or network failure.
+        '503':
+          description: Playback is unconfigured or Twilio is temporarily unavailable.
+        '504':
+          description: Twilio media request timed out.
+  /health/live:
+    get:
+      operationId: getLiveness
+      tags: [Health]
+      summary: Check process liveness
+      security: []
+      responses:
+        '200':
+          description: Process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Liveness'
+        '503':
+          description: Process is shutting down.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Liveness'
+  /health/ready:
+    get:
+      operationId: getReadiness
+      tags: [Health]
+      summary: Check application and registered dependency readiness
+      security: []
+      responses:
+        '200':
+          description: Application and all registered dependencies are ready.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Readiness'
+        '503':
+          description: Application is initializing, degraded, or shutting down.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Readiness'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Current middleware requires a nonempty bearer token.
+    twilioSignature:
+      type: apiKey
+      in: header
+      name: X-Twilio-Signature
+      description: |
+        Twilio request signature using the configured account auth token, public
+        callback URL with original query string, and all submitted form fields.
+        AccountSid must also match the configured Twilio account.
+    deepgramCallbackAuth:
+      type: http
+      scheme: basic
+      description: Submission correlation UUID as username and callback JWT as password.
+  parameters:
+    CallId:
+      name: callId
+      in: query
+      required: true
+      description: Positive SQL integer identifying the automated call.
+      schema:
+        $ref: '#/components/schemas/SqlId'
+  headers:
+    NoStore:
+      schema:
+        type: string
+        enum: [no-store]
+    ContentLength:
+      description: Media byte length, when supplied by Twilio.
+      schema:
+        type: integer
+        minimum: 0
+    AcceptRanges:
+      description: Range capability, when supplied by Twilio.
+      schema:
+        type: string
+        enum: [bytes, none]
+    ContentRange:
+      description: Byte interval and total media size.
+      schema:
+        type: string
+        example: bytes 0-1023/4096
+  responses:
+    BadRequest:
+      description: Invalid request parameters or payload.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    InvalidTwilioSignature:
+      description: Invalid or missing signature, account mismatch, or invalid form values.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    NotFound:
+      description: Requested call, execution, or recording was not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    Conflict:
+      description: Request conflicts with saved data or the current resource state.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    UnsupportedMediaType:
+      description: Request Content-Type is not supported by this endpoint.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    InternalError:
+      description: Request processing or persistence failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    Unavailable:
+      description: Required configuration, authentication verification, or provider is unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    ParserError:
+      description: Request body exceeds the endpoint's parser limit.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LegacyError'
+    Acknowledged:
+      description: Callback recorded or identical duplicate acknowledged; no response body.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+    TwiML:
+      description: Twilio Voice Response XML for the selected call step.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+      content:
+        application/xml:
+          schema:
+            type: string
+          example: <Response><Say>Hello</Say><Hangup/></Response>
+    RecordingAudio:
+      description: Full MP3 recording.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+        Content-Length:
+          $ref: '#/components/headers/ContentLength'
+        Accept-Ranges:
+          $ref: '#/components/headers/AcceptRanges'
+      content:
+        audio/mpeg:
+          schema:
+            type: string
+            format: binary
+    PartialRecordingAudio:
+      description: Requested MP3 byte interval.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+        Content-Range:
+          $ref: '#/components/headers/ContentRange'
+        Content-Length:
+          $ref: '#/components/headers/ContentLength'
+        Accept-Ranges:
+          $ref: '#/components/headers/AcceptRanges'
+      content:
+        audio/mpeg:
+          schema:
+            type: string
+            format: binary
+    RangeNotSatisfiable:
+      description: Requested byte range cannot be satisfied.
+      headers:
+        Content-Range:
+          description: Unsatisfied range, if supplied by Twilio.
+          schema:
+            type: string
+            example: bytes */4096
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    BadGateway:
+      description: Invalid media location, upstream response, or network failure.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    GatewayTimeout:
+      description: Twilio media request timed out.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+  schemas:
+    SqlId:
+      type: integer
+      format: int32
+      minimum: 1
+      maximum: 2147483647
+    Uuid:
+      type: string
+      pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    NonnegativeIntegerString:
+      type: string
+      pattern: '^(0|[1-9]\d*)$'
+      description: Decimal integer string no greater than 2147483647.
+    AutoCallRequest:
+      type: object
+      required: [activeAlarmId, flowId, variables, enqueueIdempotencyKey]
+      properties:
+        activeAlarmId:
+          $ref: '#/components/schemas/SqlId'
+        flowId:
+          $ref: '#/components/schemas/SqlId'
+        oid:
+          type: string
+          minLength: 1
+          maxLength: 20
+          pattern: '\S'
+          description: Required unless supplied by middleware; middleware OID wins.
+        variables:
+          type: object
+          additionalProperties: true
+          description: Flow template variables.
+        enqueueIdempotencyKey:
+          allOf:
+            - $ref: '#/components/schemas/Uuid'
+            - not:
+                enum: [00000000-0000-0000-0000-000000000000]
+          description: Nonzero UUID used for idempotent queue submission.
+        callStatus:
+          type: integer
+          format: int32
+          nullable: true
+        priority:
+          type: integer
+          format: int32
+        availableAt:
+          type: string
+          nullable: true
+          description: Scheduling timestamp accepted by JavaScript Date.parse; ISO 8601 recommended.
+          example: '2026-10-15T12:00:00Z'
+        maxAttempts:
+          type: integer
+          format: int32
+          minimum: 1
+    TwilioVoiceForm:
+      type: object
+      required: [AccountSid, CallSid, To]
+      additionalProperties:
+        type: string
+      properties:
+        AccountSid:
+          type: string
+          pattern: '^AC[0-9a-fA-F]{32}$'
+        CallSid:
+          type: string
+          pattern: '^CA[0-9a-fA-F]{32}$'
+        To:
+          type: string
+          pattern: '^\+[1-9]\d{1,14}$'
+          description: Destination phone number in E.164 format.
+    TwilioRecordingForm:
+      type: object
+      required: [AccountSid, CallSid, RecordingSid, RecordingStatus]
+      additionalProperties:
+        type: string
+      properties:
+        AccountSid:
+          type: string
+          pattern: '^AC[0-9a-fA-F]{32}$'
+        CallSid:
+          type: string
+          pattern: '^CA[0-9a-fA-F]{32}$'
+        RecordingSid:
+          type: string
+          pattern: '^RE[0-9a-fA-F]{32}$'
+        RecordingStatus:
+          type: string
+          enum: [in-progress, completed, absent, failed]
+        RecordingUrl:
+          type: string
+          maxLength: 2048
+          description: |
+            Required and nonempty for completed recordings. HTTP(S) Twilio API
+            recording resource matching AccountSid, CallSid (when present in the
+            resource path), and RecordingSid; optional .wav or .mp3 suffix.
+            No credentials, explicit port, query, or fragment.
+        RecordingDuration:
+          type: string
+          pattern: '^$|^(0|[1-9]\d*)$'
+          description: Seconds, at most 2147483647; required and nonempty when completed.
+        RecordingChannels:
+          type: string
+          enum: ['', '1', '2']
+          description: Required and nonempty when completed.
+        RecordingStartTime:
+          type: string
+          description: UTC ISO timestamp or RFC 2822 UTC timestamp; empty is accepted.
+        RecordingSource:
+          type: string
+          maxLength: 100
+        RecordingTrack:
+          type: string
+          enum: ['', inbound, outbound, both]
+    DeepgramRequestIdentity:
+      type: object
+      description: |
+        Supply metadata.request_id or top-level request_id. If both are supplied,
+        they must be identical.
+      anyOf:
+        - required: [request_id]
+        - required: [metadata]
+          properties:
+            metadata:
+              required: [request_id]
+      properties:
+        request_id:
+          $ref: '#/components/schemas/Uuid'
+        metadata:
+          type: object
+          properties:
+            request_id:
+              $ref: '#/components/schemas/Uuid'
+    DeepgramSuccess:
+      allOf:
+        - $ref: '#/components/schemas/DeepgramRequestIdentity'
+        - type: object
+          required: [metadata, results]
+          not:
+            anyOf:
+              - required: [err_code]
+              - required: [err_msg]
+          properties:
+            metadata:
+              type: object
+              required: [channels, duration]
+              properties:
+                channels:
+                  type: integer
+                  enum: [1, 2]
+                duration:
+                  $ref: '#/components/schemas/Seconds'
+            results:
+              type: object
+              required: [channels]
+              properties:
+                channels:
+                  type: array
+                  minItems: 1
+                  maxItems: 2
+                  items:
+                    type: object
+                    required: [alternatives]
+                    properties:
+                      detected_language:
+                        type: string
+                        nullable: true
+                        maxLength: 35
+                      alternatives:
+                        type: array
+                        minItems: 1
+                        items:
+                          type: object
+                          required: [transcript]
+                          properties:
+                            transcript:
+                              type: string
+                utterances:
+                  type: array
+                  maxItems: 20000
+                  description: May be omitted or empty only when no channel contains speech.
+                  items:
+                    $ref: '#/components/schemas/DeepgramUtterance'
+    DeepgramFailure:
+      allOf:
+        - $ref: '#/components/schemas/DeepgramRequestIdentity'
+        - type: object
+          required: [err_code, err_msg]
+          not:
+            required: [results]
+          properties:
+            err_code:
+              type: string
+              pattern: '^[A-Z0-9_]{1,100}$'
+            err_msg:
+              type: string
+              minLength: 1
+    Seconds:
+      type: number
+      minimum: 0
+      description: Seconds whose rounded millisecond value is at most 2147483647.
+    Confidence:
+      type: number
+      nullable: true
+      minimum: 0
+      maximum: 1
+    DeepgramUtterance:
+      type: object
+      required: [start, end, channel, transcript, words]
+      properties:
+        start:
+          $ref: '#/components/schemas/Seconds'
+        end:
+          $ref: '#/components/schemas/Seconds'
+        channel:
+          type: integer
+          minimum: 0
+          maximum: 1
+          description: Zero-based result channel index; must be within results.channels.
+        transcript:
+          type: string
+        confidence:
+          $ref: '#/components/schemas/Confidence'
+        words:
+          type: array
+          items:
+            type: object
+            required: [word, start, end]
+            properties:
+              word:
+                type: string
+              start:
+                $ref: '#/components/schemas/Seconds'
+              end:
+                $ref: '#/components/schemas/Seconds'
+              confidence:
+                $ref: '#/components/schemas/Confidence'
+    LegacyError:
+      type: object
+      required: [status_code, message, error_code, error_field]
+      properties:
+        status_code:
+          type: integer
+        message:
+          type: string
+        error_code:
+          type: integer
+        error_field:
+          type: string
+          nullable: true
+    ApiError:
+      allOf:
+        - $ref: '#/components/schemas/LegacyError'
+        - type: object
+          required: [trace_id, path, details, timestamp]
+          properties:
+            trace_id:
+              type: string
+              nullable: true
+            path:
+              type: string
+              nullable: true
+            details:
+              type: object
+              nullable: true
+              additionalProperties: true
+            timestamp:
+              type: string
+              format: date-time
+    Liveness:
+      type: object
+      required: [timestamp, version, status, uptimeMs, startedAt]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        version:
+          type: string
+        status:
+          type: string
+          enum: [alive, shutting_down]
+        uptimeMs:
+          type: integer
+          minimum: 0
+        startedAt:
+          type: string
+          format: date-time
+    Readiness:
+      type: object
+      required: [timestamp, version, ready, app, dependencies]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        version:
+          type: string
+        ready:
+          type: boolean
+        app:
+          type: object
+          required: [status, ready, readySince, shuttingDown, uptimeMs, startedAt]
+          properties:
+            status:
+              type: string
+              enum: [initializing, ready, shutting_down]
+            ready:
+              type: boolean
+            readySince:
+              type: string
+              format: date-time
+              nullable: true
+            shuttingDown:
+              type: boolean
+            uptimeMs:
+              type: integer
+              minimum: 0
+            startedAt:
+              type: string
+              format: date-time
+        dependencies:
+          type: object
+          additionalProperties:
+            type: object
+            required:
+              - name
+              - status
+              - ready
+              - attempts
+              - lastCheckedAt
+              - lastSuccessAt
+              - lastFailureAt
+              - lastError
+              - metadata
+              - uptimeMs
+            properties:
+              name:
+                type: string
+              status:
+                type: string
+                enum: [pending, checking, ready, error]
+              ready:
+                type: boolean
+              attempts:
+                type: integer
+                minimum: 0
+              registeredAt:
+                type: string
+                format: date-time
+              lastCheckedAt:
+                type: string
+                format: date-time
+                nullable: true
+              lastSuccessAt:
+                type: string
+                format: date-time
+                nullable: true
+              lastFailureAt:
+                type: string
+                format: date-time
+                nullable: true
+              lastError:
+                type: object
+                nullable: true
+                additionalProperties: true
+              metadata:
+                type: object
+                additionalProperties: true
+              uptimeMs:
+                type: integer
+                nullable: true
