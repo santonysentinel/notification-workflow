@@ -4,7 +4,6 @@ using Dapper;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
-using ActiveAlarmsParser.Service.NotificationService;
 
 namespace NotificationWorkflowService.Repository;
 
@@ -18,8 +17,9 @@ public sealed class NotificationRepository : INotificationRepository
         this.logger = logger;
         string? configured = configuration["ClientDatabase"];
         if (string.IsNullOrWhiteSpace(configured)) configured = configuration.GetConnectionString("ClientDatabase");
-        connectionString = !string.IsNullOrWhiteSpace(configured) ? configured
-            : throw new InvalidOperationException("ClientDatabase is required for notification database access.");
+        connectionString = DatabaseDiagnostics.Execute(logger, "ClientDatabase", "ConfigureConnection", () =>
+            !string.IsNullOrWhiteSpace(configured) ? configured
+                : throw new InvalidOperationException("ClientDatabase is required for notification database access."));
     }
 
     public Task<IReadOnlyList<AccountNotificationSettingRow>> ReadAccountNotificationSettingsAsync(CancellationToken cancellationToken = default)
@@ -32,6 +32,7 @@ public sealed class NotificationRepository : INotificationRepository
         => ReadAsync<VictimNotificationSettingRow>("ActiveAlarms_ReadVictimNotificationSettings", cancellationToken);
 
     private async Task<IReadOnlyList<T>> ReadAsync<T>(string procedure, CancellationToken cancellationToken)
+        => await DatabaseDiagnostics.ExecuteAsync<IReadOnlyList<T>>(logger, "ClientDatabase", procedure, cancellationToken, async () =>
     {
         // Retry timing belongs to the settings cache; there is no second query retry loop.
         await using var connection = new SqlConnection(connectionString);
@@ -72,21 +73,23 @@ public sealed class NotificationRepository : INotificationRepository
         catch
         {
             try { await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false); }
-            catch (Exception rollbackFailure) { NotificationDiagnostics.Failure(logger, "SettingsRollback", rollbackFailure); }
+            catch (Exception rollbackFailure) { DatabaseDiagnostics.Failure(logger, "ClientDatabase", procedure + ":Rollback", rollbackFailure); }
             throw;
         }
-    }
+    }).ConfigureAwait(false);
 
     public Task InsertNotificationHistoryAsync(string historyId, string victimId, string note, int type, CancellationToken cancellationToken = default)
     {
         // Parse locally rather than relying on SqlClient's parameter conversion.
-        int id = int.Parse(historyId, CultureInfo.InvariantCulture);
+        int id = DatabaseDiagnostics.Execute(logger, "ClientDatabase", "ActiveAlarms_InsertIntoHistory:Prepare",
+            () => int.Parse(historyId, CultureInfo.InvariantCulture));
         return ExecuteHistoryWithRetryAsync(async token =>
+            await DatabaseDiagnostics.ExecuteAsync(logger, "ClientDatabase", "ActiveAlarms_InsertIntoHistory", token, async () =>
         {
             await using var connection = new SqlConnection(connectionString);
             await connection.OpenAsync(token).ConfigureAwait(false);
             await connection.ExecuteAsync(CreateHistoryCommand(id, victimId, note, type, token)).ConfigureAwait(false);
-        }, logger, cancellationToken);
+        }).ConfigureAwait(false), logger, cancellationToken);
     }
 
     internal static CommandDefinition CreateHistoryCommand(int historyId, string victimId, string note, int type, CancellationToken cancellationToken)

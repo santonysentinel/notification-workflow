@@ -41,6 +41,27 @@ Missing configuration remains validated by compatibility callers. Malformed conn
 syntax now fails during preparation inside the setup catch, rather than when constructing
 the old outer connection before that catch; this is a small exception-boundary difference.
 
+## Database error logging
+
+The host configures Serilog from the effective host configuration, including
+environment-specific settings. If `Serilog:WriteTo` is absent or empty, a console
+sink is added; an explicitly configured sink list is respected without adding a
+duplicate console sink. Bootstrap failures also have a console logger.
+
+Repository failures are logged at Error before propagating to existing callers.
+Logs identify the logical connection (`connstr`, `ClientDatabase`, `AutoCallDB`,
+or `TenantDatabase`), operation/procedure, exception type, and SQL error number,
+state, severity, procedure, line and connection ID when available. Connection
+preparation/open, command execution, streamed row/result reads, and workflow
+cleanup are covered. No connection strings, parameter values, raw exception
+messages or exception objects are added to these database diagnostics.
+
+Normal shutdown cancellation is not logged as a database failure. Existing
+retry counts, cancellation tokens, SQL contracts and failure propagation remain
+unchanged; a failed retry attempt can therefore produce both a database error
+and the caller's existing retry log. Transcription failures are logged before
+being translated to their existing sanitized persistence errors.
+
 ## Validation
 
 - `WorkflowRepositoryTests`: offline command metadata/value/lifetime/configuration tests.

@@ -1,12 +1,21 @@
 using System.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using NotificationWorkflowService.Service.AutoCall;
 
 namespace NotificationWorkflowService.Repository;
 
-public sealed class AutoCallQueueRepository(IConfiguration configuration) : IAutoCallQueueRepository
+public sealed class AutoCallQueueRepository(IConfiguration configuration, ILogger<AutoCallQueueRepository>? logger = null) : IAutoCallQueueRepository
 {
+    private readonly ILogger logger = logger ?? NullLogger<AutoCallQueueRepository>.Instance;
+
+    internal AutoCallQueueRepository(IConfiguration configuration, ILogger logger) : this(configuration)
+    {
+        this.logger = logger;
+    }
+
     private SqlConnection Connection()
     {
         string? value = configuration.GetConnectionString("AutoCallDB");
@@ -15,6 +24,7 @@ public sealed class AutoCallQueueRepository(IConfiguration configuration) : IAut
     }
 
     public async Task<AutoCallFlow> ReadFlowAsync(int flowId, CancellationToken cancellationToken = default)
+        => await DatabaseDiagnostics.ExecuteAsync(logger, "AutoCallDB", "ReadCallFlowTemplate", cancellationToken, async () =>
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (flowId <= 0) throw new ArgumentOutOfRangeException(nameof(flowId));
@@ -26,9 +36,10 @@ public sealed class AutoCallQueueRepository(IConfiguration configuration) : IAut
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) || reader.IsDBNull(1) || reader.IsDBNull(2))
             throw new InvalidOperationException("Published call flow with graph and TwiML is required.");
         return new AutoCallFlow(reader.GetInt32(0), reader.GetString(1), reader.GetString(2));
-    }
+    }).ConfigureAwait(false);
 
     public async Task<int> EnqueueAsync(AutoCallRequest request, CancellationToken cancellationToken = default)
+        => await DatabaseDiagnostics.ExecuteAsync(logger, "AutoCallDB", "dbo.activealarms_call_InsertJob", cancellationToken, async () =>
     {
         cancellationToken.ThrowIfCancellationRequested();
         await using var connection = Connection();
@@ -38,7 +49,7 @@ public sealed class AutoCallQueueRepository(IConfiguration configuration) : IAut
         object? result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         if (result is not int jobId || jobId <= 0) throw new InvalidOperationException("Auto-call enqueue did not return a job identity.");
         return jobId;
-    }
+    }).ConfigureAwait(false);
 
     internal static SqlCommand BuildEnqueueCommand(AutoCallRequest request)
     {

@@ -1,13 +1,18 @@
 using System.Data;
 using System.Data.Common;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using NotificationWorkflowService.Service.AutoCall;
 
 namespace NotificationWorkflowService.Repository;
 
-public sealed class AutoCallPhoneRepository : IAutoCallPhoneRepository
+public sealed class AutoCallPhoneRepository(ILogger<AutoCallPhoneRepository>? logger = null) : IAutoCallPhoneRepository
 {
+    private readonly ILogger logger = logger ?? NullLogger<AutoCallPhoneRepository>.Instance;
+
     public async Task<IReadOnlyList<string>> ReadAsync(string connectionString, string oid, CancellationToken cancellationToken = default)
+        => await DatabaseDiagnostics.ExecuteAsync(logger, "TenantDatabase", "dbo.active_alarms_GetAllParticipantPhonenumbers", cancellationToken, async () =>
     {
         cancellationToken.ThrowIfCancellationRequested();
         AutoCallContactService.ValidateOid(oid);
@@ -18,7 +23,7 @@ public sealed class AutoCallPhoneRepository : IAutoCallPhoneRepository
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await ReadPhonesAsync(reader, cancellationToken).ConfigureAwait(false);
-    }
+    }).ConfigureAwait(false);
 
     internal static SqlCommand BuildCommand(string oid)
     {

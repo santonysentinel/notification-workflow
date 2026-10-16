@@ -118,7 +118,7 @@ public class NotificationHistoryRetryTests
             return Task.CompletedTask;
         }, NullLogger.Instance, default, (duration, _) => { delay(duration); return Task.CompletedTask; });
 
-    private static SqlException CreateSqlException(int number)
+    internal static SqlException CreateSqlException(int number)
     {
         // SqlClient doesn't expose exception constructors; create realistic errors without SQL I/O.
         var constructor = typeof(SqlError).GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic)

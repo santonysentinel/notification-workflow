@@ -14,7 +14,7 @@
     internal class WorkFlowInitiator : WorkFlowCommon
     {
         public WorkFlowInitiator(ILogger<WorkFlowInitiator> logger, IConfiguration configuration, NotificationSender notificationService)
-            : this(logger, configuration, notificationService, new Repository(configuration))
+            : this(logger, configuration, notificationService, new Repository(configuration, logger))
         {
         }
 

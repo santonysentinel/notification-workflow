@@ -30,7 +30,7 @@ namespace NotificationWorkflowService.Service
         private readonly INoteService noteService;
 
         public WorkFlowInitiatorService(ILogger<WorkFlowInitiatorService> logger, IConfiguration configuration, ILoggerFactory loggerFactory, Func<WorkFlowCommon> parserFactory)
-            : this(logger, configuration, loggerFactory, parserFactory, new NotificationWorkflowService.Repository.Repository(configuration))
+            : this(logger, configuration, loggerFactory, parserFactory, new NotificationWorkflowService.Repository.Repository(configuration, loggerFactory.CreateLogger<NotificationWorkflowService.Repository.Repository>()))
         {
         }
 

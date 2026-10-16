@@ -12,7 +12,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Serilog;
 using System;
-using System.IO;
 
 namespace ActiveAlarmsParser
 {
@@ -24,15 +23,8 @@ namespace ActiveAlarmsParser
         /// <param name="args">The args<see cref="string[]"/>.</param>
         public static void Main(string[] args)
         {
-            var builder = new ConfigurationBuilder()
-                .SetBasePath(Directory.GetCurrentDirectory())
-                .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
-                //.AddJsonFile($"appsettings.{Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production"}.json", optional: true)
-                .AddEnvironmentVariables();
-
-
             Log.Logger = new LoggerConfiguration()
-                    .ReadFrom.Configuration(builder.Build())
+                    .WriteTo.Console()
                     .CreateLogger();
 
             try
@@ -94,7 +86,14 @@ namespace ActiveAlarmsParser
                 services.AddHttpClient();
                 ActiveAlarmsParser.Service.NotificationService.NotificationHttp.RegisterClients(services);
             })
-            .UseSerilog();
+            .UseSerilog((context, configuration) => ConfigureLogging(context.Configuration, configuration));
+        }
+
+        internal static void ConfigureLogging(IConfiguration settings, LoggerConfiguration logger)
+        {
+            logger.ReadFrom.Configuration(settings);
+            if (!settings.GetSection("Serilog:WriteTo").GetChildren().Any())
+                logger.WriteTo.Console();
         }
     }
 

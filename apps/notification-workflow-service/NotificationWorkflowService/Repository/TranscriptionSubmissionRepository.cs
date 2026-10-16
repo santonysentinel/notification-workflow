@@ -2,12 +2,16 @@ using System.Data;
 using Dapper;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using NotificationWorkflowService.Service.Transcription;
 
 namespace NotificationWorkflowService.Repository;
 
-public sealed class TranscriptionSubmissionRepository(IConfiguration configuration) : ITranscriptionSubmissionRepository, ITranscriptionLifecycleRepository, ITranscriptionMetricsRepository
+public sealed class TranscriptionSubmissionRepository(IConfiguration configuration, ILogger<TranscriptionSubmissionRepository>? logger = null) : ITranscriptionSubmissionRepository, ITranscriptionLifecycleRepository, ITranscriptionMetricsRepository
 {
+    private readonly ILogger logger = logger ?? NullLogger<TranscriptionSubmissionRepository>.Instance;
+
     public Task<TranscriptionQueueSnapshot> GetMetricsAsync(CancellationToken cancellationToken)
         => ReadAsync<TranscriptionQueueSnapshot>(Command("dbo.transcription_GetQueueMetrics", new DynamicParameters(), cancellationToken));
 
@@ -75,7 +79,11 @@ public sealed class TranscriptionSubmissionRepository(IConfiguration configurati
             return (await connection.QueryAsync<T>(command).ConfigureAwait(false)).ToList();
         }
         catch (OperationCanceledException) when (command.CancellationToken.IsCancellationRequested) { throw new OperationCanceledException(command.CancellationToken); }
-        catch (Exception) { throw new TranscriptionException(TranscriptionFailure.Persistence, "TRANSCRIPTION_DATABASE_UNAVAILABLE"); }
+        catch (Exception exception)
+        {
+            DatabaseDiagnostics.Failure(logger, "AutoCallDB", command.CommandText, exception);
+            throw new TranscriptionException(TranscriptionFailure.Persistence, "TRANSCRIPTION_DATABASE_UNAVAILABLE");
+        }
     }
 
     private SqlConnection Connection()
@@ -113,7 +121,11 @@ public sealed class TranscriptionSubmissionRepository(IConfiguration configurati
             return await connection.QuerySingleAsync<T>(command).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (command.CancellationToken.IsCancellationRequested) { throw new OperationCanceledException(command.CancellationToken); }
-        catch (Exception) { throw new TranscriptionException(TranscriptionFailure.Persistence, "TRANSCRIPTION_DATABASE_UNAVAILABLE"); }
+        catch (Exception exception)
+        {
+            DatabaseDiagnostics.Failure(logger, "AutoCallDB", command.CommandText, exception);
+            throw new TranscriptionException(TranscriptionFailure.Persistence, "TRANSCRIPTION_DATABASE_UNAVAILABLE");
+        }
     }
 
     private static DynamicParameters Identity(TranscriptionSubmissionIdentity identity)

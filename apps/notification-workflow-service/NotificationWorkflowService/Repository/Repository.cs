@@ -1,8 +1,11 @@
 ﻿using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using NotificationWorkflowService.Entity;
 using System.Data;
 using System.Data.Common;
+using System.Runtime.CompilerServices;
 
 namespace NotificationWorkflowService.Repository
 {
@@ -14,11 +17,18 @@ namespace NotificationWorkflowService.Repository
     {
         private readonly string? connectionString;
         private readonly IConfiguration configuration;
+        private readonly ILogger logger;
 
-        public Repository(IConfiguration configuration)
+        public Repository(IConfiguration configuration, ILogger<Repository>? logger = null)
+            : this(configuration, (ILogger)(logger ?? NullLogger<Repository>.Instance))
+        {
+        }
+
+        internal Repository(IConfiguration configuration, ILogger logger)
         {
             ArgumentNullException.ThrowIfNull(configuration);
             this.configuration = configuration;
+            this.logger = logger;
             // Do not validate here: hosted services may construct the repository before parser setup.
             connectionString = configuration.GetConnectionString("connstr");
         }
@@ -51,7 +61,11 @@ namespace NotificationWorkflowService.Repository
         public IWorkflowOperation PrepareInsertIntoCurrentAlarmNotification(int alarmSystemID, int currentStateNo, DateTime expiryTime, int displayStateNo, int currentLoopNumber, int processNext) => Prepare(() => BuildInsertIntoCurrentAlarmNotification(alarmSystemID, currentStateNo, expiryTime, displayStateNo, currentLoopNumber, processNext));
         public IWorkflowOperation PrepareGetExpiredAlarms(DateTime currentTime) => Prepare(() => BuildGetExpiredAlarms(currentTime));
 
-        private IWorkflowOperation Prepare(Func<SqlCommand> build, bool reloadConnectionString = false)
+        private IWorkflowOperation Prepare(Func<SqlCommand> build, bool reloadConnectionString = false,
+            [CallerMemberName] string operation = "")
+            => DatabaseDiagnostics.Execute(logger, "connstr", operation, () => PrepareCore(build, reloadConnectionString));
+
+        private IWorkflowOperation PrepareCore(Func<SqlCommand> build, bool reloadConnectionString)
         {
             // Service checkpoint reads reload per operation; parsers retain the constructor snapshot.
             var selectedConnectionString = reloadConnectionString ? configuration.GetConnectionString("connstr") : connectionString;
@@ -62,7 +76,7 @@ namespace NotificationWorkflowService.Repository
             {
                 command = build();
                 command.Connection = connection;
-                return new WorkflowOperation(connection, command);
+                return new WorkflowOperation(connection, command, logger);
             }
             catch
             {
@@ -239,12 +253,14 @@ namespace NotificationWorkflowService.Repository
         {
             private readonly SqlConnection connection;
             private readonly List<DbDataReader> readers = new();
+            private readonly ILogger logger;
             private bool disposed;
 
-            internal WorkflowOperation(SqlConnection connection, SqlCommand command)
+            internal WorkflowOperation(SqlConnection connection, SqlCommand command, ILogger? logger = null)
             {
                 this.connection = connection;
                 Command = command;
+                this.logger = logger ?? NullLogger.Instance;
             }
 
             // Offline contract-test seam; never expose connection strings or command snapshots publicly.
@@ -254,30 +270,35 @@ namespace NotificationWorkflowService.Repository
             {
                 ObjectDisposedException.ThrowIf(disposed, this);
                 cancellationToken.ThrowIfCancellationRequested();
-                await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                await DatabaseDiagnostics.ExecuteAsync(logger, "connstr", Command.CommandText + ":Open",
+                    cancellationToken, () => connection.OpenAsync(cancellationToken)).ConfigureAwait(false);
             }
 
             public async Task<DbDataReader> ExecuteReaderAsync(CancellationToken cancellationToken = default)
             {
                 ObjectDisposedException.ThrowIf(disposed, this);
                 cancellationToken.ThrowIfCancellationRequested();
-                var reader = await Command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-                readers.Add(reader);
-                return reader;
+                var reader = await DatabaseDiagnostics.ExecuteAsync(logger, "connstr", Command.CommandText,
+                    cancellationToken, () => Command.ExecuteReaderAsync(cancellationToken)).ConfigureAwait(false);
+                var loggedReader = new LoggingDbDataReader(reader, logger, Command.CommandText);
+                readers.Add(loggedReader);
+                return loggedReader;
             }
 
             public async Task<int> ExecuteNonQueryAsync(CancellationToken cancellationToken = default)
             {
                 ObjectDisposedException.ThrowIf(disposed, this);
                 cancellationToken.ThrowIfCancellationRequested();
-                return await Command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                return await DatabaseDiagnostics.ExecuteAsync(logger, "connstr", Command.CommandText,
+                    cancellationToken, () => Command.ExecuteNonQueryAsync(cancellationToken)).ConfigureAwait(false);
             }
 
             public Task CloseAsync()
             {
                 ObjectDisposedException.ThrowIf(disposed, this);
                 // Caller-directed close only; do not dispose readers or reset command before a retry.
-                return connection.CloseAsync();
+                return DatabaseDiagnostics.ExecuteAsync(logger, "connstr", Command.CommandText + ":Close",
+                    CancellationToken.None, () => connection.CloseAsync());
             }
 
             public async ValueTask DisposeAsync()
@@ -306,8 +327,16 @@ namespace NotificationWorkflowService.Repository
                 }
                 finally
                 {
-                    try { await Command.DisposeAsync().ConfigureAwait(false); }
-                    finally { await connection.DisposeAsync().ConfigureAwait(false); }
+                    try
+                    {
+                        await DatabaseDiagnostics.ExecuteAsync(logger, "connstr", Command.CommandText + ":DisposeCommand",
+                            CancellationToken.None, () => Command.DisposeAsync().AsTask()).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        await DatabaseDiagnostics.ExecuteAsync(logger, "connstr", Command.CommandText + ":DisposeConnection",
+                            CancellationToken.None, () => connection.DisposeAsync().AsTask()).ConfigureAwait(false);
+                    }
                 }
             }
         }

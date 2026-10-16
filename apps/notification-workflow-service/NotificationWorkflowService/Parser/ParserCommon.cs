@@ -109,7 +109,7 @@ namespace NotificationWorkflowService.Parser
         /// </summary>
         /// <param name="connection">The connection<see cref="String"/>.</param>
         public WorkFlowCommon(ILogger<WorkFlowCommon> logger, IConfiguration configuration, NotificationSender notificationService)
-            : this(logger, configuration, notificationService, new NotificationWorkflowService.Repository.Repository(configuration))
+            : this(logger, configuration, notificationService, new NotificationWorkflowService.Repository.Repository(configuration, logger))
         {
         }
 
@@ -146,7 +146,7 @@ namespace NotificationWorkflowService.Parser
             this.notificationService = notificationService;
             this.repository = repository;
             this.noteService = noteService;
-            this.autoCallService = autoCallService ?? new NotificationWorkflowService.Service.AutoCall.AutoCallEnqueueService(new AutoCallQueueRepository(configuration));
+            this.autoCallService = autoCallService ?? new NotificationWorkflowService.Service.AutoCall.AutoCallEnqueueService(new AutoCallQueueRepository(configuration, logger));
             Platform = configuration["Platform"] ?? "";
             setUpConnnectionStrings();
         }

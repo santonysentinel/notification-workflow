@@ -28,5 +28,12 @@ History writes retain a 30-second command timeout and three deadlock-only attemp
 cancellable 2-/4-second delays. Other errors propagate. Confirmed HTTP deliveries are removed
 before history persistence, so a history failure cannot resend them.
 
+Connection/configuration, settings-read (including parameter discovery and
+transaction commit), rollback, and history-write failures are logged through
+the shared database diagnostics. Every failed history attempt is logged before
+the existing deadlock retry policy runs. Logs include the logical database,
+operation and allowlisted SQL error metadata, but not credentials, parameter
+values or raw exception messages. Expected cancellation is not an error.
+
 HTTP, authentication, notification eligibility, and snapshot caching remain outside this
 repository. Parser SQL and the original generic repository stubs are unchanged.

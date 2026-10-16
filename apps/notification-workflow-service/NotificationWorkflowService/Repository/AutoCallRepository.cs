@@ -2,12 +2,16 @@ using System.Data;
 using Dapper;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using NotificationWorkflowService.Service.AutoCall;
 
 namespace NotificationWorkflowService.Repository;
 
-public sealed class AutoCallRepository(IConfiguration configuration) : IAutoCallRepository, IAutoCallSubmissionRepository, IAutoCallRecoveryRepository
+public sealed class AutoCallRepository(IConfiguration configuration, ILogger<AutoCallRepository>? logger = null) : IAutoCallRepository, IAutoCallSubmissionRepository, IAutoCallRecoveryRepository
 {
+    private readonly ILogger logger = logger ?? NullLogger<AutoCallRepository>.Instance;
+
     public async Task<AutoCallSubmissionResult> BeginSubmissionAsync(AutoCallAttempt attempt, string workerId, Guid token, AutoCallSubmissionRequest request, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -94,23 +98,19 @@ public sealed class AutoCallRepository(IConfiguration configuration) : IAutoCall
     }
 
     private async Task ExecuteRecoveryAsync(string procedure, DynamicParameters parameters, CancellationToken cancellationToken)
+        => await DatabaseDiagnostics.ExecuteAsync(logger, "AutoCallDB", procedure, cancellationToken, async () =>
     {
         cancellationToken.ThrowIfCancellationRequested();
         await using var connection = Connection();
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         await connection.ExecuteAsync(Command(procedure, parameters, cancellationToken)).ConfigureAwait(false);
-    }
+    }).ConfigureAwait(false);
 
     public async Task<int> SavePreparationAsync(AutoCallAttempt attempt, string workerId, AutoCallPreparedBundle bundle, CancellationToken cancellationToken)
         => (await ReadAsync<int>(SaveCommand(attempt, workerId, bundle, cancellationToken)).ConfigureAwait(false)).Single();
 
-    public async Task FailPreparationAsync(AutoCallJob job, string workerId, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        await using var connection = Connection();
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        await connection.ExecuteAsync(Command("dbo.automatedcalls_FailPreparation", ClaimParameters(job.SystemID, job.LeaseToken, workerId), cancellationToken)).ConfigureAwait(false);
-    }
+    public Task FailPreparationAsync(AutoCallJob job, string workerId, CancellationToken cancellationToken)
+        => ExecuteRecoveryAsync("dbo.automatedcalls_FailPreparation", ClaimParameters(job.SystemID, job.LeaseToken, workerId), cancellationToken);
 
     private SqlConnection Connection()
     {
@@ -120,12 +120,13 @@ public sealed class AutoCallRepository(IConfiguration configuration) : IAutoCall
     }
 
     private async Task<IReadOnlyList<T>> ReadAsync<T>(CommandDefinition command)
+        => await DatabaseDiagnostics.ExecuteAsync<IReadOnlyList<T>>(logger, "AutoCallDB", command.CommandText, command.CancellationToken, async () =>
     {
         command.CancellationToken.ThrowIfCancellationRequested();
         await using var connection = Connection();
         await connection.OpenAsync(command.CancellationToken).ConfigureAwait(false);
         return (await connection.QueryAsync<T>(command).ConfigureAwait(false)).ToList();
-    }
+    }).ConfigureAwait(false);
 
     private static CommandDefinition Command(string procedure, DynamicParameters parameters, CancellationToken token)
         => new(procedure, parameters, commandTimeout: 30, commandType: CommandType.StoredProcedure, cancellationToken: token);

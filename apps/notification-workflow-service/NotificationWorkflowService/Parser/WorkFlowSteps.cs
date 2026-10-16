@@ -82,7 +82,7 @@
         /// <param name="logger">The logger.</param>
         /// <param name="configuration">The application configuration.</param>
         public WorkFlowSteps(ILogger<WorkFlowSteps> logger, IConfiguration configuration)
-            : this(logger, configuration, new Repository(configuration))
+            : this(logger, configuration, new Repository(configuration, logger))
         {
         }
 
@@ -103,7 +103,7 @@
             this.configuration = configuration;
             this.repository = repository;
             this.noteService = noteService;
-            this.autoCallService = autoCallService ?? new NotificationWorkflowService.Service.AutoCall.AutoCallEnqueueService(new AutoCallQueueRepository(configuration));
+            this.autoCallService = autoCallService ?? new NotificationWorkflowService.Service.AutoCall.AutoCallEnqueueService(new AutoCallQueueRepository(configuration, logger));
             setUpConnnectionStrings();
         }
 
