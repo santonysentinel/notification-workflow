@@ -14,7 +14,6 @@ public sealed class TranscriptionWorker(ITranscriptionLifecycleRepository reposi
     internal async Task<int> RunCycleAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!options.Enabled) return 0;
         options.Validate();
         for (int index = inFlight.Count - 1; index >= 0; index--)
         {
@@ -47,7 +46,6 @@ public sealed class TranscriptionWorker(ITranscriptionLifecycleRepository reposi
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!options.Enabled) return;
         options.Validate();
         providers.Validate();
         try

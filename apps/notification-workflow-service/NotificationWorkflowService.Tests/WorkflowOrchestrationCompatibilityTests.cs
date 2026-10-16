@@ -146,11 +146,16 @@ public class WorkflowOrchestrationCompatibilityTests
     [InlineData("normal", typeof(Worker))]
     [InlineData("Step", typeof(StepWorker))]
     [InlineData("step", typeof(StepWorker))]
+    [InlineData("AutoCall", typeof(AutoCallWorker))]
+    [InlineData("autocall", typeof(AutoCallWorker))]
+    [InlineData("Transcription", typeof(TranscriptionWorker))]
+    [InlineData("transcription", typeof(TranscriptionWorker))]
     public void RealHostBuildSelectsWorkerAndRetainsNormalFactoryAndCompatibilityRegistrations(string mode, Type workerType)
     {
         ServiceDescriptor[] descriptors = [];
         using var host = Program.CreateHostBuilder([
-            "--WorkerMode", mode, "--ConnectionStrings:connstr", "offline-connection-string", "--Platform", "offline-test"
+            "--WorkerMode", mode, "--ConnectionStrings:connstr", "offline-connection-string", "--Platform", "offline-test",
+            "--AutoCall:Worker:FeedbackBaseUrl", "https://feedback.example"
         ]).ConfigureServices((_, services) => descriptors = services.ToArray()).Build();
         Assert.Equal(mode, host.Services.GetRequiredService<IConfiguration>()["WorkerMode"]);
         Assert.Equal(workerType, Assert.Single(host.Services.GetServices<IHostedService>()).GetType());
@@ -169,6 +174,29 @@ public class WorkflowOrchestrationCompatibilityTests
         // Do not start the host or invoke the parser factory: constructing the real
         // sender initializes static authentication/settings. Typed construction is
         // exercised separately above with an uninitialized sender and offline spy.
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("Unknown")]
+    public void InvalidWorkerModeFailsWithSupportedModes(string mode)
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            Program.CreateHostBuilder(["--WorkerMode", mode]).Build());
+        Assert.Equal("WorkerMode must be 'Normal', 'Step', 'AutoCall' or 'Transcription'.", exception.Message);
+    }
+
+    [Fact]
+    public void MissingWorkerModeDefaultsToNormalOnly()
+    {
+        using var host = Program.CreateHostBuilder([])
+            .ConfigureAppConfiguration((_, builder) => builder.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["WorkerMode"] = null,
+                ["AutoCall:Worker:Enabled"] = "true",
+                ["Transcription:Worker:Enabled"] = "true"
+            })).Build();
+        Assert.IsType<Worker>(Assert.Single(host.Services.GetServices<IHostedService>()));
     }
 
     [Fact]

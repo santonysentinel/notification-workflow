@@ -17,7 +17,7 @@ public sealed class AutoCallSubmissionTests
     private const string Sid = "CAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     private static AutoCallTwilioOptions Options(bool enabled = true, bool record = false, int seconds = 30) => new()
     { Enabled = enabled, AccountSid = Account, AuthToken = "test-secret", FromNumber = "+15557654321", RecordCalls = record, TimeoutSeconds = seconds };
-    private static AutoCallWorkerOptions Worker() => new() { Enabled = true, FeedbackBaseUrl = "https://feedback.example/prefix/", WorkerId = "worker" };
+    private static AutoCallWorkerOptions Worker() => new() { FeedbackBaseUrl = "https://feedback.example/prefix/", WorkerId = "worker" };
     private static AutoCallAttempt Attempt() => new()
     {
         CallId = 42, QueueId = 7, QueueLeaseToken = Guid.NewGuid(), PhoneE164 = "+15551234567",
@@ -361,13 +361,17 @@ public sealed class AutoCallSubmissionTests
     }
 
     [Fact]
-    public void OptInRequiresValidCredentialsAndEnabledWorker()
+    public void OptInRequiresValidCredentialsAndWorkerConfiguration()
     {
         Options(false).Validate(new());
         Options().Validate(Worker());
         Assert.Throws<InvalidOperationException>(() => Options().Validate(new()));
         Assert.Throws<InvalidOperationException>(() => new AutoCallTwilioOptions { Enabled = true }.Validate(Worker()));
-        var services = new ServiceCollection().AddSingleton<IConfiguration>(new ConfigurationBuilder().Build()).AddAutoCallContacts();
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["AutoCall:Worker:FeedbackBaseUrl"] = "https://feedback.example"
+        }).Build();
+        var services = new ServiceCollection().AddSingleton<IConfiguration>(configuration).AddAutoCallContacts();
         using var provider = services.BuildServiceProvider();
         Assert.False(provider.GetRequiredService<AutoCallTwilioOptions>().Enabled);
         Assert.IsType<AutoCallSubmissionService>(provider.GetRequiredService<IAutoCallSubmissionService>());

@@ -249,7 +249,10 @@ public sealed class AutoCallRecoveryTests
         var harness = new Harness();
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddSingleton<IConfiguration>(new ConfigurationBuilder().Build());
+        services.AddSingleton<IConfiguration>(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["AutoCall:Worker:FeedbackBaseUrl"] = "https://feedback.example"
+        }).Build());
         services.AddAutoCallContacts();
         services.AddSingleton<IAutoCallRepository>(harness);
         services.AddSingleton<IAutoCallProcessingService>(harness);

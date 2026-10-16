@@ -17,9 +17,9 @@ public sealed class AutoCallTwilioOptions
     {
         if (!Enabled) return;
         worker.Validate();
-        if (!worker.Enabled || !ValidSid(AccountSid, "AC") || string.IsNullOrWhiteSpace(AuthToken) || AuthToken != AuthToken.Trim() ||
+        if (!ValidSid(AccountSid, "AC") || string.IsNullOrWhiteSpace(AuthToken) || AuthToken != AuthToken.Trim() ||
             !ValidPhone(FromNumber) || TimeoutSeconds is < 1 or > 120 || TimeoutSeconds + worker.PreparationTimeoutSeconds + 5 >= worker.LeaseMinutes * 60)
-            throw new InvalidOperationException("Invalid AutoCall:Twilio credentials, sender or timeout; an enabled worker and sufficient lease duration are required.");
+            throw new InvalidOperationException("Invalid AutoCall:Twilio credentials, sender or timeout; valid worker settings and sufficient lease duration are required.");
     }
 
     internal static bool ValidSid(string value, string prefix)

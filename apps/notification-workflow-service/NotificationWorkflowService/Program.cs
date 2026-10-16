@@ -53,27 +53,28 @@ namespace ActiveAlarmsParser
             .ConfigureServices((hostContext, services) =>
             {
                 string workerMode = hostContext.Configuration["WorkerMode"] ?? "Normal";
-                if (string.Equals(workerMode, "Normal", StringComparison.OrdinalIgnoreCase))
+                switch (workerMode.ToUpperInvariant())
                 {
-                    services.AddHostedService<Worker>();
-                }
-                else if (string.Equals(workerMode, "Step", StringComparison.OrdinalIgnoreCase))
-                {
-                    services.AddHostedService<StepWorker>();
-                }
-                else
-                {
-                    throw new InvalidOperationException("WorkerMode must be 'Normal' or 'Step'.");
+                    case "NORMAL":
+                        services.AddHostedService<Worker>();
+                        break;
+                    case "STEP":
+                        services.AddHostedService<StepWorker>();
+                        break;
+                    case "AUTOCALL":
+                        services.AddHostedService<AutoCallWorker>();
+                        break;
+                    case "TRANSCRIPTION":
+                        services.AddHostedService<TranscriptionWorker>();
+                        break;
+                    default:
+                        throw new InvalidOperationException("WorkerMode must be 'Normal', 'Step', 'AutoCall' or 'Transcription'.");
                 }
                 services.AddTransient<NotificationSender>();
                 services.AddTransient<IRepository, Repository>();
                 services.AddNoteServices();
                 services.AddAutoCallContacts();
                 services.AddTranscriptionClients();
-                if (hostContext.Configuration.GetValue<bool>("Transcription:Worker:Enabled"))
-                    services.AddHostedService<TranscriptionWorker>();
-                if (hostContext.Configuration.GetValue<bool>("AutoCall:Worker:Enabled"))
-                    services.AddHostedService<AutoCallWorker>();
                 services.AddSingleton<NotificationWorkflowService.Repository.INotificationRepository, NotificationWorkflowService.Repository.NotificationRepository>();
                 services.AddTransient<WorkFlowCommon>();
                 services.AddTransient<Func<WorkFlowCommon>>(provider => () => provider.GetRequiredService<WorkFlowCommon>());

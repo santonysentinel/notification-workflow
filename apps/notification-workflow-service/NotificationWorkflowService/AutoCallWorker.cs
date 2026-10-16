@@ -43,7 +43,6 @@ public sealed class AutoCallWorker(IAutoCallRepository repository, IAutoCallProc
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         options.Validate();
-        if (!options.Enabled) return;
         try
         {
             while (!stoppingToken.IsCancellationRequested)

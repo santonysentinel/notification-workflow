@@ -344,7 +344,7 @@ public sealed class TranscriptionSqlConcurrencyTests
         { ["ConnectionStrings:AutoCallDB"] = Environment.GetEnvironmentVariable(AutoCallSqlConcurrencyTests.ConnectionVariable) }).Build());
     private static CallbackCredential RaceCredential() => new("transcription-race-token", DateTime.UtcNow.AddHours(2));
     private static TranscriptionWorker SqlWorker(ITranscriptionLifecycleRepository repository, ITranscriptionSubmissionService uploads)
-        => new(repository, uploads, new() { Enabled = true, MaxOutstandingSubmissions = 1 }, new(), NullLogger<TranscriptionWorker>.Instance);
+        => new(repository, uploads, new() { MaxOutstandingSubmissions = 1 }, new(), NullLogger<TranscriptionWorker>.Instance);
     private sealed class LifecycleSubmission(Func<TranscriptionWork, string, CancellationToken, Task<TranscriptionResult>> submit) : ITranscriptionSubmissionService
     {
         public int Calls { get; private set; }

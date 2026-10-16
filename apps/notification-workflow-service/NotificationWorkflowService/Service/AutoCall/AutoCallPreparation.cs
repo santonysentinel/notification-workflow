@@ -60,7 +60,6 @@ public interface IAutoCallProcessingService
 
 public sealed class AutoCallWorkerOptions
 {
-    public bool Enabled { get; init; }
     public int MaxConcurrency { get; init; } = 1;
     public int LeaseMinutes { get; init; } = 5;
     public int PollSeconds { get; init; } = 5;
@@ -74,7 +73,7 @@ public sealed class AutoCallWorkerOptions
             PreparationTimeoutSeconds < 1 || PreparationTimeoutSeconds >= LeaseMinutes * 60 ||
             string.IsNullOrWhiteSpace(WorkerId) || WorkerId.Length > 100 || WorkerId != WorkerId.Trim())
             throw new InvalidOperationException("Invalid AutoCall:Worker capacity, timing or identity configuration.");
-        if (Enabled) ValidateBaseUrl(FeedbackBaseUrl);
+        ValidateBaseUrl(FeedbackBaseUrl);
     }
 
     internal static string ValidateBaseUrl(string value)

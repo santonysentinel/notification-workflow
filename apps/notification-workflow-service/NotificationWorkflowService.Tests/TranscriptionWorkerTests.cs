@@ -15,7 +15,7 @@ public sealed class TranscriptionWorkerTests
     private static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     private static Task Finish(Task task) => task.WaitAsync(TimeSpan.FromSeconds(5));
     private static TranscriptionWorkerOptions Options(int concurrency = 1, int outstanding = 10) => new()
-    { Enabled = true, UploadConcurrency = concurrency, MaxOutstandingSubmissions = outstanding, LeaseSeconds = 10, RenewalSeconds = 2, DatabaseTimeoutSeconds = 1, PollSeconds = 1 };
+    { UploadConcurrency = concurrency, MaxOutstandingSubmissions = outstanding, LeaseSeconds = 10, RenewalSeconds = 2, DatabaseTimeoutSeconds = 1, PollSeconds = 1 };
     private static TranscriptionOptions Providers() => new()
     {
         Enabled = true, DeepgramApiKey = "test-key",
@@ -104,19 +104,18 @@ public sealed class TranscriptionWorkerTests
     }
 
     [Fact]
-    public async Task DisabledWorkerHasNoDatabaseOrProviderActivity()
+    public async Task CanceledWorkerCycleHasNoDatabaseOrProviderActivity()
     {
         var repository = new Lifecycle(1);
         var submission = new Submission(repository);
         using var worker = new TranscriptionWorker(repository, submission, new(), new(), new Logs());
-        await worker.StartAsync(default);
-        Assert.Equal(0, await worker.RunCycleAsync(default));
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => worker.RunCycleAsync(cancellation.Token));
         Assert.Equal(0, repository.Recoveries);
         Assert.Equal(0, submission.Calls);
-        Assert.False(new TranscriptionWorkerOptions().Enabled);
         Assert.Equal(1, new TranscriptionWorkerOptions().UploadConcurrency);
         Assert.Equal(10, new TranscriptionWorkerOptions().MaxOutstandingSubmissions);
-        await worker.StopAsync(default);
     }
 
     [Theory]
@@ -126,16 +125,24 @@ public sealed class TranscriptionWorkerTests
     [InlineData("Step", false, true)]
     [InlineData("Step", true, false)]
     [InlineData("Step", true, true)]
-    public void RegistrationIsIndependentOfExistingWorkers(string mode, bool transcription, bool autoCall)
+    [InlineData("AutoCall", true, false)]
+    [InlineData("Transcription", false, false)]
+    [InlineData("Transcription", true, true)]
+    public void LegacyEnableFlagsCannotStartAdditionalWorkers(string mode, bool transcription, bool autoCall)
     {
         Type[] registered = [];
         using var host = Program.CreateHostBuilder(["--WorkerMode", mode, "--Transcription:Worker:Enabled", transcription.ToString(),
             "--AutoCall:Worker:Enabled", autoCall.ToString(), "--AutoCall:Worker:FeedbackBaseUrl", "https://feedback.example"])
             .ConfigureServices((_, services) => registered = services.Where(descriptor => descriptor.ServiceType == typeof(IHostedService))
                 .Select(descriptor => descriptor.ImplementationType!).ToArray()).Build();
-        Assert.Equal(transcription, registered.Contains(typeof(TranscriptionWorker)));
-        Assert.Equal(autoCall, registered.Contains(typeof(AutoCallWorker)));
-        Assert.Contains(mode == "Normal" ? typeof(Worker) : typeof(StepWorker), registered);
+        Type expected = mode switch
+        {
+            "Normal" => typeof(Worker),
+            "Step" => typeof(StepWorker),
+            "AutoCall" => typeof(AutoCallWorker),
+            _ => typeof(TranscriptionWorker)
+        };
+        Assert.Equal(expected, Assert.Single(registered));
     }
 
     [Theory]

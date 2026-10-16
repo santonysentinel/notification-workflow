@@ -4,7 +4,6 @@ namespace NotificationWorkflowService.Service.Transcription;
 
 public sealed class TranscriptionWorkerOptions
 {
-    public bool Enabled { get; init; }
     public int UploadConcurrency { get; init; } = 1;
     public int MaxOutstandingSubmissions { get; init; } = 10;
     public int LeaseSeconds { get; init; } = 300;

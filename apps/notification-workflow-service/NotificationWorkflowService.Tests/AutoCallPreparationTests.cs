@@ -24,7 +24,7 @@ public sealed class AutoCallPreparationTests
         TemplateTwiML = xml ?? "<CallFlow initialStep=\"hello\"><Step id=\"hello\"><Response><Say>{{OffenderName}} {{recipient}} {{callId}}</Say><Gather action=\"{{feedbackBaseUrl}}/old\"/><Redirect>old</Redirect><Record/></Response></Step><Step id=\"end\"><Response><Hangup/></Response></Step></CallFlow>",
         TwiML = prepared ? "original-xml" : null, Parameters = prepared ? "original-parameters" : null
     };
-    private static AutoCallWorkerOptions Options(int capacity = 2) => new() { Enabled = true, MaxConcurrency = capacity, WorkerId = "worker", FeedbackBaseUrl = "https://feedback.example/prefix/" };
+    private static AutoCallWorkerOptions Options(int capacity = 2) => new() { MaxConcurrency = capacity, WorkerId = "worker", FeedbackBaseUrl = "https://feedback.example/prefix/" };
 
     private sealed class Repository : IAutoCallRepository
     {
@@ -190,13 +190,16 @@ public sealed class AutoCallPreparationTests
     [InlineData("Normal", false)]
     [InlineData("Normal", true)]
     [InlineData("Step", true)]
-    public void PreparationWorkerRegistrationIsOptInAlongsideEitherWorkflowMode(string mode, bool enabled)
+    [InlineData("AutoCall", false)]
+    [InlineData("AutoCall", true)]
+    [InlineData("Transcription", true)]
+    public void PreparationWorkerIsSelectedOnlyByWorkerMode(string mode, bool legacyEnabled)
     {
         bool registered = false;
-        using var host = Program.CreateHostBuilder(["--WorkerMode", mode, "--AutoCall:Worker:Enabled", enabled.ToString(), "--AutoCall:Worker:FeedbackBaseUrl", "https://feedback.example"])
+        using var host = Program.CreateHostBuilder(["--WorkerMode", mode, "--AutoCall:Worker:Enabled", legacyEnabled.ToString(), "--AutoCall:Worker:FeedbackBaseUrl", "https://feedback.example"])
             .ConfigureServices((_, services) => registered = services.Any(descriptor => descriptor.ImplementationType == typeof(AutoCallWorker)))
             .Build();
-        Assert.Equal(enabled, registered);
+        Assert.Equal(mode == "AutoCall", registered);
         Assert.IsType<AutoCallRepository>(host.Services.GetRequiredService<IAutoCallRepository>());
     }
 
