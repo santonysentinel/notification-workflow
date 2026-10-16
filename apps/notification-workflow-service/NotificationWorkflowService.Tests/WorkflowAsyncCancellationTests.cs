@@ -19,7 +19,7 @@ namespace NotificationWorkflowService.Tests;
 
 /// <summary>
 /// Native async, instance-local cancellation contracts. Gates, not sleeps, establish
-/// ordering. Never start a host, initialize a sender/settings, open SQL or reach Title.
+/// ordering. Never start a host, initialize a sender/settings or open SQL.
 /// The adapter suite's exposed async reflection helper also traverses inherited privates.
 /// </summary>
 public class WorkflowAsyncCancellationTests
@@ -246,7 +246,7 @@ public class WorkflowAsyncCancellationTests
         using var cancellation = new CancellationTokenSource();
         var gate = new AsyncGate();
         // For normal mode, service reads current + checkpoint before readPoints' first
-        // checkpoint. Block that checkpoint before readPoints touches Console.Title.
+        // checkpoint. Block that checkpoint before the normal polling batch begins.
         int normalCheckpointReads = 0;
         spy.OnBoundary = (operation, name, token) =>
         {

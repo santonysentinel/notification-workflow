@@ -33,7 +33,7 @@ public class WorkflowActionSourceCharacterizationTests
         Assert.Matches(@"\binternal\s+class\s+WorkFlowInitiator\s*:\s*WorkFlowCommon", code);
         Assert.Equal(3, Regex.Matches(code, @"\bpublic\s+WorkFlowInitiator\s*\(").Count);
         Assert.Equal(3, Regex.Matches(code, @"\)\s*:\s*(?:this|base)\s*\([^{}]*\)\s*\{\s*\}").Count);
-        Assert.Contains(": this(logger, configuration, notificationService, new Repository(configuration))", source);
+        Assert.Contains(": this(logger, configuration, notificationService, new Repository(configuration, logger))", source);
         Assert.Contains(": base((ILogger)logger, configuration, notificationService, repository)", source);
         Assert.Contains(": base((ILogger)logger, configuration, notificationService, repository, noteService)", source);
         Assert.DoesNotMatch(@"\b(?:override|virtual)\b", code);

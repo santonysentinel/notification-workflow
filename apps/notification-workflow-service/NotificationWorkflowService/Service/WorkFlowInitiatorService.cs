@@ -84,7 +84,6 @@ namespace NotificationWorkflowService.Service
                     }
 
                     lastParserResetTime = DateTime.UtcNow;
-                    Console.Title = "Active Alarms Parser: " + DateTime.UtcNow.ToString("D");
                 }
 
                 if (await p.readPointsAsync(cancellationToken).ConfigureAwait(false))
@@ -273,8 +272,6 @@ namespace NotificationWorkflowService.Service
                             catch (SqlException ex)
                             {
                                 log.LogError(ex, "SQLException on readLastSuccessfulProcess in Parser ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readLastSuccessfulProcess in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -297,8 +294,6 @@ namespace NotificationWorkflowService.Service
                             {
                                 cancellationToken.ThrowIfCancellationRequested();
                                 log.LogError(exc, "ERROR: Unable to Read Last successful processed ActiveAlarms point ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Last successful processed ActiveAlarms point " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -320,8 +315,6 @@ namespace NotificationWorkflowService.Service
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     log.LogError(e, "ERROR: Unable to Read Last successful processed ActiveAlarms point ");
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine(DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Last successful processed ActiveAlarms point " + e);
                     await MyConnection.CloseAsync().ConfigureAwait(false);
                 }
             }

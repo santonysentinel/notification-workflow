@@ -18,6 +18,19 @@ public class WorkflowActionExecutorTests
     private const string VictimMail = "victim@example.test;victim@example.test;";
     private const string VictimText = "123;123;";
 
+    [Theory]
+    [InlineData(false, 1, "Do Nothing")]
+    [InlineData(true, 3, "McApp")]
+    [InlineData(false, 11, "Delay")]
+    public async Task ActionUsesLoggerExactlyOnce(bool step, int priority, string action)
+    {
+        var fixture = new Fixture(step, priority);
+        await fixture.ExecuteAsync();
+        string message = Assert.Single(fixture.Logger.Information);
+        Assert.Contains("AAID:101", message);
+        Assert.Contains("Action: " + action, message);
+    }
+
     // Independently specified expected summaries and operation sequences, not source projections.
     private sealed record Scenario(int Priority, int Role, string Normal, string Step,
         bool NormalInsert, bool StepInsert, bool Stops, string[] Calls);
@@ -466,12 +479,14 @@ public class WorkflowActionExecutorTests
     private sealed class RecordingLogger : ILogger
     {
         public List<(Exception? Exception, string Message)> Errors { get; } = [];
+        public List<string> Information { get; } = [];
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
             if (logLevel == LogLevel.Error) Errors.Add((exception, formatter(state, exception)));
+            if (logLevel == LogLevel.Information) Information.Add(formatter(state, exception));
         }
     }
 }

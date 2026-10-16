@@ -275,18 +275,13 @@ internal static class WorkflowActionExecutor
     {
         bool step = context.Mode == WorkflowActionMode.Step;
         bool suffix = step ? a.Priority <= 12 : a.Priority == 11;
-        Console.ForegroundColor = step && a.Priority != 12 && a.Priority < 13 ? ConsoleColor.Cyan : ConsoleColor.Green;
-        // Step priorities 1/2 retain AAID; subsequent console messages use platform instead.
-        Console.WriteLine(FormatAction(a, context, action, suffix, step && a.Priority != 1 && a.Priority != 2));
-        context.Logger.LogInformation(FormatAction(a, context, action, suffix, false));
+        context.Logger.LogInformation(FormatAction(a, action, suffix));
     }
 
-    private static string FormatAction(ActiveAlarm a, WorkflowActionContext context, string action, bool suffix, bool platformPrefix)
+    private static string FormatAction(ActiveAlarm a, string action, bool suffix)
     {
-        // Evaluate timestamp, alarm fields and suffix separately for console and logger, as before.
-        return (platformPrefix ? "[" + context.Platform + "] " : "")
-            + DateTime.UtcNow.ToString("HH:mm:ss")
-            + (platformPrefix ? " " : " AAID:" + a.SystemID.ToString() + " ")
+        return DateTime.UtcNow.ToString("HH:mm:ss")
+            + " AAID:" + a.SystemID.ToString() + " "
             + a.ClientID.Trim() + " in POGroup " + a.POGroupNum + " - " + "[" + a.AlarmID + "]"
             + " Action: " + action + (suffix ? " " + "(Step " + a.StateNo + ")" : "");
     }

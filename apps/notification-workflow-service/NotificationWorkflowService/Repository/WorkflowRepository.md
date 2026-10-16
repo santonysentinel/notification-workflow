@@ -48,6 +48,12 @@ environment-specific settings. If `Serilog:WriteTo` is absent or empty, a consol
 sink is added; an explicitly configured sink list is respected without adding a
 duplicate console sink. Bootstrap failures also have a console logger.
 
+Application code does not write directly to the console or change console colors
+or titles. Existing logger events replace duplicate legacy console output.
+Reference-data refresh messages use Information; normal parser backlog/wait
+status uses Debug instead of modifying the terminal title. Console rendering
+and colors are owned by the configured logging sink.
+
 Repository failures are logged at Error before propagating to existing callers.
 Logs identify the logical connection (`connstr`, `ClientDatabase`, `AutoCallDB`,
 or `TenantDatabase`), operation/procedure, exception type, and SQL error number,

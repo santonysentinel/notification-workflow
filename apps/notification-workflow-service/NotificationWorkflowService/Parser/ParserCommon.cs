@@ -20,12 +20,6 @@ namespace NotificationWorkflowService.Parser
     public class WorkFlowCommon
     {
         /// <summary>
-        /// Used To Update The Console title information - data about the number of points behind and
-        /// the current parser sleep time.
-        /// </summary>
-        private String lastPointsBehind = "";
-
-        /// <summary>
         /// Defines the platForm.
         /// </summary>
         private String platForm = "";
@@ -307,20 +301,8 @@ namespace NotificationWorkflowService.Parser
             int LastProcessedPoint = await readLastSuccessfulProcessAsync(Convert.ToInt32(configuration[platForm + "ParserID"]), cancellationToken).ConfigureAwait(false);
             int pointsBehind = await ReadCurrentActiveAlarmPointAsync(cancellationToken).ConfigureAwait(false) - LastProcessedPoint;
 
-            int replaceIndex = Console.Title.IndexOf(platForm + " Parser Acvity");
-
-            if (replaceIndex == -1)
-            {
-                String titleAppend = " - " + platForm + " Parser Acvity: " + pointsBehind + "/" + returnWaitTime(pointsBehind) / 1000 + " Seconds";
-                lastPointsBehind = titleAppend;
-                Console.Title = Console.Title + titleAppend;
-            }
-            else
-            {
-                String titleAppend = " - " + platForm + " Parser Acvity: " + pointsBehind + "/" + returnWaitTime(pointsBehind) / 1000 + " Seconds";
-                Console.Title = Console.Title.Replace(lastPointsBehind, titleAppend);
-                lastPointsBehind = titleAppend;
-            }
+            log.LogDebug("Parser {Platform} activity: {PointsBehind} points behind, wait {WaitSeconds} seconds",
+                platForm, pointsBehind, returnWaitTime(pointsBehind) / 1000);
 
 
 
@@ -388,8 +370,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 success = false;
                                 log.LogError(ex, "[" + platForm + "] " + "SQLException on readPoints in Parser ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readPoints in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -413,8 +393,6 @@ namespace NotificationWorkflowService.Parser
                                 cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM POINTS IN PARSER ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM POINTS IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -438,8 +416,6 @@ namespace NotificationWorkflowService.Parser
                     cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM POINTS IN PARSER ");
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM POINTS IN PARSER " + e);
 
                 }
             }
@@ -846,8 +822,7 @@ namespace NotificationWorkflowService.Parser
         {
             cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
-            Console.ForegroundColor = ConsoleColor.White;
-            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " Refreshing Client Profiles");
+            log.LogInformation("Parser {Platform} refreshing client profile mappings", platForm);
             Dictionary<string, int> result = new();
             //Create a connection to the SQL Server;
             try
@@ -874,8 +849,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 success = false;
                                 log.LogError(ex, "[" + platForm + "] " + "SQLException on FetchClientProfile in Parser ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on FetchClientProfile in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -897,8 +870,6 @@ namespace NotificationWorkflowService.Parser
                                 cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE CLIENT PROFILES ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE CLIENT PROFILES " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -920,8 +891,6 @@ namespace NotificationWorkflowService.Parser
                 cancellationToken.ThrowIfCancellationRequested();
                 success = false;
                 log.LogInformation("[" + platForm + "] " + "FAILED TO RETRIEVE CLIENT PROFILES " + e);
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE CLIENT PROFILES " + e);
 
             }
             cancellationToken.ThrowIfCancellationRequested();
@@ -951,8 +920,7 @@ namespace NotificationWorkflowService.Parser
         {
             cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
-            Console.ForegroundColor = ConsoleColor.White;
-            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " Refreshing Client Profiles");
+            log.LogInformation("Parser {Platform} refreshing profile items", platForm);
             Dictionary<int, Profile> result = new();
 
             //Create a connection to the SQL Server;
@@ -981,8 +949,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 success = false;
                                 log.LogError(ex, "[" + platForm + "] " + "SQLException on readAllProfiles in Parser ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readAllProfiles in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -1005,8 +971,6 @@ namespace NotificationWorkflowService.Parser
                                 cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE PROFILES ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE PROFILES IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -1028,8 +992,6 @@ namespace NotificationWorkflowService.Parser
                 cancellationToken.ThrowIfCancellationRequested();
                 success = false;
                 log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE PROFILES ");
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE PROFILES IN PARSER " + e);
 
 
                 //System.Environment.Exit(1);
@@ -1053,8 +1015,7 @@ namespace NotificationWorkflowService.Parser
         {
             cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
-            Console.ForegroundColor = ConsoleColor.White;
-            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " Refreshing PO GRoup Holidays");
+            log.LogInformation("Parser {Platform} refreshing group holidays", platForm);
             Dictionary<string, List<Holiday>> result = new();
 
             //Create a connection to the SQL Server;
@@ -1083,8 +1044,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 success = false;
                                 log.LogError(ex, "[" + platForm + "] " + "SQLException on readAllHolidays in Parser ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readAllHolidays in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -1105,8 +1064,6 @@ namespace NotificationWorkflowService.Parser
                                 cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE HOLIDAYS ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE HOLIDAYS IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -1128,8 +1085,6 @@ namespace NotificationWorkflowService.Parser
                 cancellationToken.ThrowIfCancellationRequested();
                 success = false;
                 log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE HOLIDAYS ");
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE HOLIDAYS IN PARSER " + e);
 
             }
             cancellationToken.ThrowIfCancellationRequested();
@@ -1151,8 +1106,7 @@ namespace NotificationWorkflowService.Parser
             cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
 
-            Console.ForegroundColor = ConsoleColor.White;
-            Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " Refreshing POGroup Roles");
+            log.LogInformation("Parser {Platform} refreshing group roles", platForm);
             Dictionary<string, string> result = new();
 
             //Create a connection to the SQL Server;
@@ -1180,8 +1134,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 success = false;
                                 log.LogError(ex, "[" + platForm + "] " + "SQLException on readAllRoles in Parser ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readAllRoles in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -1202,8 +1154,6 @@ namespace NotificationWorkflowService.Parser
                                 cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE ROLES ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ROLES IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -1225,8 +1175,6 @@ namespace NotificationWorkflowService.Parser
                 cancellationToken.ThrowIfCancellationRequested();
                 success = false;
                 log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ROLES ");
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ROLES IN PARSER " + e);
 
             }
             cancellationToken.ThrowIfCancellationRequested();
@@ -1271,8 +1219,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "SQLException on PushAlertToMcApp in Step Parser " + ex);
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on PushAlertToMcApp in Step Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -1293,8 +1239,6 @@ namespace NotificationWorkflowService.Parser
                                 cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + exc);
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -1314,8 +1258,6 @@ namespace NotificationWorkflowService.Parser
                     cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + e);
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_MCAPP IN STEP PARSER " + e);
                     throw;
                 }
             }
@@ -1355,8 +1297,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "SQLException on AddToNotificationQueue in Step Parser " + ex);
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on AddToNotificationQueue in Step Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -1377,8 +1317,6 @@ namespace NotificationWorkflowService.Parser
                                 cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + exc);
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -1398,8 +1336,6 @@ namespace NotificationWorkflowService.Parser
                     cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + e);
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_NOTIFICATIONQUEUE IN STEP PARSER " + e);
                     throw;
                 }
             }
@@ -1437,8 +1373,6 @@ namespace NotificationWorkflowService.Parser
                             catch (SqlException ex)
                             {
                                 log.LogError(ex, "[" + platForm + "] " + "SQLException on insertPushNotificationQueue in Parser ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on insertPushNotificationQueue in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -1457,8 +1391,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 cancellationToken.ThrowIfCancellationRequested();
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RUN INSERT_PUSH_NOTIFICATIONQUEUE ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_PUSH_NOTIFICATIONQUEUE " + exc);
                                 throw exc;
                             }
 
@@ -1471,8 +1403,6 @@ namespace NotificationWorkflowService.Parser
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     log.LogError(e, "[" + platForm + "] " + "FAILED TO RUN INSERT_PUSH_NOTIFICATIONQUEUE ");
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_PUSH_NOTIFICATIONQUEUE " + e);
 
                 }
             }
@@ -1515,8 +1445,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "SQLException on insertNotificationQueueVictim in Parser " + ex);
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on insertNotificationQueueVictim in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -1537,8 +1465,6 @@ namespace NotificationWorkflowService.Parser
                                 cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + exc);
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -1558,8 +1484,6 @@ namespace NotificationWorkflowService.Parser
                     cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + e);
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_NOTIFICATIONQUEUE " + e);
                     throw;
                 }
             }
@@ -1603,8 +1527,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 success = false;
                                 log.LogError(ex, "[" + platForm + "] " + "SQLException on updateParserActivty in Parser ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on updateParserActivty in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -1625,8 +1547,6 @@ namespace NotificationWorkflowService.Parser
                                 cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RUN UPDATE_PARSER_ACTIVITY ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN UPDATE_PARSER_ACTIVITY " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -1647,8 +1567,6 @@ namespace NotificationWorkflowService.Parser
                     cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogError(e, "[" + platForm + "] " + "FAILED TO RUN UPDATE_PARSER_ACTIVITY IN PARSER ");
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN UPDATE_PARSER_ACTIVITY IN PARSER " + e);
                     throw;
                 }
             }
@@ -1687,8 +1605,6 @@ namespace NotificationWorkflowService.Parser
                             catch (SqlException ex)
                             {
                                 log.LogError(ex, "[" + platForm + "] " + "SQLException on CreateAlarmAudit in Parser ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on CreateAlarmAudit in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -1708,8 +1624,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 cancellationToken.ThrowIfCancellationRequested();
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RUN MCAPP_CREATEAUDIT IN PARSER ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN MCAPP_CREATEAUDIT IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -1729,8 +1643,6 @@ namespace NotificationWorkflowService.Parser
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     log.LogError(e, "[" + platForm + "] " + "FAILED TO RUN MCAPP_CREATEAUDIT IN PARSER ");
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN MCAPP_CREATEAUDIT IN PARSER " + e);
 
                 }
             }
@@ -1767,8 +1679,6 @@ namespace NotificationWorkflowService.Parser
                             catch (SqlException ex)
                             {
                                 log.LogError(ex, "[" + platForm + "] " + "SQLException on ActiveAlarms_InsertIntoHistory in Parser ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on ActiveAlarms_InsertIntoHistory in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -1788,8 +1698,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 cancellationToken.ThrowIfCancellationRequested();
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RUN AddActiveAlarmActionToActivity IN PARSER ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN AddActiveAlarmActionToActivity IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -1809,8 +1717,6 @@ namespace NotificationWorkflowService.Parser
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     log.LogError(e, "[" + platForm + "] " + "FAILED TO RUN AddActiveAlarmActionToActivity IN PARSER ");
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN AddActiveAlarmActionToActivity IN PARSER " + e);
 
                 }
             }
@@ -1852,8 +1758,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "SQLException on insertIntoAlarmNotification in Step Parser " + ex);
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on insertIntoAlarmNotification in Step Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -1874,8 +1778,6 @@ namespace NotificationWorkflowService.Parser
                                 cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + exc);
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -1895,8 +1797,6 @@ namespace NotificationWorkflowService.Parser
                     cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + e);
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_INTO_ALARM_NOTIFICATION IN STEP PARSER " + e);
                     throw;
                 }
             }
@@ -1942,8 +1842,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "SQLException on insertIntoCurrentAlarmNotification in Step Parser " + ex);
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on insertIntoCurrentAlarmNotification in Step Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -1964,8 +1862,6 @@ namespace NotificationWorkflowService.Parser
                                 cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + exc);
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -1985,8 +1881,6 @@ namespace NotificationWorkflowService.Parser
                     cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogInformation("[" + platForm + "] " + "FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + e);
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN INSERT_INTO_CURRENT_NOTIFICATION_STATE IN STEP PARSER " + e);
                     throw;
                 }
             }
@@ -2056,8 +1950,6 @@ namespace NotificationWorkflowService.Parser
                             catch (SqlException ex)
                             {
                                 log.LogInformation("[" + platForm + "] " + "SQLException on getInsertEmails in Step Parser " + ex);
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on getInsertEmails in Step Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -2077,8 +1969,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 cancellationToken.ThrowIfCancellationRequested();
                                 log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Audit and History Emails in Step Parser " + exc);
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Audit and History Emails in Step Parser " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -2097,8 +1987,6 @@ namespace NotificationWorkflowService.Parser
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Audit and History Emails in Step Parser " + e);
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Audit and History Emails in Step Parser " + e);
 
                 }
             }
@@ -2137,15 +2025,11 @@ namespace NotificationWorkflowService.Parser
                                 }
 
                                 log.LogInformation("[" + platForm + "] " + "Reading Last successful processed ActiveAlarms point: " + SystemID);
-                                Console.ForegroundColor = ConsoleColor.White;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " Reading Last successful processed ActiveAlarms point: " + SystemID);
                                 break;
                             }
                             catch (SqlException ex)
                             {
                                 log.LogError(ex, "[" + platForm + "] " + "SQLException on readLastSuccessfulProcess in Parser ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readLastSuccessfulProcess in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -2165,8 +2049,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 cancellationToken.ThrowIfCancellationRequested();
                                 log.LogError(exc, "[" + platForm + "] " + "ERROR: Unable to Read Last successful processed ActiveAlarms point IN PARSER ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Last successful processed ActiveAlarms point IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -2186,8 +2068,6 @@ namespace NotificationWorkflowService.Parser
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     log.LogError(e, "[" + platForm + "] " + "ERROR: Unable to Read Last successful processed ActiveAlarms point IN PARSER ");
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Last successful processed ActiveAlarms point IN PARSER " + e);
                     throw;
                 }
             }
@@ -2259,8 +2139,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "SQLException on readRoles in Step Parser " + ex);
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readRoles in Step Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -2281,8 +2159,6 @@ namespace NotificationWorkflowService.Parser
                                 cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogInformation("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + exc);
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -2302,8 +2178,6 @@ namespace NotificationWorkflowService.Parser
                     cancellationToken.ThrowIfCancellationRequested();
                     success = false;
                     log.LogInformation("[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + e);
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM ROLES IN STEP PARSER " + e);
                     throw;
                 }
             }
@@ -2348,8 +2222,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 success = false;
                                 log.LogError(ex, "[" + platForm + "] " + "SQLException on readVictims in Parser ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readVictims in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -2370,8 +2242,6 @@ namespace NotificationWorkflowService.Parser
                                 cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -2392,8 +2262,6 @@ namespace NotificationWorkflowService.Parser
                 cancellationToken.ThrowIfCancellationRequested();
                 success = false;
                 log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER ");
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE ACTIVE ALARM VICTIMS IN PARSER " + e);
 
             }
             cancellationToken.ThrowIfCancellationRequested();
@@ -2446,8 +2314,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 success = false;
                                 log.LogError(ex, "[" + platForm + "] " + "SQLException on readMEZVictims in Parser ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readMEZVictims in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -2468,8 +2334,6 @@ namespace NotificationWorkflowService.Parser
                                 cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE MEZ VICTIMS IN PARSER ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE MEZ VICTIMS IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -2491,8 +2355,6 @@ namespace NotificationWorkflowService.Parser
                 cancellationToken.ThrowIfCancellationRequested();
                 success = false;
                 log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE MEZ VICTIMS IN PARSER ");
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO MEZ VICTIMS IN PARSER " + e);
 
             }
             cancellationToken.ThrowIfCancellationRequested();
@@ -2541,8 +2403,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 success = false;
                                 log.LogError(ex, "[" + platForm + "] " + "SQLException on readAttachedVictimZones in Parser ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readAttachedVictimZones in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -2563,8 +2423,6 @@ namespace NotificationWorkflowService.Parser
                                 cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO readAttachedVictimZonesIN PARSER ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO readAttachedVictimZones IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -2586,8 +2444,6 @@ namespace NotificationWorkflowService.Parser
                 cancellationToken.ThrowIfCancellationRequested();
                 success = false;
                 log.LogError(e, "[" + platForm + "] " + "FAILED TO readAttachedVictimZones IN PARSER ");
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO readAttachedVictimZones IN PARSER " + e);
 
             }
             cancellationToken.ThrowIfCancellationRequested();
@@ -2634,8 +2490,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 success = false;
                                 log.LogError(ex, "[" + platForm + "] " + "SQLException on readProfileItemsClear in Parser ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on readProfileItemsClear in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -2656,8 +2510,6 @@ namespace NotificationWorkflowService.Parser
                                 cancellationToken.ThrowIfCancellationRequested();
                                 success = false;
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RETRIEVE CLEARING EVENTS IN PARSER ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE CLEARING EVENTS IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -2679,8 +2531,6 @@ namespace NotificationWorkflowService.Parser
                 cancellationToken.ThrowIfCancellationRequested();
                 success = false;
                 log.LogError(e, "[" + platForm + "] " + "FAILED TO RETRIEVE CLEARING EVENTS IN PARSER ");
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RETRIEVE CLEARING EVENTS IN PARSER " + e);
 
             }
             cancellationToken.ThrowIfCancellationRequested();
@@ -2794,8 +2644,6 @@ namespace NotificationWorkflowService.Parser
                                 await MyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
                                 await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-                                Console.ForegroundColor = ConsoleColor.Green;
-                                Console.WriteLine("[" + platForm + "] " + "Clearing Alerts For - " + oid);
                                 log.LogInformation("[" + platForm + "] " + "Clearing Alerts For - " + oid);
 
                                 break;
@@ -2803,8 +2651,6 @@ namespace NotificationWorkflowService.Parser
                             catch (SqlException ex)
                             {
                                 log.LogError(ex, "[" + platForm + "] " + "SQLException on ClearMcAppAlarm in Parser ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on ClearMcAppAlarm in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -2824,8 +2670,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 cancellationToken.ThrowIfCancellationRequested();
                                 log.LogError(exc, "[" + platForm + "] " + "FAILED TO RUN MCAPP_CLEAR_ALARM IN PARSER ");
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN MCAPP_CLEAR_ALARM IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -2845,8 +2689,6 @@ namespace NotificationWorkflowService.Parser
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     log.LogError(e, "[" + platForm + "] " + "FAILED TO RUN MCAPP_CLEAR_ALARM IN PARSER ");
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " FAILED TO RUN MCAPP_CLEAR_ALARM IN PARSER " + e);
 
                 }
             }
@@ -2887,8 +2729,6 @@ namespace NotificationWorkflowService.Parser
                             catch (SqlException ex)
                             {
                                 log.LogInformation("[" + platForm + "] " + "SQLException on getClientEmail in Parser " + ex);
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on getClientEmail in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -2908,8 +2748,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 cancellationToken.ThrowIfCancellationRequested();
                                 log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Client Email IN PARSER " + exc);
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Email IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -2928,8 +2766,6 @@ namespace NotificationWorkflowService.Parser
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Client Email IN PARSER " + e);
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Email IN PARSER " + e);
                     throw;
                 }
             }
@@ -2972,8 +2808,6 @@ namespace NotificationWorkflowService.Parser
                             catch (SqlException ex)
                             {
                                 log.LogInformation("[" + platForm + "] " + "SQLException on getClientText in Parser " + ex);
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " SQLException on getClientText in Parser " + ex);
                                 if (ex.ErrorCode.Equals(1205) ||
                                    ex.Message.ToLower().Contains("deadlock"))
                                 {
@@ -2993,8 +2827,6 @@ namespace NotificationWorkflowService.Parser
                             {
                                 cancellationToken.ThrowIfCancellationRequested();
                                 log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Client Text IN PARSER " + exc);
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Text IN PARSER " + exc);
                                 if (retries > 0)
                                 {
                                     retries--;
@@ -3013,8 +2845,6 @@ namespace NotificationWorkflowService.Parser
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     log.LogInformation("[" + platForm + "] " + "ERROR: Unable to Read Client Text IN PARSER " + e);
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("[" + platForm + "] " + DateTime.UtcNow.ToString("HH:mm:ss") + " ERROR: Unable to Read Client Text IN PARSER " + e);
                     throw;
                 }
             }
@@ -3066,10 +2896,6 @@ namespace NotificationWorkflowService.Parser
         public async Task PushNotificationToVictimAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            //if(a.ClientID == "ID902551")
-            //{
-            //    Console.WriteLine("adsa");
-            //}
             if (MEZVictims.ContainsKey(a.ClientID))
             {
                 ArrayList notifications = new ArrayList();

@@ -15,8 +15,7 @@ namespace NotificationWorkflowService.Tests;
 
 /// <summary>
 /// Runtime adapter tests only: no real repository, SQL connection, sender, credentials,
-/// static notification settings, culture changes or retry/sleep paths. Normal readPoints
-/// is deliberately excluded because it writes the process-wide Console.Title.
+/// static notification settings, culture changes or retry/sleep paths.
 /// </summary>
 public class WorkflowRepositoryAdapterTests
 {

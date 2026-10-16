@@ -113,7 +113,6 @@ public class WorkflowOrchestrationCompatibilityTests
         Assert.Same(configuration, Field(parser.GetType(), "configuration").GetValue(parser));
         Assert.Same(sender, Field(parser.GetType(), "notificationService").GetValue(parser));
         Assert.Equal("offline-test", Field(parser.GetType(), "Platform").GetValue(parser));
-        Assert.Equal("", Field(parser.GetType(), "lastPointsBehind").GetValue(parser));
         Assert.Equal("", Field(parser.GetType(), "platForm").GetValue(parser));
         Assert.Null(Field(parser.GetType(), "pendingReferenceData").GetValue(parser));
         foreach (string name in new[] { "activeAlarms", "clientProfileMapping", "clientHolidayProfileMapping",
@@ -132,11 +131,14 @@ public class WorkflowOrchestrationCompatibilityTests
         var failure = new InvalidOperationException("offline preparation failure");
         spy.PreparationFailure = _ => failure;
         Assert.Equal(false, await WorkflowRepositoryAdapterTests.CallAsync(parser, "FetchClientProfile", 0));
-        var entry = Assert.Single(provider.Entries);
-        Assert.Equal(compatibility ? typeof(WorkFlowInitiator).FullName : typeof(WorkFlowCommon).FullName, entry.Category);
-        // The existing preparation-failure outer catch logs at Information;
-        // preserve it rather than imposing the inner execution-catch level.
-        Assert.Equal(LogLevel.Information, entry.Level);
+        // Both the migrated refresh message and the existing preparation-failure
+        // outer catch use the original parser logger category at Information.
+        Assert.Equal(2, provider.Entries.Count);
+        Assert.All(provider.Entries, entry =>
+        {
+            Assert.Equal(compatibility ? typeof(WorkFlowInitiator).FullName : typeof(WorkFlowCommon).FullName, entry.Category);
+            Assert.Equal(LogLevel.Information, entry.Level);
+        });
     }
 
     [Theory]
