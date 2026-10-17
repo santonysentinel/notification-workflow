@@ -2,7 +2,7 @@ SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
 GO
-CREATE OR ALTER PROCEDURE [dbo].[dbo.activeAlarms_GetParticipantCurrentDetails] (
+CREATE OR ALTER PROCEDURE [dbo].[activeAlarms_GetParticipantCurrentDetails] (
 	@OID VARCHAR(20),
 	@ActiveAlarmID int
 	)
