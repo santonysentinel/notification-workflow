@@ -36,6 +36,7 @@ CREATE TABLE dbo.AutomatedCallQueue
 (
     SystemID int IDENTITY(1, 1) NOT NULL PRIMARY KEY,
     OID varchar(20) NULL,
+    POGroupNum varchar(20) NULL,
     ActiveAlarmID int NOT NULL,
     FlowId int NULL,
     CallStatus int NULL,
