@@ -36,7 +36,8 @@ namespace NotificationWorkflowService.Service
 
         public WorkFlowInitiatorService(ILogger<WorkFlowInitiatorService> logger, IConfiguration configuration, ILoggerFactory loggerFactory, Func<WorkFlowCommon> parserFactory, IRepository repository)
             : this(logger, configuration, loggerFactory, parserFactory, repository,
-                new NoteService(repository, new UnavailableNoteLocationProvider(), new UnavailableNoteAddressResolver()))
+                new NoteService(repository, new ParticipantNoteLocationProvider(new ParticipantCurrentDetailsRepository(configuration,
+                    loggerFactory.CreateLogger<ParticipantCurrentDetailsRepository>())), new UnavailableNoteAddressResolver()))
         {
         }
 

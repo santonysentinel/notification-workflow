@@ -198,6 +198,23 @@ public sealed class DatabaseDiagnosticsTests
         => new ConfigurationBuilder().AddInMemoryCollection(
             new Dictionary<string, string?> { ["ConnectionStrings:" + key] = value }).Build();
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("unsupported-key=private-value")]
+    public async Task ParticipantLookupLogsClientDatabaseFailuresWithoutLeakingValues(string? connectionString)
+    {
+        var logger = new Logs<ParticipantCurrentDetailsRepository>();
+        var repository = new ParticipantCurrentDetailsRepository(Configuration("ClientDatabase", connectionString), logger);
+        await Assert.ThrowsAnyAsync<Exception>(() => repository.ReadAsync("private-oid", 42));
+        var entry = Assert.Single(logger.Entries);
+        Assert.Equal(LogLevel.Error, entry.Level);
+        Assert.Equal("ClientDatabase", entry.Properties["Database"]);
+        Assert.Equal("dbo.activeAlarms_GetParticipantCurrentDetails", entry.Properties["Operation"]);
+        Assert.DoesNotContain("private-value", entry.Message);
+        Assert.DoesNotContain("private-oid", entry.Message);
+        Assert.Null(entry.Exception);
+    }
+
     private sealed record Entry(LogLevel Level, string Message, Exception? Exception,
         Dictionary<string, object?> Properties);
 

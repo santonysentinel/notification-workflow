@@ -248,7 +248,7 @@ internal static class WorkflowActionExecutor
             case 18:
                 sb.Append("Add Note");
                 WriteAction(a, context, "Add Note");
-                await operations.AddNoteAsync(a.Instruction, a.ClientID, cancellationToken).ConfigureAwait(false);
+                await operations.AddNoteAsync(a.Instruction, a.ClientID, a.SystemID, cancellationToken).ConfigureAwait(false);
                 break;
             case 19:
                 sb.Append("Auto Call Participant");

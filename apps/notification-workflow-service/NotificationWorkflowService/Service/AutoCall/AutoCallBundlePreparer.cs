@@ -33,17 +33,17 @@ internal static class AutoCallBundlePreparer
         string baseUrl = AutoCallWorkerOptions.ValidateBaseUrl(feedbackBaseUrl);
         using var variables = JsonDocument.Parse(attempt.VariablesJson);
         if (variables.RootElement.ValueKind != JsonValueKind.Object) throw new InvalidOperationException("Variables must be a JSON object.");
-        var parameters = new SortedDictionary<string, JsonElement>(StringComparer.Ordinal);
+        var parameters = new SortedDictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
         foreach (var property in variables.RootElement.EnumerateObject())
         {
-            if (property.Value.ValueKind is not (JsonValueKind.String or JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False))
-                throw new InvalidOperationException("Preparation variables must have scalar non-null values.");
+            if (property.Value.ValueKind is not (JsonValueKind.String or JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False or JsonValueKind.Null))
+                throw new InvalidOperationException("Preparation variables must have scalar values.");
             if (!parameters.TryAdd(property.Name, property.Value.Clone())) throw new InvalidOperationException("Duplicate variable keys are not supported.");
         }
+        foreach (string reserved in new[] { "callId", "feedbackBaseUrl", "recipient", "executionId" }) parameters.Remove(reserved);
         parameters["callId"] = JsonSerializer.SerializeToElement(attempt.CallId);
         parameters["feedbackBaseUrl"] = JsonSerializer.SerializeToElement(baseUrl);
         parameters["recipient"] = JsonSerializer.SerializeToElement(attempt.PhoneE164);
-        parameters.Remove("executionId");
         using var text = new StringReader(attempt.TemplateTwiML);
         using var reader = XmlReader.Create(text, new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null, MaxCharactersInDocument = 2 * 1024 * 1024 });
         var document = XDocument.Load(reader);
@@ -81,8 +81,10 @@ internal static class AutoCallBundlePreparer
         return Placeholder.Replace(value, match =>
         {
             string name = match.Groups["name"].Value;
-            if (name == "executionId") return "{{executionId}}";
-            if (!parameters.TryGetValue(name, out var parameter)) throw new InvalidOperationException("A required preparation variable is missing.");
+            if (string.Equals(name, "executionId", StringComparison.OrdinalIgnoreCase)) return "{{executionId}}";
+            if (!parameters.TryGetValue(name, out var parameter) || parameter.ValueKind == JsonValueKind.Null ||
+                parameter.ValueKind == JsonValueKind.String && string.IsNullOrWhiteSpace(parameter.GetString()))
+                throw new InvalidOperationException($"Required preparation variable '{name}' is missing.");
             return parameter.ValueKind == JsonValueKind.String ? parameter.GetString()! : parameter.GetRawText();
         });
     }

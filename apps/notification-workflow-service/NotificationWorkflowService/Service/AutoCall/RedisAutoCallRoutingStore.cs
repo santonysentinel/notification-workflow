@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using NotificationWorkflowService.Repository;
 using StackExchange.Redis;
 
@@ -75,6 +76,7 @@ public static class AutoCallServiceCollectionExtensions
 {
     public static IServiceCollection AddAutoCallContacts(this IServiceCollection services)
     {
+        services.TryAddSingleton<IParticipantCurrentDetailsRepository, ParticipantCurrentDetailsRepository>();
         services.AddSingleton<IAutoCallRoutingStore, RedisAutoCallRoutingStore>();
         services.AddSingleton<IAutoCallPhoneRepository, AutoCallPhoneRepository>();
         services.AddSingleton<AutoCallContactService>();

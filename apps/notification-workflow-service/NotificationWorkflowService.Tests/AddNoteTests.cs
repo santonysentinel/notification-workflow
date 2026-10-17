@@ -59,7 +59,7 @@ public class AddNoteTests
     public async Task InvalidTemplatesAreRejectedBeforeProvidersOrPreparation(string? template)
     {
         var fixture = new Fixture();
-        var error = await Record.ExceptionAsync(() => fixture.Service.AddNoteAsync(template!, "oid"));
+        var error = await Record.ExceptionAsync(() => fixture.Service.AddNoteAsync(template!, "oid", 42));
         Assert.IsAssignableFrom<ArgumentException>(error);
         Assert.Equal("template", ((ArgumentException)error!).ParamName);
         Assert.Empty(fixture.Events);
@@ -113,10 +113,22 @@ public class AddNoteTests
     public async Task InvalidOidRejectedBeforeAnyProviderOrRepositoryAccess(string? oid)
     {
         var fixture = new Fixture();
-        var error = await Record.ExceptionAsync(() => fixture.Service.AddNoteAsync("{{lat}}", oid!));
+        var error = await Record.ExceptionAsync(() => fixture.Service.AddNoteAsync("{{lat}}", oid!, 42));
         Assert.IsAssignableFrom<ArgumentException>(error);
         Assert.Equal("oid", ((ArgumentException)error!).ParamName);
         Assert.Empty(fixture.Events);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task InvalidActiveAlarmIdIsRejectedBeforeLookupOrWrite(int activeAlarmId)
+    {
+        var fixture = new Fixture();
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            fixture.Service.AddNoteAsync("{{lat}}", "oid", activeAlarmId));
+        Assert.Empty(fixture.Events);
+        Assert.Empty(fixture.Repository.Writes);
     }
 
     [Fact]
@@ -126,8 +138,8 @@ public class AddNoteTests
         string oid = " " + new string('é', 18) + " ";
         string text = "  café 東京 😀  ";
         using var source = new CancellationTokenSource();
-        await fixture.Service.AddNoteAsync(text, oid, source.Token);
-        await fixture.Service.AddNoteAsync(text, oid, source.Token);
+        await fixture.Service.AddNoteAsync(text, oid, 42, source.Token);
+        await fixture.Service.AddNoteAsync(text, oid, 42, source.Token);
         Assert.Equal(new[] { (text, oid), (text, oid) }, fixture.Repository.Writes);
         Assert.Equal(new[] { "prepare", "open", "execute", "dispose", "prepare", "open", "execute", "dispose" }, fixture.Events);
         Assert.All(fixture.Repository.Operations, op => Assert.True(op.Disposed));
@@ -140,7 +152,7 @@ public class AddNoteTests
         var fixture = new Fixture();
         string text = string.Concat(Enumerable.Repeat("😀", 500));
         string oid = string.Concat(Enumerable.Repeat("😀", 10));
-        await fixture.Service.AddNoteAsync(text, oid);
+        await fixture.Service.AddNoteAsync(text, oid, 42);
         Assert.Equal((text, oid), Assert.Single(fixture.Repository.Writes));
         Assert.Equal(new[] { "prepare", "open", "execute", "dispose" }, fixture.Events);
     }
@@ -151,8 +163,9 @@ public class AddNoteTests
     public async Task HydrationUsesOneSnapshotAndOnlyResolvesAddressWhenNeeded(string template, string expected, bool address)
     {
         var fixture = new Fixture();
-        await fixture.Service.AddNoteAsync(template, "oid");
+        await fixture.Service.AddNoteAsync(template, "oid", 42);
         Assert.Equal("oid", Assert.Single(fixture.Location.Oids));
+        Assert.Equal(42, Assert.Single(fixture.Location.ActiveAlarmIds));
         Assert.Equal(address ? new[] { (12.50m, -45.125m) } : [], fixture.Address.Coordinates);
         Assert.Equal((expected, "oid"), Assert.Single(fixture.Repository.Writes));
         Assert.Equal(address ? new[] { "location", "address", "prepare", "open", "execute", "dispose" }
@@ -181,7 +194,7 @@ public class AddNoteTests
     {
         var fixture = new Fixture();
         fixture.Location.Value = absent ? null : new NoteLocation(latitude, longitude);
-        await fixture.Service.AddNoteAsync("{{lat}}/{{lon}}/{{current_location_address}}", "oid");
+        await fixture.Service.AddNoteAsync("{{lat}}/{{lon}}/{{current_location_address}}", "oid", 42);
         Assert.Equal((expected, "oid"), Assert.Single(fixture.Repository.Writes));
         Assert.Single(fixture.Location.Oids);
         Assert.Equal(resolves ? 1 : 0, fixture.Address.Coordinates.Count);
@@ -195,7 +208,7 @@ public class AddNoteTests
     {
         var fixture = new Fixture();
         fixture.Address.Value = address;
-        await fixture.Service.AddNoteAsync("{{lat}}/{{lon}}/{{current_location_address}}", "oid");
+        await fixture.Service.AddNoteAsync("{{lat}}/{{lon}}/{{current_location_address}}", "oid", 42);
         Assert.Equal(("12.50/-45.125/N/A", "oid"), Assert.Single(fixture.Repository.Writes));
         Assert.Single(fixture.Address.Coordinates);
     }
@@ -208,7 +221,7 @@ public class AddNoteTests
         var fixture = new Fixture();
         fixture.Address.Value = new string('x', 1001);
         await Assert.ThrowsAsync<ArgumentException>(() => fixture.Service.AddNoteAsync(
-            hydrate ? "{{current_location_address}}" : new string('x', 1001), "oid"));
+            hydrate ? "{{current_location_address}}" : new string('x', 1001), "oid", 42));
         Assert.Equal(hydrate ? new[] { "location", "address" } : [], fixture.Events);
         Assert.Empty(fixture.Repository.Operations);
     }
@@ -226,7 +239,7 @@ public class AddNoteTests
         var failure = new InvalidOperationException("provider/write failure");
         fixture.Boundary = (name, _) => name == boundary ? Task.FromException(failure) : Task.CompletedTask;
         Assert.Same(failure, await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            fixture.Service.AddNoteAsync("{{current_location_address}}", "oid")));
+            fixture.Service.AddNoteAsync("{{current_location_address}}", "oid", 42)));
         string[] sequence = ["location", "address", "prepare", "open", "execute", "dispose"];
         int index = Array.IndexOf(sequence, boundary);
         Assert.Equal(sequence.Take(index + 1).Concat(boundary is "open" or "execute" ? ["dispose"] : []), fixture.Events);
@@ -240,7 +253,7 @@ public class AddNoteTests
         var fixture = new Fixture();
         using var source = new CancellationTokenSource();
         source.Cancel();
-        await Canceled(fixture.Service.AddNoteAsync(null!, null!, source.Token), source.Token);
+        await Canceled(fixture.Service.AddNoteAsync(null!, null!, 42, source.Token), source.Token);
         Assert.Empty(fixture.Events);
     }
 
@@ -255,7 +268,7 @@ public class AddNoteTests
         var gate = new Gate();
         using var source = new CancellationTokenSource();
         fixture.Boundary = (name, token) => name == boundary ? gate.WaitAsync(token) : Task.CompletedTask;
-        Task task = fixture.Service.AddNoteAsync("{{current_location_address}}", "oid", source.Token);
+        Task task = fixture.Service.AddNoteAsync("{{current_location_address}}", "oid", 42, source.Token);
         try
         {
             await gate.Entered.Task.WaitAsync(Deadline);
@@ -281,7 +294,7 @@ public class AddNoteTests
         var fixture = new Fixture();
         using var source = new CancellationTokenSource();
         fixture.AfterBoundary = name => { if (name == boundary) source.Cancel(); };
-        await Canceled(fixture.Service.AddNoteAsync("{{current_location_address}}", "oid", source.Token), source.Token);
+        await Canceled(fixture.Service.AddNoteAsync("{{current_location_address}}", "oid", 42, source.Token), source.Token);
         Assert.Equal(boundary == "execute" ? 1 : 0, fixture.Repository.Writes.Count);
         Assert.All(fixture.Repository.Operations, op => Assert.True(op.Disposed));
         Assert.Equal(boundary switch
@@ -299,7 +312,7 @@ public class AddNoteTests
         var gates = sequence.ToDictionary(name => name, _ => new Gate());
         using var source = new CancellationTokenSource();
         fixture.Boundary = (name, token) => gates.TryGetValue(name, out var gate) ? gate.WaitAsync(token) : Task.CompletedTask;
-        Task task = fixture.Service.AddNoteAsync("{{current_location_address}}", "oid", source.Token);
+        Task task = fixture.Service.AddNoteAsync("{{current_location_address}}", "oid", 42, source.Token);
         try
         {
             foreach (string name in sequence)
@@ -325,7 +338,7 @@ public class AddNoteTests
         using var source = new CancellationTokenSource();
         fixture.AfterBoundary = name => { if (name == "execute") source.Cancel(); };
         fixture.Boundary = (name, token) => name == "dispose" ? gate.WaitAsync(token) : Task.CompletedTask;
-        Task task = fixture.Service.AddNoteAsync("plain note", "oid", source.Token);
+        Task task = fixture.Service.AddNoteAsync("plain note", "oid", 42, source.Token);
         try
         {
             await gate.Entered.Task.WaitAsync(Deadline);
@@ -347,7 +360,7 @@ public class AddNoteTests
         var fixture = new Fixture();
         using var providerSource = new CancellationTokenSource(); providerSource.Cancel();
         fixture.Boundary = (name, _) => name == boundary ? Task.FromCanceled(providerSource.Token) : Task.CompletedTask;
-        await Canceled(fixture.Service.AddNoteAsync("{{current_location_address}}", "oid"), providerSource.Token);
+        await Canceled(fixture.Service.AddNoteAsync("{{current_location_address}}", "oid", 42), providerSource.Token);
         Assert.Equal(boundary == "location" ? new[] { "location" } : ["location", "address"], fixture.Events);
         Assert.Empty(fixture.Repository.Writes);
     }
@@ -364,7 +377,7 @@ public class AddNoteTests
             (Template: secret + new string('x', 1001), Oid: "oid")
         })
         {
-            var error = await Assert.ThrowsAnyAsync<ArgumentException>(() => fixture.Service.AddNoteAsync(input.Template, input.Oid));
+            var error = await Assert.ThrowsAnyAsync<ArgumentException>(() => fixture.Service.AddNoteAsync(input.Template, input.Oid, 42));
             Assert.DoesNotContain(secret, error.Message);
         }
         Assert.Empty(fixture.Events);
@@ -418,18 +431,21 @@ public class AddNoteTests
     public async Task RegistrationIsIdempotentPreservesPreRegisteredOverridesAndResolvesDefaultsOffline()
     {
         var fixture = new Fixture();
-        var services = new ServiceCollection().AddSingleton<IRepository>((IRepository)fixture.Repository);
+        var details = new ParticipantCurrentDetailsTests.Stub();
+        var services = new ServiceCollection().AddSingleton<IRepository>((IRepository)fixture.Repository)
+            .AddSingleton<IParticipantCurrentDetailsRepository>(details);
         Assert.Same(services, services.AddNoteServices());
         services.AddNoteServices();
         using (var provider = services.BuildServiceProvider())
         {
-            Assert.IsType<UnavailableNoteLocationProvider>(provider.GetRequiredService<INoteLocationProvider>());
+            Assert.IsType<ParticipantNoteLocationProvider>(provider.GetRequiredService<INoteLocationProvider>());
             Assert.IsType<UnavailableNoteAddressResolver>(provider.GetRequiredService<INoteAddressResolver>());
             var service = provider.GetRequiredService<INoteService>();
             Assert.IsType<NoteService>(service);
             Assert.NotSame(service, provider.GetRequiredService<INoteService>());
-            await service.AddNoteAsync("{{lat}}/{{lon}}/{{current_location_address}}", "oid");
-            Assert.Equal(("N/A/N/A/N/A", "oid"), Assert.Single(fixture.Repository.Writes));
+            await service.AddNoteAsync("{{lat}}/{{lon}}/{{current_location_address}}", "oid", 42);
+            Assert.Equal(("12.50/-45.125/N/A", "oid"), Assert.Single(fixture.Repository.Writes));
+            Assert.Equal(("oid", 42, CancellationToken.None), Assert.Single(details.Calls));
         }
         var custom = new ServiceCollection().AddSingleton<IRepository>((IRepository)fixture.Repository)
             .AddSingleton<INoteLocationProvider>(fixture.Location).AddSingleton<INoteAddressResolver>(fixture.Address)
@@ -485,8 +501,10 @@ public class AddNoteTests
     {
         public NoteLocation? Value { get; set; } = new(12.50m, -45.125m);
         public List<string> Oids { get; } = [];
-        public async Task<NoteLocation?> GetLocationAsync(string oid, CancellationToken cancellationToken = default)
+        public List<int> ActiveAlarmIds { get; } = [];
+        public async Task<NoteLocation?> GetLocationAsync(string oid, int activeAlarmId, CancellationToken cancellationToken = default)
         {
+            ActiveAlarmIds.Add(activeAlarmId);
             Oids.Add(oid); await fixture.Visit("location", cancellationToken);
             fixture.AfterBoundary("location"); return Value;
         }

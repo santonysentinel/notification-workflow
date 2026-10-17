@@ -1,6 +1,7 @@
 using System.Data;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using ActiveAlarmsParser;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -10,6 +11,7 @@ using NotificationWorkflowService.Entity;
 using NotificationWorkflowService.Parser;
 using NotificationWorkflowService.Repository;
 using NotificationWorkflowService.Service.Notes;
+using NotificationWorkflowService.Service.AutoCall;
 using Xunit;
 using NotificationSender = ActiveAlarmsParser.Service.NotificationService.NotificationService;
 using RepositorySpy = NotificationWorkflowService.Tests.WorkflowRepositoryAdapterTests.RepositorySpy;
@@ -51,7 +53,7 @@ public class AddNoteIntegrationTests
         await Parse(parser, source.Token);
 
         var received = Assert.Single(note.Calls);
-        Assert.Equal((Template, "client", source.Token), received);
+        Assert.Equal((Template, "client", alarm.SystemID, source.Token), received);
         string[] expected = ["note", "audit14", "PrepareInsertIntoAlarmNotification", "PrepareInsertIntoCurrentAlarmNotification"];
         if (kind != 2) expected = ["audit15", .. expected, "PrepareUpdateParserActivty"];
         Assert.Equal(expected, events);
@@ -90,8 +92,8 @@ public class AddNoteIntegrationTests
             Activator.CreateInstance(adapterType, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
                 null, [parser], null)!;
         using var source = new CancellationTokenSource();
-        await operations.AddNoteAsync(Template, "original-oid", source.Token);
-        Assert.Equal((Template, "original-oid", source.Token), Assert.Single(note.Calls));
+        await operations.AddNoteAsync(Template, "original-oid", 42, source.Token);
+        Assert.Equal((Template, "original-oid", 42, source.Token), Assert.Single(note.Calls));
         Assert.Empty(spy.Calls);
     }
 
@@ -232,7 +234,7 @@ public class AddNoteIntegrationTests
         Assert.Equal("note profile", alarm.ProfileName); Assert.Equal(10, alarm.ProfileID);
         Set(parser, "activeAlarms", alarms);
         await Parse(parser);
-        Assert.Equal((Template, "client", CancellationToken.None), Assert.Single(note.Calls));
+        Assert.Equal((Template, "client", alarm.SystemID, CancellationToken.None), Assert.Single(note.Calls));
         Assert.Equal("Add Note", Assert.Single(spy.Calls, c => c.Name == "PrepareInsertIntoAlarmNotification").Arguments[3]);
     }
 
@@ -276,7 +278,7 @@ public class AddNoteIntegrationTests
         spy.Rows = _ => new DataTable();
         Set(parser, "activeAlarms", alarms);
         await Parse(parser);
-        Assert.Equal((instruction, "client", CancellationToken.None), Assert.Single(note.Calls));
+        Assert.Equal((instruction, "client", alarm.SystemID, CancellationToken.None), Assert.Single(note.Calls));
         Assert.All(spy.Calls, call => Assert.True(call.Operation!.Disposed));
     }
 
@@ -286,13 +288,16 @@ public class AddNoteIntegrationTests
     public async Task ActualHostResolvesNoteDefaultsAndAcceptsOfflineRepositoryWithoutStarting(string mode)
     {
         var fixture = new AddNoteTests.Fixture();
+        var details = new ParticipantCurrentDetailsTests.Stub();
         using var host = Program.CreateHostBuilder(["--WorkerMode", mode, "--ConnectionStrings:connstr", "offline", "--Platform", "offline"])
-            .ConfigureServices((_, services) => services.AddSingleton<IRepository>((IRepository)fixture.Repository)).Build();
-        Assert.IsType<UnavailableNoteLocationProvider>(host.Services.GetRequiredService<INoteLocationProvider>());
+            .ConfigureServices((_, services) => services.AddSingleton<IRepository>((IRepository)fixture.Repository)
+                .AddSingleton<IParticipantCurrentDetailsRepository>(details)).Build();
+        Assert.IsType<ParticipantNoteLocationProvider>(host.Services.GetRequiredService<INoteLocationProvider>());
         Assert.IsType<UnavailableNoteAddressResolver>(host.Services.GetRequiredService<INoteAddressResolver>());
         var note = host.Services.GetRequiredService<INoteService>(); Assert.IsType<NoteService>(note);
-        await note.AddNoteAsync("{{lat}}/{{current_location_address}}", "oid");
-        Assert.Equal(("N/A/N/A", "oid"), Assert.Single(fixture.Repository.Writes));
+        await note.AddNoteAsync("{{lat}}/{{current_location_address}}", "oid", 42);
+        Assert.Equal(("12.50/N/A", "oid"), Assert.Single(fixture.Repository.Writes));
+        Assert.Equal(("oid", 42, CancellationToken.None), Assert.Single(details.Calls));
         // Do not start workers or resolve the notification sender/parser factory (static authentication).
     }
 
@@ -304,7 +309,7 @@ public class AddNoteIntegrationTests
             .AddSingleton<INoteLocationProvider>(fixture.Location).AddSingleton<INoteAddressResolver>(fixture.Address);
         services.AddNoteServices();
         using var provider = services.BuildServiceProvider();
-        await provider.GetRequiredService<INoteService>().AddNoteAsync("{{current_location_address}}", "oid");
+        await provider.GetRequiredService<INoteService>().AddNoteAsync("{{current_location_address}}", "oid", 42);
         Assert.Equal(("  address  ", "oid"), Assert.Single(fixture.Repository.Writes));
         Assert.Single(fixture.Location.Oids); Assert.Single(fixture.Address.Coordinates);
     }
@@ -329,10 +334,85 @@ public class AddNoteIntegrationTests
 
     private sealed class RecordingNote : INoteService
     {
-        public List<(string Template, string Oid, CancellationToken Token)> Calls { get; } = [];
+        public List<(string Template, string Oid, int ActiveAlarmId, CancellationToken Token)> Calls { get; } = [];
         public Func<string, string, CancellationToken, Task> OnCall { get; set; } = (_, _, _) => Task.CompletedTask;
-        public Task AddNoteAsync(string template, string oid, CancellationToken cancellationToken = default)
-        { Calls.Add((template, oid, cancellationToken)); return OnCall(template, oid, cancellationToken); }
+        public Task AddNoteAsync(string template, string oid, int activeAlarmId, CancellationToken cancellationToken = default)
+        { Calls.Add((template, oid, activeAlarmId, cancellationToken)); return OnCall(template, oid, cancellationToken); }
+    }
+
+    [Theory]
+    [MemberData(nameof(Parsers))]
+    public async Task NoteHydratesSqlParticipantCoordinatesBeforeAddressAndPersistence(int kind)
+    {
+        var fixture = new AddNoteTests.Fixture();
+        var details = new ParticipantCurrentDetailsTests.Stub { AfterRead = () => fixture.Events.Add("details") };
+        var note = new NoteService((IRepository)fixture.Repository, new ParticipantNoteLocationProvider(details), fixture.Address);
+        var spy = RepositorySpy.Create();
+        var parser = Parser(kind, spy, note);
+        var alarm = Alarm();
+        Set(parser, "activeAlarms", new List<ActiveAlarm> { alarm });
+        using var cancellation = new CancellationTokenSource();
+
+        await Parse(parser, cancellation.Token);
+
+        Assert.Equal(("client", alarm.SystemID, cancellation.Token), Assert.Single(details.Calls));
+        Assert.Equal((12.50m, -45.125m), Assert.Single(fixture.Address.Coordinates));
+        Assert.Equal(("Location 12.50/-45.125 —   address  ", "client"), Assert.Single(fixture.Repository.Writes));
+        Assert.Equal(new[] { "details", "address", "prepare", "open", "execute", "dispose" }, fixture.Events);
+        Assert.Equal(alarm.SystemID, Assert.Single(spy.Archived));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task NormalAndStepAutoCallActionsQueueTheParticipantSnapshot(bool step)
+    {
+        var spy = RepositorySpy.Create();
+        var fixture = new AddNoteTests.Fixture();
+        var details = new ParticipantCurrentDetailsTests.Stub();
+        var queue = new QueueRepository();
+        var enqueue = new AutoCallEnqueueService(queue, details);
+        var sender = (NotificationSender)RuntimeHelpers.GetUninitializedObject(typeof(NotificationSender));
+        object parser = step
+            ? new WorkFlowSteps(NullLogger<WorkFlowSteps>.Instance, Configuration(), (IRepository)spy, fixture.Service, enqueue)
+            : new WorkFlowCommon(NullLogger<WorkFlowCommon>.Instance, Configuration(), sender, (IRepository)spy, fixture.Service, enqueue);
+        var alarm = Alarm();
+        alarm.Priority = 19;
+        alarm.FlowId = 12;
+        alarm.OffenderName = "";
+        Set(parser, "platForm", "offline");
+        Set(parser, "activeAlarms", new List<ActiveAlarm> { alarm });
+        using var cancellation = new CancellationTokenSource();
+
+        await Parse(parser, cancellation.Token);
+
+        Assert.Equal(("client", alarm.SystemID, cancellation.Token), Assert.Single(details.Calls));
+        var request = Assert.IsType<AutoCallRequest>(queue.Request);
+        Assert.Equal(alarm.SystemID, request.ActiveAlarmId);
+        Assert.Equal("client", request.Oid);
+        Assert.Equal(12, request.FlowId);
+        Assert.Equal(cancellation.Token, queue.Token);
+        using var variables = JsonDocument.Parse(request.VariablesJson);
+        Assert.Equal(5, variables.RootElement.EnumerateObject().Count());
+        Assert.Equal("Alex & Co", variables.RootElement.GetProperty("offenderName").GetString());
+        Assert.Equal(12.50m, variables.RootElement.GetProperty("lat").GetDecimal());
+        Assert.Equal("Low battery", variables.RootElement.GetProperty("alarmname").GetString());
+        Assert.Equal(alarm.SystemID, Assert.Single(spy.Archived));
+    }
+
+    private sealed class QueueRepository : IAutoCallQueueRepository
+    {
+        public AutoCallRequest? Request { get; private set; }
+        public CancellationToken Token { get; private set; }
+        public Task<AutoCallFlow> ReadFlowAsync(int flowId, CancellationToken cancellationToken = default)
+            => Task.FromResult(new AutoCallFlow(flowId, "{\"schemaVersion\":1}",
+                "<CallFlow initialStep=\"hello\"><Step id=\"hello\"><Response><Say>Hello, {{OffenderName}}</Say></Response></Step></CallFlow>"));
+        public Task<int> EnqueueAsync(AutoCallRequest request, CancellationToken cancellationToken = default)
+        {
+            Request = request;
+            Token = cancellationToken;
+            return Task.FromResult(99);
+        }
     }
 
     private static object Parser(int kind, RepositorySpy spy, INoteService note)

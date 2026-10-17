@@ -454,7 +454,7 @@ public class WorkflowActionExecutorTests
 
         public Task SendNotificationsToOfficersInSameGroupAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
         { Record(Operation("officers", a)); return Task.CompletedTask; }
-        public Task AddNoteAsync(string template, string oid, CancellationToken cancellationToken = default)
+        public Task AddNoteAsync(string template, string oid, int activeAlarmId, CancellationToken cancellationToken = default)
         { Record(new Call("note", Text: template, Oid: oid)); return Task.CompletedTask; }
         public Task EnqueueAutoCallAsync(ActiveAlarm a, string platform, CancellationToken cancellationToken = default)
         { Record(Operation("autocall", a)); return Task.CompletedTask; }

@@ -90,6 +90,61 @@ public sealed class AutoCallPreparationTests
     }
 
     [Fact]
+    public void QueuedParticipantSnapshotResolvesCaseInsensitiveNamesAndIgnoresUnusedNulls()
+    {
+        var details = ParticipantCurrentDetailsTests.Values();
+        details["last_location_time"] = JsonSerializer.SerializeToElement<object?>(null);
+        var alarm = new NotificationWorkflowService.Entity.ActiveAlarm { SystemID = 42, ClientID = "oid", FlowId = 12 };
+        var template = Attempt(xml:
+            "<CallFlow initialStep=\"hello\"><Step id=\"hello\"><Response><Say>Hello, {{OffenderName}}. {{alarmname}} at {{LAT}},{{lon}}</Say></Response></Step><Step id=\"end\"><Response><Hangup/></Response></Step></CallFlow>");
+        var request = AutoCallEnqueueService.CaptureRequest(alarm, "DEV1",
+            new AutoCallFlow(12, template.TemplateJson, template.TemplateTwiML), details);
+        using var command = AutoCallQueueRepository.BuildEnqueueCommand(request);
+        var attempt = Attempt(variables: (string)command.Parameters["@VariablesJSON"].Value, xml: template.TemplateTwiML);
+
+        var bundle = AutoCallBundlePreparer.Prepare(attempt, Options().FeedbackBaseUrl);
+
+        Assert.Equal("Hello, Alex & Co. Low battery at 12.50,-45.125",
+            XDocument.Parse(bundle.TwiML).Descendants("Say").Single().Value);
+        using var parameters = JsonDocument.Parse(bundle.Parameters);
+        Assert.Equal(JsonValueKind.Null, parameters.RootElement.GetProperty("last_location_time").ValueKind);
+        Assert.Equal("Alex & Co", parameters.RootElement.GetProperty("offenderName").GetString());
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"offenderName\":null}")]
+    [InlineData("{\"offenderName\":\" \"}")]
+    public async Task RequiredMissingParticipantValuesFailAtPreparationWithoutSaving(string variables)
+    {
+        var repository = new Repository { Result = Attempt(variables: variables) };
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new AutoCallProcessingService(repository, Contacts("+15551234567"), Options()).PrepareAsync(Job(), "worker", default));
+        Assert.Contains("OffenderName", failure.Message);
+        Assert.Equal(new[] { "begin" }, repository.Calls);
+        Assert.Null(repository.Saved);
+    }
+
+    [Fact]
+    public void RuntimeValuesOverrideCaseInsensitiveSnapshotKeysWithCanonicalNames()
+    {
+        var bundle = AutoCallBundlePreparer.Prepare(Attempt(variables:
+            "{\"offenderName\":\"Alex\",\"CALLID\":99,\"RECIPIENT\":\"invalid\",\"FEEDBACKBASEURL\":\"https://invalid.example\",\"EXECUTIONID\":\"untrusted\"}"),
+            Options().FeedbackBaseUrl);
+        using var parameters = JsonDocument.Parse(bundle.Parameters);
+        Assert.Equal(42, parameters.RootElement.GetProperty("callId").GetInt32());
+        Assert.Equal("+15551234567", parameters.RootElement.GetProperty("recipient").GetString());
+        Assert.Equal("https://feedback.example/prefix", parameters.RootElement.GetProperty("feedbackBaseUrl").GetString());
+        Assert.False(parameters.RootElement.TryGetProperty("CALLID", out _));
+        Assert.False(parameters.RootElement.TryGetProperty("EXECUTIONID", out _));
+    }
+
+    [Fact]
+    public void CaseInsensitiveDuplicateVariablesAreRejected()
+        => Assert.Throws<InvalidOperationException>(() => AutoCallBundlePreparer.Prepare(
+            Attempt(variables: "{\"offenderName\":\"Alex\",\"OffenderName\":\"conflict\"}"), Options().FeedbackBaseUrl));
+
+    [Fact]
     public async Task InvalidRecipientsAndCancellationNeverAllocateAnAttempt()
     {
         var repository = new Repository();

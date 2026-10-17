@@ -6,5 +6,5 @@ namespace NotificationWorkflowService.Service.Notes;
 /// </summary>
 public interface INoteService
 {
-    Task AddNoteAsync(string template, string oid, CancellationToken cancellationToken = default);
+    Task AddNoteAsync(string template, string oid, int activeAlarmId, CancellationToken cancellationToken = default);
 }

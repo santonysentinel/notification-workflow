@@ -1,7 +1,8 @@
 # Add Note — profile priority 18
 
 Both initial and step workflows support profile action 18. The selected profile's
-`Instruction` is the template and `ActiveAlarm.ClientID` is the participant OID.
+`Instruction` is the template, `ActiveAlarm.ClientID` is the participant OID, and
+`ActiveAlarm.SystemID` is the active alarm ID passed to participant lookup.
 The shared executor awaits `INoteService.AddNoteAsync`, then the parser performs its
 existing final audit, archive and conditional state writes. Normal checkpoint behavior
 is unchanged. The action does not change `ProcessNextStep` or add notification writes.
@@ -19,15 +20,33 @@ notes, note text over 1000 UTF-16 code units and blank/OID values over 20 charac
 rejected, not silently truncated. Unexpected provider errors propagate rather than being
 converted to unavailable data. Cancellation propagates through every awaited operation.
 
-`INoteLocationProvider` reads one location snapshot per template invocation, and
+`ParticipantNoteLocationProvider` uses the shared `IParticipantCurrentDetailsRepository`
+to read one snapshot from `ClientDatabase` per location-template invocation:
+
+```sql
+EXEC dbo.activeAlarms_GetParticipantCurrentDetails @OID = @oid, @ActiveAlarmID = @activeAlarmId;
+```
+
+The application sends `@OID` as `varchar(20)` and `@ActiveAlarmID` as `int`.
+The procedure must return exactly one row with `offenderName`, `lat`, `lon`,
+`alarmname`, and `last_location_time`; additional scalar columns are supported by
+the shared lookup. Note consumes `lat` and `lon` for its existing location variables.
+SQL NULL coordinates render as `N/A`; absent columns, malformed coordinate values,
+missing/ambiguous rows and database failures are explicit errors, not missing-data
+fallbacks. Database failures are logged without participant values or credentials.
+
+Configuration uses top-level `ClientDatabase` first, then
+`ConnectionStrings:ClientDatabase`, matching notification database access.
+It never falls back to `connstr` or `AutoCallDB`.
 `INoteAddressResolver` is invoked only if address is requested and both coordinates
 are available and valid. Literal notes need neither provider.
 
-Default providers deliberately return unavailable data. Consequently a location template
-currently saves `N/A` values unless an implementation or mock is registered. No location
-SQL procedure or external geocoding endpoint has been invented. Replace these providers
-through DI when their real contracts are available. `AddNoteServices` preserves providers
-registered beforehand.
+The default address resolver still returns unavailable data, so
+`current_location_address` renders as `N/A` until a real geocoder is registered.
+`AddNoteServices` preserves pre-registered participant repositories and providers.
+The participant lookup procedure must already exist in ClientDatabase; this change
+does not create or alter its definition. Verify the deployed SQL parameter names
+against the contract above.
 
 ## Persistence contract
 
@@ -59,5 +78,6 @@ does not itself schedule a durable retry.
 Offline tests cover template syntax, unavailable data, bounds, invariant formatting,
 one-snapshot/provider ordering, cancellation, SQL parameter metadata, disposal, repeated
 writes, and all three parser entry points' action/state/checkpoint ordering and failure
-behavior. Full suite: 1756 passed, no failures or skips. Live procedure execution, location
-lookup, address resolution and database collation/ANSI OID handling remain unverified.
+behavior. Shared participant-reader tests cover typed SQL parameters, case-insensitive
+column access, future scalar columns, NULLs and missing/ambiguous rows. Live procedure
+execution, address resolution and database collation/ANSI OID handling remain unverified.

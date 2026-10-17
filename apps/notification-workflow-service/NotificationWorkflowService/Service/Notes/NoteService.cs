@@ -23,7 +23,7 @@ public sealed class NoteService : INoteService
         this.addressResolver = addressResolver;
     }
 
-    public async Task AddNoteAsync(string template, string oid, CancellationToken cancellationToken = default)
+    public async Task AddNoteAsync(string template, string oid, int activeAlarmId, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         // Parse before provider access or repository configuration/operation preparation.
@@ -31,13 +31,14 @@ public sealed class NoteService : INoteService
         ArgumentNullException.ThrowIfNull(oid);
         if (string.IsNullOrWhiteSpace(oid) || oid.Length > 20)
             throw new ArgumentException("OID must be nonblank and at most 20 characters.", nameof(oid));
+        if (activeAlarmId <= 0) throw new ArgumentOutOfRangeException(nameof(activeAlarmId));
 
         decimal? latitude = null;
         decimal? longitude = null;
         string? address = null;
         if (renderer.RequiresLocation)
         {
-            var location = await locationProvider.GetLocationAsync(oid, cancellationToken).ConfigureAwait(false);
+            var location = await locationProvider.GetLocationAsync(oid, activeAlarmId, cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             // Normalize each invalid coordinate independently; never geocode a partial pair.
             latitude = location?.Latitude is >= -90m and <= 90m ? location.Latitude : null;

@@ -1,10 +1,10 @@
-using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Xml;
 using System.Xml.Linq;
 using NotificationWorkflowService.Entity;
+using NotificationWorkflowService.Repository;
 
 namespace NotificationWorkflowService.Service.AutoCall;
 
@@ -17,10 +17,9 @@ public interface IAutoCallQueueRepository
     Task<int> EnqueueAsync(AutoCallRequest request, CancellationToken cancellationToken = default);
 }
 
-public sealed class AutoCallEnqueueService(IAutoCallQueueRepository repository)
+public sealed class AutoCallEnqueueService(IAutoCallQueueRepository repository, IParticipantCurrentDetailsRepository participantDetails)
 {
     private static readonly Regex Placeholder = new(@"\{\{\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\}\}", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
-    private static readonly HashSet<string> Reserved = new(StringComparer.Ordinal) { "callId", "feedbackBaseUrl", "executionId", "recipient" };
 
     public async Task<int> EnqueueAsync(ActiveAlarm alarm, string platform, CancellationToken cancellationToken = default)
     {
@@ -30,11 +29,14 @@ public sealed class AutoCallEnqueueService(IAutoCallQueueRepository repository)
         AutoCallContactService.ValidateOid(alarm.ClientID);
         var flow = await repository.ReadFlowAsync(alarm.FlowId, cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
-        var request = CaptureRequest(alarm, platform, flow);
+        var details = await participantDetails.ReadAsync(alarm.ClientID, alarm.SystemID, cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        var request = CaptureRequest(alarm, platform, flow, details);
         return await repository.EnqueueAsync(request, cancellationToken).ConfigureAwait(false);
     }
 
-    internal static AutoCallRequest CaptureRequest(ActiveAlarm alarm, string platform, AutoCallFlow flow)
+    internal static AutoCallRequest CaptureRequest(ActiveAlarm alarm, string platform, AutoCallFlow flow,
+        IReadOnlyDictionary<string, JsonElement> participantDetails)
     {
         if (flow.SystemId != alarm.FlowId) throw new InvalidOperationException("Call flow identity does not match the workflow action.");
         using var graph = JsonDocument.Parse(flow.TemplateJson);
@@ -43,22 +45,11 @@ public sealed class AutoCallEnqueueService(IAutoCallQueueRepository repository)
         using var xml = XmlReader.Create(text, new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null });
         var bundle = XDocument.Load(xml);
         if (bundle.Root?.Name != "CallFlow") throw new InvalidOperationException("Call flow must contain a CallFlow XML bundle.");
-        var variables = new SortedDictionary<string, JsonElement>(StringComparer.Ordinal);
         var sources = GraphStrings(graph.RootElement)
             .Concat(bundle.DescendantNodes().OfType<XText>().Select(node => node.Value))
             .Concat(bundle.Root.DescendantsAndSelf().Attributes().Select(attribute => attribute.Value));
         foreach (string source in sources)
         {
-            foreach (Match match in Placeholder.Matches(source))
-            {
-                string name = match.Groups["name"].Value;
-                if (Reserved.Contains(name) || variables.ContainsKey(name)) continue;
-                var property = typeof(ActiveAlarm).GetProperty(name, BindingFlags.Instance | BindingFlags.Public);
-                object? value = property?.GetValue(alarm);
-                if (property is null || value is null || value is string label && string.IsNullOrWhiteSpace(label))
-                    throw new InvalidOperationException("A required auto-call variable is unknown or missing.");
-                variables.Add(name, JsonSerializer.SerializeToElement(value, property.PropertyType));
-            }
             string remainder = Placeholder.Replace(source, "");
             if (remainder.Contains("{{", StringComparison.Ordinal))
                 throw new InvalidOperationException("Call flow contains an invalid variable placeholder.");
@@ -73,7 +64,7 @@ public sealed class AutoCallEnqueueService(IAutoCallQueueRepository repository)
         hash[6] = (byte)((hash[6] & 15) | 128);
         hash[8] = (byte)((hash[8] & 63) | 128);
         var key = new Guid(hash.AsSpan(0, 16), bigEndian: true);
-        return new AutoCallRequest(alarm.SystemID, alarm.ClientID, alarm.FlowId, JsonSerializer.Serialize(variables), key);
+        return new AutoCallRequest(alarm.SystemID, alarm.ClientID, alarm.FlowId, JsonSerializer.Serialize(participantDetails), key);
     }
 
     private static IEnumerable<string> GraphStrings(JsonElement element)

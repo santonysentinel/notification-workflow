@@ -88,7 +88,7 @@
 
         public WorkFlowSteps(ILogger<WorkFlowSteps> logger, IConfiguration configuration, IRepository repository)
             : this(logger, configuration, repository,
-                new NoteService(repository, new UnavailableNoteLocationProvider(), new UnavailableNoteAddressResolver()))
+                new NoteService(repository, new ParticipantNoteLocationProvider(new ParticipantCurrentDetailsRepository(configuration, logger)), new UnavailableNoteAddressResolver()))
         {
         }
 
@@ -103,7 +103,8 @@
             this.configuration = configuration;
             this.repository = repository;
             this.noteService = noteService;
-            this.autoCallService = autoCallService ?? new NotificationWorkflowService.Service.AutoCall.AutoCallEnqueueService(new AutoCallQueueRepository(configuration, logger));
+            this.autoCallService = autoCallService ?? new NotificationWorkflowService.Service.AutoCall.AutoCallEnqueueService(
+                new AutoCallQueueRepository(configuration, logger), new ParticipantCurrentDetailsRepository(configuration, logger));
             setUpConnnectionStrings();
         }
 
@@ -907,7 +908,7 @@
         private sealed class ActionOperations(WorkFlowSteps parser) : IWorkflowActionOperations
         {
             public Task EnqueueAutoCallAsync(ActiveAlarm alarm, string platform, CancellationToken cancellationToken = default) => parser.autoCallService.EnqueueAsync(alarm, platform, cancellationToken);
-            public Task AddNoteAsync(string template, string oid, CancellationToken cancellationToken = default) => parser.noteService.AddNoteAsync(template, oid, cancellationToken);
+            public Task AddNoteAsync(string template, string oid, int activeAlarmId, CancellationToken cancellationToken = default) => parser.noteService.AddNoteAsync(template, oid, activeAlarmId, cancellationToken);
             public Task SendNotificationsToOfficersInSameGroupAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.SendNotificationsToOfficersInSameGroupAsync(a, cancellationToken);
             public Task<bool> PushAlertToMcAppAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.PushAlertToMcAppAsync(a, cancellationToken);
             public Task<bool> AddToNotificationQueueAsync(ActiveAlarm a, int insertType, CancellationToken cancellationToken = default) => parser.AddToNotificationQueueAsync(a, insertType, cancellationToken);

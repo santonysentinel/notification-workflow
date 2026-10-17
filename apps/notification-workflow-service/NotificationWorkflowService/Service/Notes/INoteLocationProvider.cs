@@ -6,5 +6,5 @@ namespace NotificationWorkflowService.Service.Notes;
 /// </summary>
 public interface INoteLocationProvider
 {
-    Task<NoteLocation?> GetLocationAsync(string oid, CancellationToken cancellationToken = default);
+    Task<NoteLocation?> GetLocationAsync(string oid, int activeAlarmId, CancellationToken cancellationToken = default);
 }
