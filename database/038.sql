@@ -24,12 +24,12 @@ BEGIN
 
     SELECT
         c.SystemID AS CallId,
-        c.AutomatedCallQueueId,
+        q.SystemID AS AutomatedCallQueueId,
         q.ActiveAlarmID,
         q.POGroupNum,
-        c.OID,
+        COALESCE(c.OID, q.OID) AS OID,
         c.PhoneE164,
-        c.FlowId,
+        COALESCE(c.FlowId, q.FlowId) AS FlowId,
         c.Provider,
         c.providerCallId AS ProviderCallId,
         c.CallStatus,
@@ -95,12 +95,29 @@ BEGIN
             WHERE r.CallId = c.SystemID
             ORDER BY j.RecordingId, j.ConfigurationVersion, j.SystemID
             FOR JSON PATH, INCLUDE_NULL_VALUES
-        ), N'[]') AS TranscriptionsJSON
-    FROM dbo.AutomatedCalls AS c
-    INNER JOIN dbo.AutomatedCallQueue AS q ON q.SystemID = c.AutomatedCallQueueId
-    WHERE q.POGroupNum = @pogroupnum
-      AND c.CreatedDateTime >= @startdate
-      AND c.CreatedDateTime < @enddate
-    ORDER BY c.CreatedDateTime DESC, c.SystemID DESC;
+        ), N'[]') AS TranscriptionsJSON,
+        q.CreatedDateTime AS QueueCreatedDateTime,
+        q.UpdatedAt AS QueueUpdatedAt,
+        q.AvailableAt AS QueueAvailableAt,
+        q.AttemptCount AS QueueAttemptCount,
+        q.MaxAttempts AS QueueMaxAttempts,
+        q.LastErrorCode AS QueueLastErrorCode
+    FROM dbo.AutomatedCallQueue AS q
+    OUTER APPLY
+    (
+        SELECT TOP (1)
+            attempt.SystemID, attempt.OID, attempt.PhoneE164, attempt.FlowId,
+            attempt.Provider, attempt.providerCallId, attempt.CallStatus,
+            attempt.SubmissionState, attempt.SubmissionErrorCode,
+            attempt.CreatedDateTime, attempt.StartedDateTime, attempt.EndedDateTime,
+            attempt.UpdatedDateTime, attempt.CallDurationSeconds
+        FROM dbo.AutomatedCalls AS attempt
+        WHERE attempt.AutomatedCallQueueId = q.SystemID
+        ORDER BY attempt.CreatedDateTime DESC, attempt.SystemID DESC
+    ) AS c
+    WHERE (q.POGroupNum = @pogroupnum OR q.POGroupNum LIKE @pogroupnum + '%')
+      AND q.CreatedDateTime >= @startdate
+      AND q.CreatedDateTime < @enddate
+    ORDER BY q.CreatedDateTime DESC, q.SystemID DESC;
 END;
 GO
