@@ -4,9 +4,9 @@ SET ANSI_NULLS ON;
 SET QUOTED_IDENTIFIER ON;
 GO
 
--- Deploy 038.sql in AutoCallDB first; group membership comes only from the queue snapshot.
+-- Deploy 037.sql in AutoCallDB first; group membership comes only from the queue snapshot.
 IF COL_LENGTH(N'dbo.AutomatedCallQueue', N'POGroupNum') IS NULL
-    THROW 51000, 'Deploy 038.sql before the POGroup call-log procedure.', 1;
+    THROW 51000, 'Deploy 037.sql before the POGroup call-log procedure.', 1;
 GO
 
 CREATE OR ALTER PROC [dbo].[automatedcalls_GetAllCallForPOGroup]

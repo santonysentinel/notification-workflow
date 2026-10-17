@@ -391,6 +391,9 @@ public class AddNoteIntegrationTests
         Assert.Equal(alarm.SystemID, request.ActiveAlarmId);
         Assert.Equal("client", request.Oid);
         Assert.Equal(12, request.FlowId);
+        Assert.Equal(alarm.POGroupNum, request.POGroupNum);
+        using var command = AutoCallQueueRepository.BuildEnqueueCommand(request);
+        Assert.Equal("group", command.Parameters["@POGroupNum"].Value);
         Assert.Equal(cancellation.Token, queue.Token);
         using var variables = JsonDocument.Parse(request.VariablesJson);
         Assert.Equal(5, variables.RootElement.EnumerateObject().Count());

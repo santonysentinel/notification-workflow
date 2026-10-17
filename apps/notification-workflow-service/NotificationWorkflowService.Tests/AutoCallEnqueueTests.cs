@@ -11,7 +11,7 @@ namespace NotificationWorkflowService.Tests;
 public sealed class AutoCallEnqueueTests
 {
     private static ActiveAlarm Alarm() => new()
-    { SystemID = 42, HistoryID = 81, ClientID = "oid-42", ProfileID = 7, StateNo = 3, CurrentLoopNumber = 1, FlowId = 12 };
+    { SystemID = 42, HistoryID = 81, ClientID = "oid-42", POGroupNum = "group-42", ProfileID = 7, StateNo = 3, CurrentLoopNumber = 1, FlowId = 12 };
     private static AutoCallFlow Flow(string content = "{{OffenderName}} {{alarmname}} {{callId}} {{feedbackBaseUrl}} {{executionId}} {{recipient}}")
         => new(12, "{\"schemaVersion\":1}", "<CallFlow initialStep=\"hello\"><Step id=\"hello\"><Response><Say>" + content + "</Say></Response></Step></CallFlow>");
     private static AutoCallRequest Capture(ActiveAlarm? alarm = null, string platform = "DEV1", AutoCallFlow? flow = null,
@@ -46,6 +46,7 @@ public sealed class AutoCallEnqueueTests
         Assert.Equal(42, request.ActiveAlarmId);
         Assert.Equal("oid-42", request.Oid);
         Assert.Equal(12, request.FlowId);
+        Assert.Equal("group-42", request.POGroupNum);
         using var variables = JsonDocument.Parse(request.VariablesJson);
         Assert.Equal(5, variables.RootElement.EnumerateObject().Count());
         Assert.Equal("Alex & Co", variables.RootElement.GetProperty("offenderName").GetString());
@@ -76,6 +77,10 @@ public sealed class AutoCallEnqueueTests
         var changed = Capture(details: ParticipantCurrentDetailsTests.Values("New participant name"));
         Assert.Equal(original.EnqueueIdempotencyKey, changed.EnqueueIdempotencyKey);
         Assert.NotEqual(original.VariablesJson, changed.VariablesJson);
+        alarm = Alarm(); alarm.POGroupNum = "different-group";
+        var changedGroup = Capture(alarm);
+        Assert.Equal(original.EnqueueIdempotencyKey, changedGroup.EnqueueIdempotencyKey);
+        Assert.NotEqual(original.POGroupNum, changedGroup.POGroupNum);
     }
 
     [Fact]
@@ -125,6 +130,38 @@ public sealed class AutoCallEnqueueTests
         Assert.Equal(-1, command.Parameters["@VariablesJSON"].Size);
         Assert.Equal(request.VariablesJson, command.Parameters["@VariablesJSON"].Value);
         Assert.Equal(request.Oid, command.Parameters["@OID"].Value);
+        Assert.Equal(SqlDbType.VarChar, command.Parameters["@POGroupNum"].SqlDbType);
+        Assert.Equal(20, command.Parameters["@POGroupNum"].Size);
+        Assert.Equal(request.POGroupNum, command.Parameters["@POGroupNum"].Value);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" \t")]
+    [InlineData("123456789012345678901")]
+    public async Task InvalidGroupCannotEnqueueOrBeSilentlyTruncated(string? group)
+    {
+        var alarm = Alarm();
+        alarm.POGroupNum = group!;
+        var repository = new Repository();
+        var details = new ParticipantCurrentDetailsTests.Stub();
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new AutoCallEnqueueService(repository, details).EnqueueAsync(alarm, "DEV1"));
+        Assert.Equal(0, repository.Reads);
+        Assert.Equal(0, repository.Writes);
+        Assert.Empty(details.Calls);
+        Assert.Throws<InvalidOperationException>(() => AutoCallQueueRepository.BuildEnqueueCommand(Capture(alarm)));
+    }
+
+    [Fact]
+    public void MaximumLengthGroupIsPreservedWithoutChangingCaseOrTrimming()
+    {
+        var alarm = Alarm();
+        alarm.POGroupNum = " AbC123456789012345 ";
+        Assert.Equal(20, alarm.POGroupNum.Length);
+        using var command = AutoCallQueueRepository.BuildEnqueueCommand(Capture(alarm));
+        Assert.Equal(alarm.POGroupNum, command.Parameters["@POGroupNum"].Value);
     }
 
     [Fact]

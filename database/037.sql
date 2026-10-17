@@ -7,7 +7,7 @@ SET CONCAT_NULL_YIELDS_NULL ON;
 SET NUMERIC_ROUNDABORT OFF;
 GO
 
--- Deploy in AutoCallDB before 037.sql. Existing rows deliberately remain unassigned.
+-- Deploy in AutoCallDB before 038.sql and 039.sql. Existing rows deliberately remain unassigned.
 IF OBJECT_ID(N'dbo.AutomatedCallQueue', N'U') IS NULL
     THROW 51000, 'AutomatedCallQueue must exist before adding POGroupNum.', 1;
 
@@ -25,6 +25,5 @@ IF NOT EXISTS
         ON dbo.AutomatedCallQueue (POGroupNum)
         WHERE POGroupNum IS NOT NULL;
 GO
-
 
 

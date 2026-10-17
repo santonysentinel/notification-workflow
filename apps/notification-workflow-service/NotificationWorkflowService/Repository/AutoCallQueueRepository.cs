@@ -53,12 +53,14 @@ public sealed class AutoCallQueueRepository(IConfiguration configuration, ILogge
 
     internal static SqlCommand BuildEnqueueCommand(AutoCallRequest request)
     {
+        AutoCallEnqueueService.ValidatePOGroupNum(request.POGroupNum);
         var command = new SqlCommand("dbo.activealarms_call_InsertJob") { CommandType = CommandType.StoredProcedure, CommandTimeout = 30 };
         command.Parameters.Add("@ActiveAlarmID", SqlDbType.Int).Value = request.ActiveAlarmId;
         command.Parameters.Add("@OID", SqlDbType.VarChar, 20).Value = request.Oid;
         command.Parameters.Add("@FlowId", SqlDbType.Int).Value = request.FlowId;
         command.Parameters.Add("@VariablesJSON", SqlDbType.NVarChar, -1).Value = request.VariablesJson;
         command.Parameters.Add("@EnqueueIdempotencyKey", SqlDbType.UniqueIdentifier).Value = request.EnqueueIdempotencyKey;
+        command.Parameters.Add("@POGroupNum", SqlDbType.VarChar, 20).Value = request.POGroupNum;
         return command;
     }
 }

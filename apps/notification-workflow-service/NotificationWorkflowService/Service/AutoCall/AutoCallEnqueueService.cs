@@ -9,7 +9,7 @@ using NotificationWorkflowService.Repository;
 namespace NotificationWorkflowService.Service.AutoCall;
 
 public sealed record AutoCallFlow(int SystemId, string TemplateJson, string TwiML);
-public sealed record AutoCallRequest(int ActiveAlarmId, string Oid, int FlowId, string VariablesJson, Guid EnqueueIdempotencyKey);
+public sealed record AutoCallRequest(int ActiveAlarmId, string Oid, int FlowId, string VariablesJson, Guid EnqueueIdempotencyKey, string POGroupNum);
 
 public interface IAutoCallQueueRepository
 {
@@ -27,6 +27,7 @@ public sealed class AutoCallEnqueueService(IAutoCallQueueRepository repository, 
         if (alarm.SystemID <= 0 || alarm.FlowId <= 0 || string.IsNullOrWhiteSpace(platform))
             throw new InvalidOperationException("Auto-call action requires alarm identity, platform and FlowId.");
         AutoCallContactService.ValidateOid(alarm.ClientID);
+        ValidatePOGroupNum(alarm.POGroupNum);
         var flow = await repository.ReadFlowAsync(alarm.FlowId, cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
         var details = await participantDetails.ReadAsync(alarm.ClientID, alarm.SystemID, cancellationToken).ConfigureAwait(false);
@@ -64,7 +65,13 @@ public sealed class AutoCallEnqueueService(IAutoCallQueueRepository repository, 
         hash[6] = (byte)((hash[6] & 15) | 128);
         hash[8] = (byte)((hash[8] & 63) | 128);
         var key = new Guid(hash.AsSpan(0, 16), bigEndian: true);
-        return new AutoCallRequest(alarm.SystemID, alarm.ClientID, alarm.FlowId, JsonSerializer.Serialize(participantDetails), key);
+        return new AutoCallRequest(alarm.SystemID, alarm.ClientID, alarm.FlowId, JsonSerializer.Serialize(participantDetails), key, alarm.POGroupNum);
+    }
+
+    internal static void ValidatePOGroupNum(string? poGroupNum)
+    {
+        if (string.IsNullOrWhiteSpace(poGroupNum) || poGroupNum.Length > 20)
+            throw new InvalidOperationException("Auto-call enqueue requires a nonblank POGroupNum of at most 20 characters.");
     }
 
     private static IEnumerable<string> GraphStrings(JsonElement element)

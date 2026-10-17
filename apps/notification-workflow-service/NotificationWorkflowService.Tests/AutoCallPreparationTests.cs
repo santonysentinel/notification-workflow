@@ -94,7 +94,7 @@ public sealed class AutoCallPreparationTests
     {
         var details = ParticipantCurrentDetailsTests.Values();
         details["last_location_time"] = JsonSerializer.SerializeToElement<object?>(null);
-        var alarm = new NotificationWorkflowService.Entity.ActiveAlarm { SystemID = 42, ClientID = "oid", FlowId = 12 };
+        var alarm = new NotificationWorkflowService.Entity.ActiveAlarm { SystemID = 42, ClientID = "oid", POGroupNum = "group", FlowId = 12 };
         var template = Attempt(xml:
             "<CallFlow initialStep=\"hello\"><Step id=\"hello\"><Response><Say>Hello, {{OffenderName}}. {{alarmname}} at {{LAT}},{{lon}}</Say></Response></Step><Step id=\"end\"><Response><Hangup/></Response></Step></CallFlow>");
         var request = AutoCallEnqueueService.CaptureRequest(alarm, "DEV1",
