@@ -34,6 +34,17 @@ public sealed class AutoCallPreparationTests
         public List<string> Calls { get; } = [];
         public AutoCallPreparedBundle? Saved { get; private set; }
         public string? Recipient { get; private set; }
+        public AutoCallQueueStatus QueueStatus { get; set; } = new();
+        public Exception? StatusFailure { get; set; }
+        public int StatusReads { get; private set; }
+        public TaskCompletionSource StatusRead { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task<AutoCallQueueStatus> ReadQueueStatusAsync(CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            StatusReads++;
+            StatusRead.TrySetResult();
+            return StatusFailure is null ? Task.FromResult(QueueStatus) : Task.FromException<AutoCallQueueStatus>(StatusFailure);
+        }
         public Task<IReadOnlyList<AutoCallJob>> ClaimAsync(int capacity, string workerId, int leaseMinutes, CancellationToken token)
         {
             Capacities.Add(capacity);
@@ -216,6 +227,106 @@ public sealed class AutoCallPreparationTests
     }
 
     [Fact]
+    public async Task WorkerLogsQueueCountsOnEveryPassIncludingWhenAtCapacity()
+    {
+        var logger = new AutoCallDiagnosticsTests.Logs<AutoCallWorker>();
+        var repository = new Repository
+        {
+            QueueStatus = new() { WaitingJobs = 7, DueJobs = 3, ScheduledJobs = 4, ProcessingJobs = 2, ExpiredLeaseJobs = 1 }
+        };
+        repository.Jobs.Enqueue(Job());
+        repository.Jobs.Enqueue(Job(2));
+        var processing = new Processing();
+        using var worker = new AutoCallWorker(repository, processing, Options(), logger);
+
+        await worker.RunCycleAsync(default);
+        await worker.RunCycleAsync(default);
+
+        Assert.Equal(2, repository.StatusReads);
+        Assert.Equal(new[] { 2 }, repository.Capacities);
+        var passes = logger.Entries.Where(entry => entry.Properties.ContainsKey("PassNumber")).ToArray();
+        Assert.Equal(2, passes.Length);
+        Assert.Equal(1L, passes[0].Properties["PassNumber"]);
+        Assert.Equal(2L, passes[1].Properties["PassNumber"]);
+        Assert.Equal(2, passes[0].Properties["ClaimedJobs"]);
+        Assert.Equal(0, passes[1].Properties["ClaimedJobs"]);
+        Assert.All(passes, entry =>
+        {
+            Assert.Equal(true, entry.Properties["QueueStatusAvailable"]);
+            Assert.Equal(7L, entry.Properties["WaitingJobs"]);
+            Assert.Equal(3L, entry.Properties["DueJobs"]);
+            Assert.Equal(4L, entry.Properties["ScheduledJobs"]);
+            Assert.Equal(2L, entry.Properties["ProcessingJobs"]);
+            Assert.Equal(1L, entry.Properties["ExpiredLeaseJobs"]);
+            Assert.Equal(2, entry.Properties["InFlightJobs"]);
+            Assert.Equal(0, entry.Properties["AvailableSlots"]);
+        });
+        foreach (var pending in processing.Pending) pending.SetResult(Attempt(true));
+        await worker.WaitForCompletionAsync(default).WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task IdleWorkerStillLogsAPassWithZeroCounts()
+    {
+        var logger = new AutoCallDiagnosticsTests.Logs<AutoCallWorker>();
+        using var worker = new AutoCallWorker(new Repository(), new Processing(), Options(), logger);
+        Assert.Equal(0, await worker.RunCycleAsync(default));
+        var entry = Assert.Single(logger.Entries);
+        Assert.Equal(0L, entry.Properties["WaitingJobs"]);
+        Assert.Equal(0, entry.Properties["ClaimedJobs"]);
+        Assert.Equal(0, entry.Properties["InFlightJobs"]);
+        Assert.Equal(2, entry.Properties["AvailableSlots"]);
+        Assert.Equal(true, entry.Properties["QueueStatusAvailable"]);
+    }
+
+    [Fact]
+    public async Task MonitoringFailureIsLoggedAsUnavailableAndDoesNotStopClaims()
+    {
+        var logger = new AutoCallDiagnosticsTests.Logs<AutoCallWorker>();
+        var repository = new Repository { StatusFailure = new TimeoutException("private database details") };
+        repository.Jobs.Enqueue(Job());
+        var processing = new Processing();
+        using var worker = new AutoCallWorker(repository, processing, Options(), logger);
+        Assert.Equal(1, await worker.RunCycleAsync(default));
+        var failure = Assert.Single(logger.Entries.Where(entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Error));
+        Assert.DoesNotContain("private database details", failure.Message);
+        var summary = Assert.Single(logger.Entries.Where(entry => entry.Properties.ContainsKey("PassNumber")));
+        Assert.Equal(false, summary.Properties["QueueStatusAvailable"]);
+        Assert.Null(summary.Properties["WaitingJobs"]);
+        Assert.Equal(1, summary.Properties["ClaimedJobs"]);
+        processing.Pending[0].SetResult(Attempt(true));
+        await worker.WaitForCompletionAsync(default).WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task HostedWorkerLogsStartupAndShutdown()
+    {
+        var logger = new AutoCallDiagnosticsTests.Logs<AutoCallWorker>();
+        var repository = new Repository();
+        using var worker = new AutoCallWorker(repository, new Processing(), Options(), logger);
+        await worker.StartAsync(default);
+        await repository.StatusRead.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        using var stopping = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await worker.StopAsync(stopping.Token);
+        Assert.Contains(logger.Entries, entry => entry.Message.Contains(" started;") &&
+            Equals(2, entry.Properties["MaxConcurrency"]));
+        Assert.Contains(logger.Entries, entry => entry.Message.Contains(" stopping;"));
+        Assert.Contains(logger.Entries, entry => entry.Message.EndsWith(" stopped", StringComparison.Ordinal));
+        Assert.DoesNotContain(logger.Entries, entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Error);
+    }
+
+    [Fact]
+    public void QueueStatusQueryHasABoundedTimeoutAndPropagatesCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var command = AutoCallRepository.QueueStatusCommand(cancellation.Token);
+        Assert.Equal(CommandType.Text, command.CommandType);
+        Assert.Equal(5, command.CommandTimeout);
+        Assert.Equal(cancellation.Token, command.CancellationToken);
+        Assert.Contains("CAST(1 AS bigint)", command.CommandText);
+    }
+
+    [Fact]
     public async Task WorkerClaimsOnlyFreeSlotsAndReplenishesOnlyCompletedWork()
     {
         var repository = new Repository();
@@ -245,7 +356,7 @@ public sealed class AutoCallPreparationTests
         processing.Pending[0].SetException(new InvalidOperationException("private payload"));
         await worker.WaitForCompletionAsync(default).WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(new[] { "fail" }, repository.Calls);
-        var entry = Assert.Single(logger.Entries);
+        var entry = Assert.Single(logger.Entries.Where(entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Error));
         Assert.Equal("Preparation", entry.Properties["Operation"]);
         Assert.Equal(1, entry.Properties["QueueId"]);
         Assert.DoesNotContain("private payload", entry.Message);
@@ -259,7 +370,7 @@ public sealed class AutoCallPreparationTests
         stopping.Cancel();
         await canceledWorker.WaitForCompletionAsync(default).WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Empty(repository.Calls);
-        Assert.Single(logger.Entries);
+        Assert.Single(logger.Entries.Where(entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Error));
     }
 
     [Fact]

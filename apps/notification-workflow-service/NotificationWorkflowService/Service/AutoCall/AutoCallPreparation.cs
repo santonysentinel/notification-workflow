@@ -45,8 +45,18 @@ public sealed class AutoCallAttempt
 
 public sealed record AutoCallPreparedBundle(string TwiML, string Parameters);
 
+public sealed class AutoCallQueueStatus
+{
+    public long WaitingJobs { get; init; }
+    public long DueJobs { get; init; }
+    public long ScheduledJobs { get; init; }
+    public long ProcessingJobs { get; init; }
+    public long ExpiredLeaseJobs { get; init; }
+}
+
 public interface IAutoCallRepository
 {
+    Task<AutoCallQueueStatus> ReadQueueStatusAsync(CancellationToken cancellationToken);
     Task<IReadOnlyList<AutoCallJob>> ClaimAsync(int capacity, string workerId, int leaseMinutes, CancellationToken cancellationToken);
     Task<AutoCallAttempt> BeginAttemptAsync(AutoCallJob job, string workerId, string recipient, CancellationToken cancellationToken);
     Task<int> SavePreparationAsync(AutoCallAttempt attempt, string workerId, AutoCallPreparedBundle bundle, CancellationToken cancellationToken);

@@ -82,10 +82,11 @@ public sealed class DatabaseDiagnosticsTests
     {
         var logger = new Logs<AutoCallRepository>();
         var repository = new AutoCallRepository(new ConfigurationBuilder().Build(), logger);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.ReadQueueStatusAsync(default));
         await Assert.ThrowsAsync<InvalidOperationException>(() => repository.ClaimAsync(1, "worker", 5, default));
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             repository.FailPreparationAsync(new AutoCallJob(), "worker", default));
-        Assert.Equal(new[] { "dbo.activealarms_call_GetNextSetOfJobs", "dbo.automatedcalls_FailPreparation" },
+        Assert.Equal(new[] { "ReadAutoCallQueueStatus", "dbo.activealarms_call_GetNextSetOfJobs", "dbo.automatedcalls_FailPreparation" },
             logger.Entries.Select(entry => entry.Properties["Operation"]));
     }
 

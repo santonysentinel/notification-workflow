@@ -51,6 +51,21 @@ public sealed class AutoCallRepository(IConfiguration configuration, ILogger<Aut
     public Task<IReadOnlyList<AutoCallJob>> ClaimAsync(int capacity, string workerId, int leaseMinutes, CancellationToken cancellationToken)
         => ReadAsync<AutoCallJob>(ClaimCommand(capacity, workerId, leaseMinutes, cancellationToken));
 
+    public async Task<AutoCallQueueStatus> ReadQueueStatusAsync(CancellationToken cancellationToken)
+        => (await ReadAsync<AutoCallQueueStatus>(QueueStatusCommand(cancellationToken), "ReadAutoCallQueueStatus").ConfigureAwait(false)).Single();
+
+    internal static CommandDefinition QueueStatusCommand(CancellationToken cancellationToken)
+        => new("""
+            DECLARE @Now datetime2(3) = SYSUTCDATETIME();
+            SELECT COALESCE(SUM(CASE WHEN Status = 'READY' THEN CAST(1 AS bigint) ELSE 0 END), 0) AS WaitingJobs,
+                COALESCE(SUM(CASE WHEN Status = 'READY' AND AvailableAt <= @Now THEN CAST(1 AS bigint) ELSE 0 END), 0) AS DueJobs,
+                COALESCE(SUM(CASE WHEN Status = 'READY' AND AvailableAt > @Now THEN CAST(1 AS bigint) ELSE 0 END), 0) AS ScheduledJobs,
+                COALESCE(SUM(CASE WHEN Status = 'PROCESSING' THEN CAST(1 AS bigint) ELSE 0 END), 0) AS ProcessingJobs,
+                COALESCE(SUM(CASE WHEN Status = 'PROCESSING' AND LockedUntil <= @Now THEN CAST(1 AS bigint) ELSE 0 END), 0) AS ExpiredLeaseJobs
+            FROM dbo.AutomatedCallQueue
+            WHERE Status IN ('READY', 'PROCESSING');
+            """, commandType: CommandType.Text, commandTimeout: 5, cancellationToken: cancellationToken);
+
     public async Task<AutoCallAttempt> BeginAttemptAsync(AutoCallJob job, string workerId, string recipient, CancellationToken cancellationToken)
     {
         var attempt = (await ReadAsync<AutoCallAttempt>(BeginCommand(job, workerId, recipient, cancellationToken)).ConfigureAwait(false)).Single();
@@ -119,8 +134,8 @@ public sealed class AutoCallRepository(IConfiguration configuration, ILogger<Aut
         return new SqlConnection(value);
     }
 
-    private async Task<IReadOnlyList<T>> ReadAsync<T>(CommandDefinition command)
-        => await DatabaseDiagnostics.ExecuteAsync<IReadOnlyList<T>>(logger, "AutoCallDB", command.CommandText, command.CancellationToken, async () =>
+    private async Task<IReadOnlyList<T>> ReadAsync<T>(CommandDefinition command, string? operation = null)
+        => await DatabaseDiagnostics.ExecuteAsync<IReadOnlyList<T>>(logger, "AutoCallDB", operation ?? command.CommandText, command.CancellationToken, async () =>
     {
         command.CancellationToken.ThrowIfCancellationRequested();
         await using var connection = Connection();

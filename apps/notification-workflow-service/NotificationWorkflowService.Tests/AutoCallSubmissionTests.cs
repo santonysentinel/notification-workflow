@@ -317,6 +317,8 @@ public sealed class AutoCallSubmissionTests
         private bool claimed;
         public bool FailPreparation { get; set; }
         public bool FailedDisposition { get; private set; }
+        public Task<AutoCallQueueStatus> ReadQueueStatusAsync(CancellationToken cancellationToken)
+            => Task.FromResult(new AutoCallQueueStatus());
         public Task<IReadOnlyList<AutoCallJob>> ClaimAsync(int capacity, string workerId, int minutes, CancellationToken token)
         {
             IReadOnlyList<AutoCallJob> jobs = claimed ? [] : [new() { SystemID = 7 }]; claimed = true;

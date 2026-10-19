@@ -342,6 +342,8 @@ public sealed class AutoCallRecoveryTests
         public string? Disposition { get; private set; }
         public string? ErrorCode { get; private set; }
         public int DelaySeconds { get; private set; }
+        public Task<AutoCallQueueStatus> ReadQueueStatusAsync(CancellationToken cancellationToken)
+            => Task.FromResult(new AutoCallQueueStatus());
         public AutoCallRecoveryService Service(int renewalSeconds = 60, ILogger<AutoCallRecoveryService>? logger = null) => new(this, this, this, this, this,
             new() { RenewalSeconds = renewalSeconds }, new() { WorkerId = "worker" }, logger ?? NullLogger<AutoCallRecoveryService>.Instance);
         public Task<bool> RenewAsync(AutoCallJob job, string workerId, int leaseMinutes, CancellationToken cancellationToken)
