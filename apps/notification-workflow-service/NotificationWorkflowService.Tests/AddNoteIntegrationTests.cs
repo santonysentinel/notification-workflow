@@ -2,6 +2,7 @@ using System.Data;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Xml.Linq;
 using ActiveAlarmsParser;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -363,13 +364,30 @@ public class AddNoteIntegrationTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task NormalAndStepAutoCallActionsQueueTheParticipantSnapshot(bool step)
+    [InlineData(false, "offenderName", false)]
+    [InlineData(true, "offenderName", false)]
+    [InlineData(false, "OffenderName", true)]
+    [InlineData(true, "OffenderName", true)]
+    [InlineData(false, "offendername", true)]
+    [InlineData(true, "offendername", true)]
+    public async Task NormalAndStepAutoCallActionsQueueTheParticipantSnapshot(bool step, string nameColumn, bool nullLocation)
     {
         var spy = RepositorySpy.Create();
         var fixture = new AddNoteTests.Fixture();
-        var details = new ParticipantCurrentDetailsTests.Stub();
+        using var table = new DataTable();
+        table.Columns.Add(nameColumn, typeof(string));
+        table.Columns.Add("lat", typeof(decimal));
+        table.Columns.Add("lon", typeof(decimal));
+        table.Columns.Add("alarmname", typeof(string));
+        table.Columns.Add("last_location_time", typeof(DateTime));
+        table.Rows.Add("Alex & Co", nullLocation ? DBNull.Value : 12.50m,
+            nullLocation ? DBNull.Value : -45.125m, "Low battery",
+            nullLocation ? DBNull.Value : new DateTime(2026, 10, 16, 12, 30, 0));
+        await using var reader = table.CreateDataReader();
+        var details = new ParticipantCurrentDetailsTests.Stub
+        {
+            Details = await ParticipantCurrentDetailsRepository.ReadDetailsAsync(reader, default)
+        };
         var queue = new QueueRepository();
         var enqueue = new AutoCallEnqueueService(queue, details);
         var sender = (NotificationSender)RuntimeHelpers.GetUninitializedObject(typeof(NotificationSender));
@@ -394,13 +412,28 @@ public class AddNoteIntegrationTests
         Assert.Equal(alarm.POGroupNum, request.POGroupNum);
         using var command = AutoCallQueueRepository.BuildEnqueueCommand(request);
         Assert.Equal("group", command.Parameters["@POGroupNum"].Value);
+        Assert.Equal(request.VariablesJson, command.Parameters["@VariablesJSON"].Value);
         Assert.Equal(cancellation.Token, queue.Token);
         using var variables = JsonDocument.Parse(request.VariablesJson);
         Assert.Equal(5, variables.RootElement.EnumerateObject().Count());
-        Assert.Equal("Alex & Co", variables.RootElement.GetProperty("offenderName").GetString());
-        Assert.Equal(12.50m, variables.RootElement.GetProperty("lat").GetDecimal());
+        Assert.Equal("Alex & Co", variables.RootElement.GetProperty(nameColumn).GetString());
+        if (nullLocation)
+        {
+            foreach (string column in new[] { "lat", "lon", "last_location_time" })
+                Assert.Equal(JsonValueKind.Null, variables.RootElement.GetProperty(column).ValueKind);
+        }
+        else
+            Assert.Equal(12.50m, variables.RootElement.GetProperty("lat").GetDecimal());
         Assert.Equal("Low battery", variables.RootElement.GetProperty("alarmname").GetString());
         Assert.Equal(alarm.SystemID, Assert.Single(spy.Archived));
+
+        var flow = await queue.ReadFlowAsync(request.FlowId);
+        var prepared = AutoCallBundlePreparer.Prepare(new AutoCallAttempt
+        {
+            CallId = 42, PhoneE164 = "+15551234567", VariablesJson = request.VariablesJson,
+            TemplateJson = flow.TemplateJson, TemplateTwiML = flow.TwiML
+        }, "https://feedback.example");
+        Assert.Equal("Hello, Alex & Co", XDocument.Parse(prepared.TwiML).Descendants("Say").Single().Value);
     }
 
     private sealed class QueueRepository : IAutoCallQueueRepository
@@ -408,7 +441,7 @@ public class AddNoteIntegrationTests
         public AutoCallRequest? Request { get; private set; }
         public CancellationToken Token { get; private set; }
         public Task<AutoCallFlow> ReadFlowAsync(int flowId, CancellationToken cancellationToken = default)
-            => Task.FromResult(new AutoCallFlow(flowId, "{\"schemaVersion\":1}",
+            => Task.FromResult(new AutoCallFlow(flowId, "{\"schemaVersion\":1,\"initialStep\":\"hello\",\"steps\":[{\"id\":\"hello\",\"type\":\"terminal\"}]}",
                 "<CallFlow initialStep=\"hello\"><Step id=\"hello\"><Response><Say>Hello, {{OffenderName}}</Say></Response></Step></CallFlow>"));
         public Task<int> EnqueueAsync(AutoCallRequest request, CancellationToken cancellationToken = default)
         {

@@ -16,7 +16,8 @@ BEGIN
 	c.T_LAT as lat, 
 	c.T_LON as lon, 
 	dbo.fUnixToLocal(c.T_Time, c.OTZ, 1) as last_location_time,
-	h.EventDescription as alarmname
+	h.EventDescription as alarmname,
+	c.OFname + ' ' + c.OLName as  offenderName
 	from Client c 
 	inner join ActiveAlarms aa on aa.SystemID = @ActiveAlarmID and aa.ClientID = c.SystemID 
 	inner join History h on h.SystemID = aa.HistoryID
