@@ -2,6 +2,8 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NotificationWorkflowService.Service.AutoCall;
 
@@ -11,9 +13,11 @@ public sealed class TwilioSubmissionException(bool rejected, string errorCode) :
     public string ErrorCode { get; } = errorCode;
 }
 
-public sealed class TwilioCallClient(IHttpClientFactory factory, AutoCallTwilioOptions options) : ITwilioCallClient, ITwilioCallLookup
+public sealed class TwilioCallClient(IHttpClientFactory factory, AutoCallTwilioOptions options,
+    ILogger<TwilioCallClient>? logger = null) : ITwilioCallClient, ITwilioCallLookup
 {
     internal const string ClientName = "AutoCallTwilio";
+    private readonly ILogger<TwilioCallClient> diagnosticsLogger = logger ?? NullLogger<TwilioCallClient>.Instance;
 
     public async Task<string> CreateAsync(AutoCallSubmissionRequest request, CancellationToken cancellationToken)
     {
@@ -59,6 +63,7 @@ public sealed class TwilioCallClient(IHttpClientFactory factory, AutoCallTwilioO
             if (response.StatusCode != HttpStatusCode.Created)
             {
                 int status = (int)response.StatusCode;
+                diagnosticsLogger.LogWarning("Auto-call Twilio create returned HTTP {HttpStatus} for call {CallId}", status, request.CallId);
                 if (status is >= 400 and < 500 && status != 408)
                 {
                     using var rejection = JsonDocument.Parse(await response.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false));
@@ -77,8 +82,19 @@ public sealed class TwilioCallClient(IHttpClientFactory factory, AutoCallTwilioO
                 throw new TwilioSubmissionException(false, "INVALID_RESPONSE");
             return sid;
         }
-        catch (TwilioSubmissionException) { throw; }
-        catch (Exception) { throw new TwilioSubmissionException(false, "ACCEPTANCE_UNKNOWN"); }
+        catch (TwilioSubmissionException exception)
+        {
+            AutoCallDiagnostics.Failure(diagnosticsLogger, "Twilio create", exception, callId: request.CallId);
+            throw;
+        }
+        catch (Exception exception)
+        {
+            AutoCallDiagnostics.Failure(diagnosticsLogger, "Twilio create (acceptance unknown)", exception, callId: request.CallId,
+                cancellationReason: exception is OperationCanceledException
+                    ? cancellationToken.IsCancellationRequested ? "Caller canceled; acceptance unknown." : $"Twilio request deadline exceeded ({options.TimeoutSeconds} seconds)."
+                    : null);
+            throw new TwilioSubmissionException(false, "ACCEPTANCE_UNKNOWN");
+        }
     }
 
     public async Task<TwilioCallObservation> GetAsync(AutoCallSubmissionRequest request, string sid, CancellationToken cancellationToken)
@@ -98,7 +114,11 @@ public sealed class TwilioCallClient(IHttpClientFactory factory, AutoCallTwilioO
         try
         {
             using var response = await client.SendAsync(message, HttpCompletionOption.ResponseContentRead, deadline.Token).ConfigureAwait(false);
-            if (response.StatusCode != HttpStatusCode.OK) throw new AutoCallReconciliationException();
+            if (response.StatusCode != HttpStatusCode.OK)
+            {
+                diagnosticsLogger.LogWarning("Auto-call Twilio lookup returned HTTP {HttpStatus} for call {CallId}", (int)response.StatusCode, request.CallId);
+                throw new AutoCallReconciliationException();
+            }
             using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false));
             var root = body.RootElement;
             string? status = root.GetProperty("status").GetString();
@@ -115,6 +135,11 @@ public sealed class TwilioCallClient(IHttpClientFactory factory, AutoCallTwilioO
             return new(sid, status!, duration);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-        catch (Exception) { throw new AutoCallReconciliationException(); }
+        catch (Exception exception)
+        {
+            AutoCallDiagnostics.Failure(diagnosticsLogger, "Twilio reconciliation lookup", exception, callId: request.CallId,
+                cancellationReason: exception is OperationCanceledException ? $"Twilio lookup deadline exceeded ({options.TimeoutSeconds} seconds)." : null);
+            throw new AutoCallReconciliationException();
+        }
     }
 }

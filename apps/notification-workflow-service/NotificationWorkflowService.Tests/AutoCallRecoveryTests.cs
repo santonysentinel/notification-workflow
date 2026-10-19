@@ -7,6 +7,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using NotificationWorkflowService.Repository;
 using NotificationWorkflowService.Service.AutoCall;
 using Xunit;
@@ -164,6 +165,48 @@ public sealed class AutoCallRecoveryTests
     }
 
     [Fact]
+    public async Task ValidationFailureLogsActionableReasonAndDeadLetterDisposition()
+    {
+        var logger = new AutoCallDiagnosticsTests.Logs<AutoCallRecoveryService>();
+        var harness = new Harness { PreparationFailure = new AutoCallValidationException("Required preparation variable 'OffenderName' is missing.") };
+        await harness.Service(logger: logger).ProcessAsync(Job(), default);
+        var entry = Assert.Single(logger.Entries.Where(entry => entry.Level == LogLevel.Error));
+        Assert.Contains("OffenderName", entry.Message);
+        Assert.Equal(1, entry.Properties["QueueId"]);
+        Assert.Contains(logger.Entries, entry => entry.Message.Contains("DEAD_LETTER") && entry.Message.Contains("VALIDATION_FAILED"));
+        Assert.Equal("DEAD_LETTER", harness.Disposition);
+        Assert.Equal(0, harness.Posts);
+    }
+
+    [Fact]
+    public async Task RenewalCancellationLogsDeadlineAndPreventsProcessing()
+    {
+        var logger = new AutoCallDiagnosticsTests.Logs<AutoCallRecoveryService>();
+        var harness = new Harness { RenewalFailure = new TaskCanceledException("secret timeout details") };
+        await harness.Service(logger: logger).ProcessAsync(Job(), default);
+        var entry = Assert.Single(logger.Entries.Where(entry => entry.Level == LogLevel.Warning));
+        Assert.Equal("Lease renewal (ownership uncertain)", entry.Properties["Operation"]);
+        Assert.Contains("5-second deadline", entry.Message);
+        Assert.DoesNotContain("secret timeout details", entry.Message);
+        Assert.Equal(0, harness.Posts);
+        Assert.Equal(0, harness.Reads);
+        Assert.Null(harness.Disposition);
+    }
+
+    [Fact]
+    public async Task ReconciliationFailureIsLoggedBeforeWaiting()
+    {
+        var logger = new AutoCallDiagnosticsTests.Logs<AutoCallRecoveryService>();
+        var harness = new Harness { Attempt = Attempt("ACCEPTED", sid: Sid), LookupFailure = new AutoCallReconciliationException() };
+        await harness.Service(logger: logger).ProcessAsync(Job(), default);
+        var entry = Assert.Single(logger.Entries.Where(entry => entry.Level == LogLevel.Error));
+        Assert.Equal("Reconciliation lookup", entry.Properties["Operation"]);
+        Assert.Equal(1, entry.Properties["CallId"]);
+        Assert.Equal("WAIT", harness.Disposition);
+        Assert.Equal(0, harness.Posts);
+    }
+
+    [Fact]
     public async Task SubmissionBudgetExhaustionDoesNotSend()
     {
         var harness = new Harness { Attempt = Attempt("READY") };
@@ -299,8 +342,8 @@ public sealed class AutoCallRecoveryTests
         public string? Disposition { get; private set; }
         public string? ErrorCode { get; private set; }
         public int DelaySeconds { get; private set; }
-        public AutoCallRecoveryService Service(int renewalSeconds = 60) => new(this, this, this, this, this,
-            new() { RenewalSeconds = renewalSeconds }, new() { WorkerId = "worker" }, NullLogger<AutoCallRecoveryService>.Instance);
+        public AutoCallRecoveryService Service(int renewalSeconds = 60, ILogger<AutoCallRecoveryService>? logger = null) => new(this, this, this, this, this,
+            new() { RenewalSeconds = renewalSeconds }, new() { WorkerId = "worker" }, logger ?? NullLogger<AutoCallRecoveryService>.Instance);
         public Task<bool> RenewAsync(AutoCallJob job, string workerId, int leaseMinutes, CancellationToken cancellationToken)
         {
             Renewals++;

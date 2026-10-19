@@ -24,10 +24,16 @@ public sealed class AutoCallRecoveryService(IAutoCallRecoveryRepository recovery
         {
             await ProcessOwnedAsync(job, ownership.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (ownership.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (ownership.IsCancellationRequested)
+        {
+            logger.LogInformation("Auto-call processing canceled for queue {QueueId}; reason {CancellationReason}",
+                job.SystemID, cancellationToken.IsCancellationRequested ? "Worker stopping." : "Lease ownership lost or uncertain.");
+        }
         catch (Exception exception)
         {
-            logger.LogWarning("Auto-call recovery failed for queue {QueueId} with {FailureType}", job.SystemID, exception.GetType().Name);
+            AutoCallDiagnostics.Failure(logger, "Recovery", exception, job.SystemID,
+                cancellationReason: exception is OperationCanceledException
+                    ? $"Dependency canceled or preparation deadline exceeded ({worker.PreparationTimeoutSeconds} seconds)." : null);
             if (!ownership.IsCancellationRequested)
             {
                 bool invalid = exception is ArgumentException or InvalidOperationException or JsonException or XmlException ||
@@ -36,7 +42,7 @@ public sealed class AutoCallRecoveryService(IAutoCallRecoveryRepository recovery
                 using var persistence = CancellationTokenSource.CreateLinkedTokenSource(ownership.Token);
                 persistence.CancelAfter(TimeSpan.FromSeconds(5));
                 try { await DisposeAsync(job, invalid ? "DEAD_LETTER" : "RETRY", invalid ? "VALIDATION_FAILED" : "PREPARATION_UNAVAILABLE", persistence.Token).ConfigureAwait(false); }
-                catch (Exception failure) { logger.LogWarning("Auto-call disposition failed for queue {QueueId} with {FailureType}", job.SystemID, failure.GetType().Name); }
+                catch (Exception failure) { AutoCallDiagnostics.Failure(logger, "Recovery disposition", failure, job.SystemID); }
             }
         }
         finally
@@ -56,6 +62,7 @@ public sealed class AutoCallRecoveryService(IAutoCallRecoveryRepository recovery
                 deadline.CancelAfter(TimeSpan.FromSeconds(5));
                 if (!await recovery.RenewAsync(job, worker.WorkerId, worker.LeaseMinutes, deadline.Token).ConfigureAwait(false))
                 {
+                    logger.LogWarning("Auto-call lease renewal refused for queue {QueueId}; ownership lost, canceling processing", job.SystemID);
                     await ownership.CancelAsync().ConfigureAwait(false);
                     return;
                 }
@@ -65,7 +72,9 @@ public sealed class AutoCallRecoveryService(IAutoCallRecoveryRepository recovery
         catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
         catch (Exception exception)
         {
-            logger.LogWarning("Auto-call ownership uncertain for queue {QueueId} with {FailureType}", job.SystemID, exception.GetType().Name);
+            AutoCallDiagnostics.Failure(logger, "Lease renewal (ownership uncertain)", exception, job.SystemID,
+                cancellationReason: exception is OperationCanceledException ? "Lease renewal canceled or exceeded its 5-second deadline." : null,
+                level: LogLevel.Warning);
             await ownership.CancelAsync().ConfigureAwait(false);
         }
     }
@@ -98,12 +107,12 @@ public sealed class AutoCallRecoveryService(IAutoCallRecoveryRepository recovery
                 attempt = await repository.BeginAttemptAsync(job, worker.WorkerId, attempt.PhoneE164, preparation.Token).ConfigureAwait(false);
             if (!attempt.IsPrepared)
             {
-                if (attempt.TwiML is not null || attempt.Parameters is not null) throw new InvalidOperationException("Incomplete preparation requires operator disposition.");
+                if (attempt.TwiML is not null || attempt.Parameters is not null) throw new AutoCallValidationException("Incomplete preparation requires operator disposition.");
                 var bundle = AutoCallBundlePreparer.Prepare(attempt, worker.FeedbackBaseUrl);
                 int saved = await repository.SavePreparationAsync(attempt, worker.WorkerId, bundle, preparation.Token).ConfigureAwait(false);
-                if (saved != attempt.CallId) throw new InvalidOperationException("Preparation identity changed.");
+                if (saved != attempt.CallId) throw new AutoCallValidationException("Preparation identity changed.");
                 attempt = await recovery.ReadRecoveryAsync(job, worker.WorkerId, preparation.Token).ConfigureAwait(false)
-                    ?? throw new InvalidOperationException("Prepared attempt was not retained.");
+                    ?? throw new AutoCallValidationException("Prepared attempt was not retained.");
             }
         }
         cancellationToken.ThrowIfCancellationRequested();
@@ -126,23 +135,32 @@ public sealed class AutoCallRecoveryService(IAutoCallRecoveryRepository recovery
         }
         AutoCallSubmissionRequest? request;
         try { request = JsonSerializer.Deserialize<AutoCallSubmissionRequest>(attempt.SubmissionRequestJSON ?? "null"); }
-        catch (JsonException) { request = null; }
+        catch (JsonException exception)
+        {
+            AutoCallDiagnostics.Failure(logger, "Read persisted reconciliation request", exception, job.SystemID, attempt.CallId);
+            request = null;
+        }
         if (request is null || request.CallId != attempt.CallId || request.To != attempt.PhoneE164)
         {
+            logger.LogError("Auto-call reconciliation identity missing or mismatched for queue {QueueId}, call {CallId}", job.SystemID, attempt.CallId);
             await DisposeAsync(job, "DEAD_LETTER", "RECONCILIATION_IDENTITY_MISSING", cancellationToken).ConfigureAwait(false);
             return;
         }
         TwilioCallObservation observation;
         try { observation = await lookup.GetAsync(request, attempt.ProviderCallId, cancellationToken).ConfigureAwait(false); }
-        catch (AutoCallReconciliationException)
+        catch (AutoCallReconciliationException exception)
         {
+            AutoCallDiagnostics.Failure(logger, "Reconciliation lookup", exception, job.SystemID, attempt.CallId);
             await DisposeAsync(job, "WAIT", "RECONCILIATION_UNAVAILABLE", cancellationToken).ConfigureAwait(false);
             return;
         }
         await recovery.ObserveAsync(job, worker.WorkerId, attempt, observation, options.ReconcileSeconds, cancellationToken).ConfigureAwait(false);
     }
 
-    private Task DisposeAsync(AutoCallJob job, string disposition, string errorCode, CancellationToken cancellationToken)
-        => recovery.DispositionAsync(job, worker.WorkerId, disposition, errorCode,
-            disposition == "RETRY" ? options.BackoffSeconds(job.RecoveryCount, Random.Shared.NextDouble()) : options.ReconcileSeconds, options, cancellationToken);
+    private async Task DisposeAsync(AutoCallJob job, string disposition, string errorCode, CancellationToken cancellationToken)
+    {
+        await recovery.DispositionAsync(job, worker.WorkerId, disposition, errorCode,
+            disposition == "RETRY" ? options.BackoffSeconds(job.RecoveryCount, Random.Shared.NextDouble()) : options.ReconcileSeconds, options, cancellationToken).ConfigureAwait(false);
+        logger.LogInformation("Auto-call queue {QueueId} disposition {Disposition}, reason {ErrorCode}", job.SystemID, disposition, errorCode);
+    }
 }

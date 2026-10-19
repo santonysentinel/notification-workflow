@@ -1,6 +1,8 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using NotificationWorkflowService.Repository;
 using StackExchange.Redis;
 
@@ -13,14 +15,17 @@ public sealed class RedisAutoCallRoutingStore : IAutoCallRoutingStore, IAsyncDis
     private readonly object gate = new();
     private Task<IConnectionMultiplexer>? connection;
     private bool disposed;
+    private readonly ILogger<RedisAutoCallRoutingStore> logger;
 
-    public RedisAutoCallRoutingStore(IConfiguration configuration)
-        : this(configuration, async options => await ConnectionMultiplexer.ConnectAsync(options).ConfigureAwait(false)) { }
+    public RedisAutoCallRoutingStore(IConfiguration configuration, ILogger<RedisAutoCallRoutingStore>? logger = null)
+        : this(configuration, async options => await ConnectionMultiplexer.ConnectAsync(options).ConfigureAwait(false), logger) { }
 
-    internal RedisAutoCallRoutingStore(IConfiguration configuration, Func<ConfigurationOptions, Task<IConnectionMultiplexer>> connect)
+    internal RedisAutoCallRoutingStore(IConfiguration configuration, Func<ConfigurationOptions, Task<IConnectionMultiplexer>> connect,
+        ILogger<RedisAutoCallRoutingStore>? logger = null)
     {
         this.configuration = configuration;
         this.connect = connect;
+        this.logger = logger ?? NullLogger<RedisAutoCallRoutingStore>.Instance;
     }
 
     public async Task<string?> GetAsync(string key, CancellationToken cancellationToken = default)
@@ -67,7 +72,11 @@ public sealed class RedisAutoCallRoutingStore : IAutoCallRoutingStore, IAsyncDis
         if (pending is null) return;
         IConnectionMultiplexer client;
         try { client = await pending.ConfigureAwait(false); }
-        catch { return; }
+        catch (Exception exception)
+        {
+            AutoCallDiagnostics.Failure(logger, "Redis connection completion during disposal", exception, level: LogLevel.Warning);
+            return;
+        }
         client.Dispose();
     }
 }

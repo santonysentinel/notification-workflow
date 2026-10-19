@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NotificationWorkflowService.Service.AutoCall;
 
@@ -67,8 +69,10 @@ public interface IAutoCallSubmissionService
 }
 
 public sealed class AutoCallSubmissionService(IAutoCallSubmissionRepository repository, ITwilioCallClient client,
-    AutoCallTwilioOptions options, AutoCallWorkerOptions worker) : IAutoCallSubmissionService
+    AutoCallTwilioOptions options, AutoCallWorkerOptions worker, ILogger<AutoCallSubmissionService>? logger = null) : IAutoCallSubmissionService
 {
+    private readonly ILogger<AutoCallSubmissionService> logger = logger ?? NullLogger<AutoCallSubmissionService>.Instance;
+
     public async Task<AutoCallSubmissionResult> SubmitAsync(AutoCallAttempt attempt, string workerId, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -102,15 +106,21 @@ public sealed class AutoCallSubmissionService(IAutoCallSubmissionRepository repo
         }
         catch (TwilioSubmissionException exception)
         {
+            AutoCallDiagnostics.Failure(this.logger, "Twilio submission", exception, attempt.QueueId, attempt.CallId);
             state = exception.Rejected ? "REJECTED" : "UNKNOWN";
             error = exception.ErrorCode;
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            AutoCallDiagnostics.Failure(this.logger, "Twilio submission (acceptance unknown)", exception, attempt.QueueId, attempt.CallId,
+                cancellationReason: exception is OperationCanceledException ? "Submission canceled; provider acceptance is unknown." : null);
             state = "UNKNOWN";
             error = "ACCEPTANCE_UNKNOWN";
         }
         using var persistence = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        return await repository.SaveSubmissionAsync(attempt, token, state, sid, error, persistence.Token).ConfigureAwait(false);
+        var result = await repository.SaveSubmissionAsync(attempt, token, state, sid, error, persistence.Token).ConfigureAwait(false);
+        this.logger.LogInformation("Auto-call submission for queue {QueueId}, call {CallId} persisted as {SubmissionState}",
+            attempt.QueueId, attempt.CallId, state);
+        return result;
     }
 }

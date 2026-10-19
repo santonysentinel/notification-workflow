@@ -1,5 +1,7 @@
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NotificationWorkflowService.Service.AutoCall;
 
@@ -36,12 +38,15 @@ public sealed class AutoCallContactService
     private readonly IAutoCallRoutingStore routingStore;
     private readonly IAutoCallPhoneRepository phoneRepository;
     private readonly IConfiguration configuration;
+    private readonly ILogger<AutoCallContactService> logger;
 
-    public AutoCallContactService(IAutoCallRoutingStore routingStore, IAutoCallPhoneRepository phoneRepository, IConfiguration configuration)
+    public AutoCallContactService(IAutoCallRoutingStore routingStore, IAutoCallPhoneRepository phoneRepository, IConfiguration configuration,
+        ILogger<AutoCallContactService>? logger = null)
     {
         this.routingStore = routingStore;
         this.phoneRepository = phoneRepository;
         this.configuration = configuration;
+        this.logger = logger ?? NullLogger<AutoCallContactService>.Instance;
     }
 
     public async Task<AutoCallContacts> ResolveAsync(string oid, CancellationToken cancellationToken = default)
@@ -57,8 +62,10 @@ public sealed class AutoCallContactService
         {
             throw;
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            AutoCallDiagnostics.Failure(logger, "Redis routing lookup", exception,
+                cancellationReason: exception is OperationCanceledException ? "Redis lookup deadline exceeded or dependency canceled." : null);
             throw new AutoCallRoutingException(AutoCallRoutingFailure.Unavailable);
         }
         cancellationToken.ThrowIfCancellationRequested();
@@ -69,7 +76,18 @@ public sealed class AutoCallContactService
             throw new AutoCallRoutingException(AutoCallRoutingFailure.DatabaseNotConfigured);
         var phones = await phoneRepository.ReadAsync(connectionString, oid, cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
-        return new AutoCallContacts(oid, platform, phones);
+        return new AutoCallContacts(oid, platform, phones.Select(NormalizePhoneNumber).ToArray());
+    }
+
+    private static string NormalizePhoneNumber(string phone)
+    {
+        string number = string.Concat(phone.Where(character =>
+            !char.IsWhiteSpace(character) && character is not ('(' or ')' or '-' or '.')));
+        if (number.Length == 10 && number.All(char.IsAsciiDigit))
+            return "+1" + number;
+        if (number.Length == 11 && number[0] == '1' && number.All(char.IsAsciiDigit))
+            return "+" + number;
+        return number;
     }
 
     internal static void ValidateOid(string oid)
@@ -84,10 +102,16 @@ public sealed class AutoCallContactService
         try
         {
             using var document = JsonDocument.Parse(routing);
-            if (document.RootElement.ValueKind != JsonValueKind.Object ||
-                !document.RootElement.TryGetProperty("platform", out var value) || value.ValueKind != JsonValueKind.String)
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
                 throw new AutoCallRoutingException(AutoCallRoutingFailure.InvalidRoutingData);
-            platform = value.GetString();
+            platform = null;
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (!string.Equals(property.Name, "platform", StringComparison.OrdinalIgnoreCase)) continue;
+                if (platform is not null || property.Value.ValueKind != JsonValueKind.String)
+                    throw new AutoCallRoutingException(AutoCallRoutingFailure.InvalidRoutingData);
+                platform = property.Value.GetString();
+            }
         }
         catch (JsonException)
         {

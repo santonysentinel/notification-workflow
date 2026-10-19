@@ -79,6 +79,32 @@ public sealed class AutoCallPreparationTests
         Assert.False(parameters.RootElement.TryGetProperty("executionId", out _));
     }
 
+    [Theory]
+    [InlineData("5551234567")]
+    [InlineData("15551234567")]
+    [InlineData("+1 (555) 123-4567")]
+    [InlineData(" +15551234567")]
+    public async Task NormalizedRecipientReachesTheAttemptAndPreparedBundle(string phone)
+    {
+        var repository = new Repository();
+        var result = await new AutoCallProcessingService(repository, Contacts("invalid", phone, "+15557654321"), Options())
+            .PrepareAsync(Job(), "worker", default);
+        Assert.Equal("+15551234567", repository.Recipient);
+        using var parameters = JsonDocument.Parse(result.Parameters!);
+        Assert.Equal("+15551234567", parameters.RootElement.GetProperty("recipient").GetString());
+    }
+
+    [Fact]
+    public async Task UnrecognizableNumbersFailExplicitlyBeforeCreatingAnAttempt()
+    {
+        var repository = new Repository();
+        var failure = await Assert.ThrowsAsync<AutoCallValidationException>(() =>
+            new AutoCallProcessingService(repository, Contacts("5551234", "5551234567x123"), Options())
+                .PrepareAsync(Job(), "worker", default));
+        Assert.Equal("No E.164 recipient is available for this OID.", failure.Message);
+        Assert.Empty(repository.Calls);
+    }
+
     [Fact]
     public async Task PreparedReplayReturnsOriginalWithoutOverwritingItsRecipientOrBundle()
     {
@@ -118,7 +144,7 @@ public sealed class AutoCallPreparationTests
     public async Task RequiredMissingParticipantValuesFailAtPreparationWithoutSaving(string variables)
     {
         var repository = new Repository { Result = Attempt(variables: variables) };
-        var failure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var failure = await Assert.ThrowsAsync<AutoCallValidationException>(() =>
             new AutoCallProcessingService(repository, Contacts("+15551234567"), Options()).PrepareAsync(Job(), "worker", default));
         Assert.Contains("OffenderName", failure.Message);
         Assert.Equal(new[] { "begin" }, repository.Calls);
@@ -141,15 +167,15 @@ public sealed class AutoCallPreparationTests
 
     [Fact]
     public void CaseInsensitiveDuplicateVariablesAreRejected()
-        => Assert.Throws<InvalidOperationException>(() => AutoCallBundlePreparer.Prepare(
+        => Assert.Throws<AutoCallValidationException>(() => AutoCallBundlePreparer.Prepare(
             Attempt(variables: "{\"offenderName\":\"Alex\",\"OffenderName\":\"conflict\"}"), Options().FeedbackBaseUrl));
 
     [Fact]
     public async Task InvalidRecipientsAndCancellationNeverAllocateAnAttempt()
     {
         var repository = new Repository();
-        var service = new AutoCallProcessingService(repository, Contacts("5551234567", "+0123", " +15551234567"), Options());
-        await Assert.ThrowsAsync<InvalidOperationException>(() => service.PrepareAsync(Job(), "worker", default));
+        var service = new AutoCallProcessingService(repository, Contacts("5551234", "+0123", "+15551234567x123"), Options());
+        await Assert.ThrowsAsync<AutoCallValidationException>(() => service.PrepareAsync(Job(), "worker", default));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.PrepareAsync(Job(), "worker", new CancellationToken(true)));
         Assert.Empty(repository.Calls);
     }
@@ -210,24 +236,30 @@ public sealed class AutoCallPreparationTests
     [Fact]
     public async Task PreparationFailureGetsDispositionButHostCancellationDoesNot()
     {
+        var logger = new AutoCallDiagnosticsTests.Logs<AutoCallWorker>();
         var repository = new Repository();
         repository.Jobs.Enqueue(Job());
         var processing = new Processing();
-        using var worker = new AutoCallWorker(repository, processing, Options(), NullLogger<AutoCallWorker>.Instance);
+        using var worker = new AutoCallWorker(repository, processing, Options(), logger);
         await worker.RunCycleAsync(default);
         processing.Pending[0].SetException(new InvalidOperationException("private payload"));
         await worker.WaitForCompletionAsync(default).WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(new[] { "fail" }, repository.Calls);
+        var entry = Assert.Single(logger.Entries);
+        Assert.Equal("Preparation", entry.Properties["Operation"]);
+        Assert.Equal(1, entry.Properties["QueueId"]);
+        Assert.DoesNotContain("private payload", entry.Message);
 
         repository = new Repository();
         repository.Jobs.Enqueue(Job());
         processing = new Processing();
         using var stopping = new CancellationTokenSource();
-        using var canceledWorker = new AutoCallWorker(repository, processing, Options(), NullLogger<AutoCallWorker>.Instance);
+        using var canceledWorker = new AutoCallWorker(repository, processing, Options(), logger);
         await canceledWorker.RunCycleAsync(stopping.Token);
         stopping.Cancel();
         await canceledWorker.WaitForCompletionAsync(default).WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Empty(repository.Calls);
+        Assert.Single(logger.Entries);
     }
 
     [Fact]
@@ -235,9 +267,9 @@ public sealed class AutoCallPreparationTests
     {
         var repository = new Repository { Result = Attempt(variables: "{}") };
         var service = new AutoCallProcessingService(repository, Contacts("+15551234567"), Options());
-        await Assert.ThrowsAsync<InvalidOperationException>(() => service.PrepareAsync(Job(), "worker", default));
+        await Assert.ThrowsAsync<AutoCallValidationException>(() => service.PrepareAsync(Job(), "worker", default));
         Assert.Equal(new[] { "begin" }, repository.Calls);
-        Assert.Throws<InvalidOperationException>(() => AutoCallBundlePreparer.Prepare(Attempt(graph: "{\"schemaVersion\":1,\"initialStep\":\"other\",\"steps\":[{\"id\":\"other\"}]}"), Options().FeedbackBaseUrl));
+        Assert.Throws<AutoCallValidationException>(() => AutoCallBundlePreparer.Prepare(Attempt(graph: "{\"schemaVersion\":1,\"initialStep\":\"other\",\"steps\":[{\"id\":\"other\"}]}"), Options().FeedbackBaseUrl));
         Assert.Throws<System.Xml.XmlException>(() => AutoCallBundlePreparer.Prepare(Attempt(xml: "<!DOCTYPE CallFlow [<!ENTITY value 'text'>]><CallFlow>&value;</CallFlow>"), Options().FeedbackBaseUrl));
     }
 

@@ -49,7 +49,7 @@ public sealed class AutoCallWorker(IAutoCallRepository repository, IAutoCallProc
             {
                 try { await RunCycleAsync(stoppingToken).ConfigureAwait(false); }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-                catch (Exception exception) { logger.LogWarning("Auto-call claim failed with {FailureType}", exception.GetType().Name); }
+                catch (Exception exception) { AutoCallDiagnostics.Failure(logger, "Claim", exception); }
                 var poll = Task.Delay(TimeSpan.FromSeconds(options.PollSeconds), stoppingToken);
                 if (inFlight.Count == 0) await poll.ConfigureAwait(false);
                 else await Task.WhenAny(poll, WaitForCompletionAsync(stoppingToken)).ConfigureAwait(false);
@@ -77,11 +77,12 @@ public sealed class AutoCallWorker(IAutoCallRepository repository, IAutoCallProc
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
         catch (Exception exception)
         {
-            logger.LogWarning("Auto-call preparation failed for queue {QueueId} with {FailureType}", job.SystemID, exception.GetType().Name);
+            AutoCallDiagnostics.Failure(logger, "Preparation", exception, job.SystemID,
+                cancellationReason: deadline.IsCancellationRequested ? "Preparation deadline exceeded." : null);
             using var cleanup = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
             cleanup.CancelAfter(TimeSpan.FromSeconds(5));
             try { await repository.FailPreparationAsync(job, options.WorkerId, cleanup.Token).ConfigureAwait(false); }
-            catch (Exception failure) { logger.LogWarning("Auto-call failure disposition failed for queue {QueueId} with {FailureType}", job.SystemID, failure.GetType().Name); }
+            catch (Exception failure) { AutoCallDiagnostics.Failure(logger, "Preparation failure disposition", failure, job.SystemID); }
             return;
         }
         if (submission is null) return;
@@ -91,6 +92,6 @@ public sealed class AutoCallWorker(IAutoCallRepository repository, IAutoCallProc
             logger.LogInformation("Auto-call attempt {CallId} submission {SubmissionState} for queue {QueueId}", attempt.CallId, outcome.SubmissionState, job.SystemID);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
-        catch (Exception exception) { logger.LogWarning("Auto-call submission failed for attempt {CallId}, queue {QueueId} with {FailureType}", attempt.CallId, job.SystemID, exception.GetType().Name); }
+        catch (Exception exception) { AutoCallDiagnostics.Failure(logger, "Submission", exception, job.SystemID, attempt.CallId); }
     }
 }

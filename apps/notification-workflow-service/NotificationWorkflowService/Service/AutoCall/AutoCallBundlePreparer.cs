@@ -17,14 +17,14 @@ internal static class AutoCallBundlePreparer
         var root = XDocument.Load(reader).Root;
         string? stepId = (string?)root?.Attribute("initialStep");
         if (root?.Name != "CallFlow" || string.IsNullOrWhiteSpace(stepId) || stepId.Length > 200)
-            throw new InvalidOperationException("A CallFlow with a valid opening step is required.");
+            throw new AutoCallValidationException("A CallFlow with a valid opening step is required.");
         var steps = root.Elements("Step").Where(step => (string?)step.Attribute("id") == stepId).ToList();
         if (steps.Count != 1 || steps[0].Elements("Response").Count() != 1)
-            throw new InvalidOperationException("The opening step must have exactly one Response.");
+            throw new AutoCallValidationException("The opening step must have exactly one Response.");
         Guid executionId = Guid.NewGuid();
         string response = steps[0].Element("Response")!.ToString(SaveOptions.DisableFormatting)
             .Replace("{{executionId}}", executionId.ToString("D"), StringComparison.Ordinal);
-        if (response.Contains("{{", StringComparison.Ordinal)) throw new InvalidOperationException("The opening response contains unresolved variables.");
+        if (response.Contains("{{", StringComparison.Ordinal)) throw new AutoCallValidationException("The opening response contains unresolved variables.");
         return new AutoCallOpeningStep(stepId, executionId, response);
     }
 
@@ -32,13 +32,13 @@ internal static class AutoCallBundlePreparer
     {
         string baseUrl = AutoCallWorkerOptions.ValidateBaseUrl(feedbackBaseUrl);
         using var variables = JsonDocument.Parse(attempt.VariablesJson);
-        if (variables.RootElement.ValueKind != JsonValueKind.Object) throw new InvalidOperationException("Variables must be a JSON object.");
+        if (variables.RootElement.ValueKind != JsonValueKind.Object) throw new AutoCallValidationException("Variables must be a JSON object.");
         var parameters = new SortedDictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
         foreach (var property in variables.RootElement.EnumerateObject())
         {
             if (property.Value.ValueKind is not (JsonValueKind.String or JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False or JsonValueKind.Null))
-                throw new InvalidOperationException("Preparation variables must have scalar values.");
-            if (!parameters.TryAdd(property.Name, property.Value.Clone())) throw new InvalidOperationException("Duplicate variable keys are not supported.");
+                throw new AutoCallValidationException("Preparation variables must have scalar values.");
+            if (!parameters.TryAdd(property.Name, property.Value.Clone())) throw new AutoCallValidationException("Duplicate variable keys are not supported.");
         }
         foreach (string reserved in new[] { "callId", "feedbackBaseUrl", "recipient", "executionId" }) parameters.Remove(reserved);
         parameters["callId"] = JsonSerializer.SerializeToElement(attempt.CallId);
@@ -48,7 +48,7 @@ internal static class AutoCallBundlePreparer
         using var reader = XmlReader.Create(text, new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null, MaxCharactersInDocument = 2 * 1024 * 1024 });
         var document = XDocument.Load(reader);
         var root = document.Root;
-        if (root?.Name != "CallFlow") throw new InvalidOperationException("An unnamespaced CallFlow bundle is required.");
+        if (root?.Name != "CallFlow") throw new AutoCallValidationException("An unnamespaced CallFlow bundle is required.");
         foreach (var node in document.DescendantNodes().OfType<XText>()) node.Value = Resolve(node.Value, parameters);
         foreach (var attribute in root.DescendantsAndSelf().Attributes()) attribute.Value = Resolve(attribute.Value, parameters);
         ValidateGraph(attempt.TemplateJson, root);
@@ -77,14 +77,14 @@ internal static class AutoCallBundlePreparer
 
     private static string Resolve(string value, IReadOnlyDictionary<string, JsonElement> parameters)
     {
-        if (Placeholder.Replace(value, "").Contains("{{", StringComparison.Ordinal)) throw new InvalidOperationException("Malformed preparation placeholder.");
+        if (Placeholder.Replace(value, "").Contains("{{", StringComparison.Ordinal)) throw new AutoCallValidationException("Malformed preparation placeholder.");
         return Placeholder.Replace(value, match =>
         {
             string name = match.Groups["name"].Value;
             if (string.Equals(name, "executionId", StringComparison.OrdinalIgnoreCase)) return "{{executionId}}";
             if (!parameters.TryGetValue(name, out var parameter) || parameter.ValueKind == JsonValueKind.Null ||
                 parameter.ValueKind == JsonValueKind.String && string.IsNullOrWhiteSpace(parameter.GetString()))
-                throw new InvalidOperationException($"Required preparation variable '{name}' is missing.");
+                throw new AutoCallValidationException($"Required preparation variable '{name}' is missing.");
             return parameter.ValueKind == JsonValueKind.String ? parameter.GetString()! : parameter.GetRawText();
         });
     }
@@ -96,16 +96,16 @@ internal static class AutoCallBundlePreparer
         if (definition.ValueKind != JsonValueKind.Object || !definition.TryGetProperty("schemaVersion", out var version) || !version.TryGetInt32(out int number) || number != 1 ||
             !definition.TryGetProperty("initialStep", out var initial) || initial.ValueKind != JsonValueKind.String ||
             !definition.TryGetProperty("steps", out var steps) || steps.ValueKind != JsonValueKind.Array)
-            throw new InvalidOperationException("A version-1 flow graph is required.");
+            throw new AutoCallValidationException("A version-1 flow graph is required.");
         var ids = new HashSet<string>(StringComparer.Ordinal);
         foreach (var step in steps.EnumerateArray())
         {
             if (!step.TryGetProperty("id", out var id) || id.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(id.GetString()) || id.GetString()!.Length > 200 || !ids.Add(id.GetString()!))
-                throw new InvalidOperationException("Flow graph step identities must be unique and nonblank.");
+                throw new AutoCallValidationException("Flow graph step identities must be unique and nonblank.");
         }
         var bundleSteps = root.Elements().ToList();
         if (!ids.Contains(initial.GetString()!) || (string?)root.Attribute("initialStep") != initial.GetString() || bundleSteps.Count != ids.Count ||
             bundleSteps.Any(step => step.Name != "Step" || !ids.Remove((string?)step.Attribute("id") ?? "") || step.Elements().Count() != 1 || step.Element("Response") is null) || ids.Count != 0)
-            throw new InvalidOperationException("Flow graph and XML bundle step identities must match exactly.");
+            throw new AutoCallValidationException("Flow graph and XML bundle step identities must match exactly.");
     }
 }

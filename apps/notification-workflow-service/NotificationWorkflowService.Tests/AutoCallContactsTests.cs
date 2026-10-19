@@ -54,6 +54,9 @@ public sealed class AutoCallContactsTests
 
     [Theory]
     [InlineData("{\"platform\":\"DEV1\",\"OID\":\"replacement\",\"ClientUID\":\"ignored\"}")]
+    [InlineData("{\"Platform\":\"DEV1\"}")]
+    [InlineData("{\"PLATFORM\":\"DEV1\"}")]
+    [InlineData("{\"pLaTfOrM\":\" DEV1 \"}")]
     [InlineData("DEV1")]
     public async Task RoutesByUppercaseOidKeyWithoutRewritingTheSqlOid(string routing)
     {
@@ -79,6 +82,11 @@ public sealed class AutoCallContactsTests
     [InlineData("[]", AutoCallRoutingFailure.InvalidRoutingData)]
     [InlineData("null", AutoCallRoutingFailure.InvalidRoutingData)]
     [InlineData("{\"platform\":12}", AutoCallRoutingFailure.InvalidRoutingData)]
+    [InlineData("{\"Platform\":12}", AutoCallRoutingFailure.InvalidRoutingData)]
+    [InlineData("{\"PLATFORM\":null}", AutoCallRoutingFailure.InvalidRoutingData)]
+    [InlineData("{\"Platform\":\" \"}", AutoCallRoutingFailure.InvalidRoutingData)]
+    [InlineData("{\"platform\":\"DEV1\",\"Platform\":\"UNKNOWN\"}", AutoCallRoutingFailure.InvalidRoutingData)]
+    [InlineData("{\"platform\":\"DEV1\",\"platform\":\"DEV1\"}", AutoCallRoutingFailure.InvalidRoutingData)]
     [InlineData("{\"platform\":\"ConnectionStrings:connstr\"}", AutoCallRoutingFailure.InvalidRoutingData)]
     [InlineData("UNKNOWN", AutoCallRoutingFailure.DatabaseNotConfigured)]
     public async Task RoutingFailureNeverCallsAnyDatabase(string? routing, AutoCallRoutingFailure failure)
@@ -119,6 +127,37 @@ public sealed class AutoCallContactsTests
     {
         var service = new AutoCallContactService(new Store(), new Phones { Values = [] }, Configuration());
         Assert.Empty((await service.ResolveAsync("oid-7")).PhoneNumbers);
+    }
+
+    [Theory]
+    [InlineData("5551234567", "+15551234567")]
+    [InlineData("15551234567", "+15551234567")]
+    [InlineData("+15551234567", "+15551234567")]
+    [InlineData(" (555) 123-4567 ", "+15551234567")]
+    [InlineData("1 (555) 123-4567", "+15551234567")]
+    [InlineData("+1 (555) 123-4567", "+15551234567")]
+    [InlineData("555.123.4567", "+15551234567")]
+    [InlineData("+44 20 7946 0958", "+442079460958")]
+    [InlineData("+442079460958", "+442079460958")]
+    [InlineData("5551234", "5551234")]
+    [InlineData("442079460958", "442079460958")]
+    [InlineData("5551234567x123", "5551234567x123")]
+    public async Task NormalizesPhoneNumbersWithoutGuessingUnknownCountryCodes(string phone, string expected)
+    {
+        var service = new AutoCallContactService(new Store(), new Phones { Values = [phone] }, Configuration());
+        var result = await service.ResolveAsync("oid-7");
+        Assert.Equal(expected, Assert.Single(result.PhoneNumbers));
+    }
+
+    [Fact]
+    public async Task NormalizationPreservesPhonePriorityAndDuplicates()
+    {
+        var service = new AutoCallContactService(new Store(), new Phones
+        {
+            Values = ["5551234567", "1 (555) 765-4321", "+15551234567"]
+        }, Configuration());
+        var result = await service.ResolveAsync("oid-7");
+        Assert.Equal(new[] { "+15551234567", "+15557654321", "+15551234567" }, result.PhoneNumbers);
     }
 
     [Fact]

@@ -12,7 +12,7 @@ public sealed class AutoCallPhoneRepository(ILogger<AutoCallPhoneRepository>? lo
     private readonly ILogger logger = logger ?? NullLogger<AutoCallPhoneRepository>.Instance;
 
     public async Task<IReadOnlyList<string>> ReadAsync(string connectionString, string oid, CancellationToken cancellationToken = default)
-        => await DatabaseDiagnostics.ExecuteAsync(logger, "TenantDatabase", "dbo.active_alarms_GetAllParticipantPhonenumbers", cancellationToken, async () =>
+        => await DatabaseDiagnostics.ExecuteAsync(logger, "TenantDatabase", "dbo.activealarms_GetAllParticipantPhonenumbers", cancellationToken, async () =>
     {
         cancellationToken.ThrowIfCancellationRequested();
         AutoCallContactService.ValidateOid(oid);
@@ -28,7 +28,7 @@ public sealed class AutoCallPhoneRepository(ILogger<AutoCallPhoneRepository>? lo
     internal static SqlCommand BuildCommand(string oid)
     {
         AutoCallContactService.ValidateOid(oid);
-        var command = new SqlCommand("dbo.active_alarms_GetAllParticipantPhonenumbers")
+        var command = new SqlCommand("dbo.activealarms_GetAllParticipantPhonenumbers")
         {
             CommandType = CommandType.StoredProcedure,
             CommandTimeout = 30

@@ -61,7 +61,7 @@ public sealed class AutoCallSubmissionTests
     [InlineData("<CallFlow initialStep=\"hello\"><Step id=\"hello\"><Response/></Step><Step id=\"hello\"><Response/></Step></CallFlow>")]
     [InlineData("<CallFlow initialStep=\"hello\"><Step id=\"hello\"><Response><Say>{{name}}</Say></Response></Step></CallFlow>")]
     public void InvalidOpeningStepsFailBeforeSubmission(string xml)
-        => Assert.Throws<InvalidOperationException>(() => AutoCallBundlePreparer.PrepareOpening(xml));
+        => Assert.Throws<AutoCallValidationException>(() => AutoCallBundlePreparer.PrepareOpening(xml));
 
     [Fact]
     public void OpeningResponseRejectsDtd()
@@ -150,11 +150,16 @@ public sealed class AutoCallSubmissionTests
     {
         foreach (bool oversized in new[] { false, true })
         {
+            var logger = new AutoCallDiagnosticsTests.Logs<TwilioCallClient>();
             using var handler = new Handler((_, _) => oversized ? Task.FromResult(Response(body: new string('x', 65537))) : Task.FromException<HttpResponseMessage>(new HttpRequestException("private network details")));
-            var exception = await Assert.ThrowsAsync<TwilioSubmissionException>(() => new TwilioCallClient(new Factory(handler), Options()).CreateAsync(Request(), default));
+            var exception = await Assert.ThrowsAsync<TwilioSubmissionException>(() => new TwilioCallClient(new Factory(handler), Options(), logger).CreateAsync(Request(), default));
             Assert.False(exception.Rejected);
             Assert.DoesNotContain("private network details", exception.ToString());
             Assert.Equal(1, handler.Count);
+            Assert.NotEmpty(logger.Entries);
+            Assert.All(logger.Entries, entry => Assert.DoesNotContain("private network details", entry.Message));
+            Assert.Contains(logger.Entries, entry => entry.Properties.TryGetValue("FailureType", out var type) &&
+                Equals(typeof(HttpRequestException).FullName, type));
         }
     }
 
@@ -163,6 +168,7 @@ public sealed class AutoCallSubmissionTests
     {
         foreach (bool cancelHost in new[] { false, true })
         {
+            var logger = new AutoCallDiagnosticsTests.Logs<TwilioCallClient>();
             using var stopping = new CancellationTokenSource();
             using var handler = new Handler(async (_, token) =>
             {
@@ -170,9 +176,11 @@ public sealed class AutoCallSubmissionTests
                 await new TaskCompletionSource().Task.WaitAsync(token);
                 return Response();
             });
-            var exception = await Assert.ThrowsAsync<TwilioSubmissionException>(() => new TwilioCallClient(new Factory(handler), Options(seconds: 1)).CreateAsync(Request(), stopping.Token));
+            var exception = await Assert.ThrowsAsync<TwilioSubmissionException>(() => new TwilioCallClient(new Factory(handler), Options(seconds: 1), logger).CreateAsync(Request(), stopping.Token));
             Assert.False(exception.Rejected);
             Assert.Equal(1, handler.Count);
+            Assert.Contains(logger.Entries, entry => entry.Properties.TryGetValue("CancellationReason", out var reason) &&
+                reason is string text && text.Contains(cancelHost ? "Caller canceled" : "deadline exceeded"));
         }
     }
 
@@ -264,6 +272,21 @@ public sealed class AutoCallSubmissionTests
         await new AutoCallSubmissionService(repository, new Client(repository, _ => Task.FromException<string>(new TwilioSubmissionException(rejected, "HTTP_500"))), Options(), Worker()).SubmitAsync(Attempt(), "worker", default);
         Assert.Equal(state, repository.State);
         Assert.Null(repository.SavedSid);
+        Assert.Equal(new[] { "marker", "http", "save" }, repository.Calls);
+    }
+
+    [Fact]
+    public async Task UnexpectedPostFailureIsLoggedBeforePersistingUnknownAcceptance()
+    {
+        var logger = new AutoCallDiagnosticsTests.Logs<AutoCallSubmissionService>();
+        var repository = new Repository();
+        var client = new Client(repository, _ => Task.FromException<string>(new HttpRequestException("secret provider request")));
+        var result = await new AutoCallSubmissionService(repository, client, Options(), Worker(), logger)
+            .SubmitAsync(Attempt(), "worker", default);
+        var entry = Assert.Single(logger.Entries.Where(entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Error));
+        Assert.Equal("Twilio submission (acceptance unknown)", entry.Properties["Operation"]);
+        Assert.DoesNotContain("secret provider request", entry.Message);
+        Assert.Equal("UNKNOWN", result.SubmissionState);
         Assert.Equal(new[] { "marker", "http", "save" }, repository.Calls);
     }
 
