@@ -112,6 +112,16 @@ public sealed class WorkflowRepositoryTests
     }
 
     [Fact]
+    public void HistoryNoteUsesOriginalHistoryIdAndExactText()
+    {
+        Contract(WorkflowRepository.BuildAddHistoryNote(12, "Robo Call queued for participant."), "dbo.activealarms_AddHistoryNote",
+            P("@HistoryID", SqlDbType.Int, 12), P("@Note", SqlDbType.VarChar, "Robo Call queued for participant.", 250));
+        Assert.Throws<ArgumentOutOfRangeException>(() => WorkflowRepository.BuildAddHistoryNote(0, "note"));
+        Assert.Throws<ArgumentException>(() => WorkflowRepository.BuildAddHistoryNote(12, ""));
+        Assert.Throws<ArgumentException>(() => WorkflowRepository.BuildAddHistoryNote(12, new string('x', 251)));
+    }
+
+    [Fact]
     public void AuditHistoryAndClearWritesPreserveSizesAndUntruncatedValues()
     {
         var longText = new string('x', 5000);
@@ -235,6 +245,7 @@ public sealed class WorkflowRepositoryTests
             repo.PrepareReadMEZVictims, repo.PrepareReadAttachedVictimZones, repo.PrepareReadProfileItemsClear,
             () => repo.PrepareGetInsertEmails(a), () => repo.PrepareGetClientEmail(a),
             () => repo.PrepareGetClientText(a), () => repo.PreparePushAlertToMcApp(a),
+            () => repo.PrepareAddHistoryNote(12, "Robo Call queued for participant."),
             () => repo.PrepareAddToNotificationQueue(a, 1), () => repo.PrepareInsertPushNotificationQueue(a, "v", "o"),
             () => repo.PrepareInsertNotificationQueueVictim(a, 1, "v"), () => repo.PrepareCreateAlarmAudit(1, "action", 2, 3),
             () => repo.PrepareAddActiveAlarmActionToActivity(1, "email", 2), () => repo.PrepareClearMcAppAlarm("alarms", "oid"),

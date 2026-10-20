@@ -55,7 +55,7 @@ public class WorkflowActionExecutorTests
         new(16, 0, "Alert Client - Text", "", true, true, false, ["clientText", "clientTextQueue", "clientTextAudit", "clientTextHistory"]),
         new(17, 0, "Text All Victims", "Text All Victims", true, true, false, ["victimTextQueue", "victimTextAudit", "victimTextHistory"]),
         new(18, 0, "Add Note", "Add Note", true, true, false, ["note"]),
-        new(19, 0, "Auto Call Participant", "Auto Call Participant", true, true, false, ["autocall"]),
+        new(19, 0, "Auto Call Participant", "Auto Call Participant", true, true, false, ["autocall", "callHistory"]),
         new(int.MaxValue, 0, "Do Nothing", "Do Nothing", false, true, false, []),
         new(0, 0, "Do Nothing", "Do Nothing", false, true, false, []),
         new(8, 0, "Do Nothing", "Do Nothing", false, true, false, []),
@@ -371,6 +371,7 @@ public class WorkflowActionExecutorTests
     {
         "note" => new Call("note", Text: a.Instruction, Oid: a.ClientID),
         "autocall" => Operation("autocall", a),
+        "callHistory" => new Call("historyNote", Text: "Robo Call queued for participant.", HistoryID: a.HistoryID),
         "officers" => Operation("officers", a),
         "mcapp" => Operation("mcapp", a),
         "queue3" => Queue(a, 3),
@@ -458,6 +459,8 @@ public class WorkflowActionExecutorTests
         { Record(new Call("note", Text: template, Oid: oid)); return Task.CompletedTask; }
         public Task EnqueueAutoCallAsync(ActiveAlarm a, string platform, CancellationToken cancellationToken = default)
         { Record(Operation("autocall", a)); return Task.CompletedTask; }
+        public Task AddHistoryNoteAsync(int historyID, string noteText, CancellationToken cancellationToken = default)
+        { Record(new Call("historyNote", Text: noteText, HistoryID: historyID)); return Task.CompletedTask; }
         public Task<bool> PushAlertToMcAppAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
         { Record(Operation("mcapp", a)); return Task.FromResult(BooleanResult); }
         public Task<bool> AddToNotificationQueueAsync(ActiveAlarm a, int insertType, CancellationToken cancellationToken = default)

@@ -46,6 +46,7 @@ namespace NotificationWorkflowService.Repository
         public IWorkflowOperation PrepareGetClientEmail(ActiveAlarm a) => Prepare(() => BuildGetClientEmail(a));
         public IWorkflowOperation PrepareGetClientText(ActiveAlarm a) => Prepare(() => BuildGetClientText(a));
         public IWorkflowOperation PrepareAddNote(string noteText, string oid) => Prepare(() => BuildAddNote(noteText, oid));
+        public IWorkflowOperation PrepareAddHistoryNote(int historyID, string noteText) => Prepare(() => BuildAddHistoryNote(historyID, noteText));
         public IWorkflowOperation PreparePushAlertToMcApp(ActiveAlarm a) => Prepare(() => BuildPushAlertToMcApp(a));
         public IWorkflowOperation PrepareAddToNotificationQueue(ActiveAlarm a, int insertType) => Prepare(() => BuildAddToNotificationQueue(a, insertType));
         public IWorkflowOperation PrepareInsertPushNotificationQueue(ActiveAlarm a, string? victimID, string? offenderID) => Prepare(() => BuildInsertPushNotificationQueue(a, victimID, offenderID));
@@ -198,6 +199,17 @@ namespace NotificationWorkflowService.Repository
             Add(cmd, "@historyID", SqlDbType.Int, historyID);
             Add(cmd, "@stepno", SqlDbType.Int, stepNo);
         });
+        internal static SqlCommand BuildAddHistoryNote(int historyID, string noteText)
+        {
+            if (historyID <= 0) throw new ArgumentOutOfRangeException(nameof(historyID));
+            if (string.IsNullOrWhiteSpace(noteText) || noteText.Length > 250)
+                throw new ArgumentException("Note text must be nonblank and at most 250 characters.", nameof(noteText));
+            return Build("dbo.activealarms_AddHistoryNote", cmd =>
+            {
+                Add(cmd, "@HistoryID", SqlDbType.Int, historyID);
+                Add(cmd, "@Note", SqlDbType.VarChar, noteText, 250);
+            });
+        }
         internal static SqlCommand BuildAddActiveAlarmActionToActivity(int historyID, string? email, int type) => Build("ActiveAlarms_InsertIntoHistory", cmd =>
         {
             Add(cmd, "@HistoryID", SqlDbType.Int, historyID);

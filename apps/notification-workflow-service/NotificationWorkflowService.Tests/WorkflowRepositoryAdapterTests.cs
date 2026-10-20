@@ -22,6 +22,32 @@ public class WorkflowRepositoryAdapterTests
     private const BindingFlags Instance = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
     private static readonly DateTime Expiry = new(2026, 10, 1, 12, 34, 56, DateTimeKind.Utc);
 
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(2, false)]
+    [InlineData(0, true)]
+    [InlineData(2, true)]
+    public async Task HistoryNoteAdaptersPreserveOriginalHistoryIdAndPropagateFailures(int kind, bool fail)
+    {
+        var spy = RepositorySpy.Create();
+        var failure = new InvalidOperationException("History write failed");
+        if (fail) spy.ExecutionFailure = failure;
+        object parser = Parser(kind, spy);
+        Type adapterType = parser.GetType().GetNestedType("ActionOperations", BindingFlags.NonPublic)!;
+        var operations = Assert.IsAssignableFrom<NotificationWorkflowService.Parser.Actions.IWorkflowActionOperations>(
+            Activator.CreateInstance(adapterType, parser));
+        if (fail)
+            Assert.Same(failure, await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                operations.AddHistoryNoteAsync(81, "Robo Call queued for participant.")));
+        else
+            await operations.AddHistoryNoteAsync(81, "Robo Call queued for participant.");
+
+        var call = Assert.Single(spy.Calls);
+        Assert.Equal("PrepareAddHistoryNote", call.Name);
+        Assert.Equal(new object?[] { 81, "Robo Call queued for participant." }, call.Arguments);
+        Assert.Equal(new[] { "Open", "ExecuteNonQuery", "Dispose" }, call.Operation!.Events);
+    }
+
     public static IEnumerable<object[]> AdapterCases()
     {
         for (int kind = 0; kind < 3; kind++)

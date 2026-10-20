@@ -907,6 +907,13 @@
 
         private sealed class ActionOperations(WorkFlowSteps parser) : IWorkflowActionOperations
         {
+            public async Task AddHistoryNoteAsync(int historyID, string noteText, CancellationToken cancellationToken = default)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await using var operation = parser.repository.PrepareAddHistoryNote(historyID, noteText);
+                await operation.OpenAsync(cancellationToken).ConfigureAwait(false);
+                await operation.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
             public Task EnqueueAutoCallAsync(ActiveAlarm alarm, string platform, CancellationToken cancellationToken = default) => parser.autoCallService.EnqueueAsync(alarm, platform, cancellationToken);
             public Task AddNoteAsync(string template, string oid, int activeAlarmId, CancellationToken cancellationToken = default) => parser.noteService.AddNoteAsync(template, oid, activeAlarmId, cancellationToken);
             public Task SendNotificationsToOfficersInSameGroupAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.SendNotificationsToOfficersInSameGroupAsync(a, cancellationToken);

@@ -254,6 +254,7 @@ internal static class WorkflowActionExecutor
                 sb.Append("Auto Call Participant");
                 WriteAction(a, context, "Auto Call Participant");
                 await operations.EnqueueAutoCallAsync(a, context.Platform, cancellationToken).ConfigureAwait(false);
+                await operations.AddHistoryNoteAsync(a.HistoryID, "Robo Call queued for participant.", cancellationToken).ConfigureAwait(false);
                 break;
             default:
                 sb.Append("Do Nothing");

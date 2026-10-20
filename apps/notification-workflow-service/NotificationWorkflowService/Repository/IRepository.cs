@@ -29,6 +29,7 @@ namespace NotificationWorkflowService.Repository
         /// OID encoding/representability is governed by the database collation, not ASCII validation.
         /// </summary>
         IWorkflowOperation PrepareAddNote(string noteText, string oid);
+        IWorkflowOperation PrepareAddHistoryNote(int historyID, string noteText);
         IWorkflowOperation PreparePushAlertToMcApp(ActiveAlarm a);
         IWorkflowOperation PrepareAddToNotificationQueue(ActiveAlarm a, int insertType);
         IWorkflowOperation PrepareInsertPushNotificationQueue(ActiveAlarm a, string? victimID, string? offenderID);
