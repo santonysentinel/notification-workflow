@@ -828,7 +828,7 @@ public class WorkflowAsyncCancellationTests
             token.ThrowIfCancellationRequested();
         }
         public Task SendNotificationsToOfficersInSameGroupAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => Callback("officers", cancellationToken, a);
-        public Task AddNoteAsync(string template, string oid, int activeAlarmId, CancellationToken cancellationToken = default) => Callback("note", cancellationToken);
+        public Task AddNoteAsync(string template, string oid, int activeAlarmId, int historyId, CancellationToken cancellationToken = default) => Callback("note", cancellationToken);
         public Task AddHistoryNoteAsync(int historyID, string noteText, CancellationToken cancellationToken = default) => Callback("historyNote", cancellationToken);
         public async Task<bool> PushAlertToMcAppAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
         { await Callback("mcapp", cancellationToken, a); return true; }

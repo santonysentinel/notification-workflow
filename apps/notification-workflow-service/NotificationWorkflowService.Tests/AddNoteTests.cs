@@ -59,7 +59,7 @@ public class AddNoteTests
     public async Task InvalidTemplatesAreRejectedBeforeProvidersOrPreparation(string? template)
     {
         var fixture = new Fixture();
-        var error = await Record.ExceptionAsync(() => fixture.Service.AddNoteAsync(template!, "oid", 42));
+        var error = await Record.ExceptionAsync(() => fixture.Service.AddNoteAsync(template!, "oid", 42, 81));
         Assert.IsAssignableFrom<ArgumentException>(error);
         Assert.Equal("template", ((ArgumentException)error!).ParamName);
         Assert.Empty(fixture.Events);
@@ -113,7 +113,7 @@ public class AddNoteTests
     public async Task InvalidOidRejectedBeforeAnyProviderOrRepositoryAccess(string? oid)
     {
         var fixture = new Fixture();
-        var error = await Record.ExceptionAsync(() => fixture.Service.AddNoteAsync("{{lat}}", oid!, 42));
+        var error = await Record.ExceptionAsync(() => fixture.Service.AddNoteAsync("{{lat}}", oid!, 42, 81));
         Assert.IsAssignableFrom<ArgumentException>(error);
         Assert.Equal("oid", ((ArgumentException)error!).ParamName);
         Assert.Empty(fixture.Events);
@@ -126,9 +126,22 @@ public class AddNoteTests
     {
         var fixture = new Fixture();
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
-            fixture.Service.AddNoteAsync("{{lat}}", "oid", activeAlarmId));
+            fixture.Service.AddNoteAsync("{{lat}}", "oid", activeAlarmId, 81));
         Assert.Empty(fixture.Events);
         Assert.Empty(fixture.Repository.Writes);
+    }
+
+    [Fact]
+    public async Task OriginalHistoryIdIsRequiredBeforeProvidersOrWrite()
+    {
+        foreach (int historyId in new[] { 0, -1 })
+        {
+            var fixture = new Fixture();
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+                fixture.Service.AddNoteAsync("{{lat}}", "oid", 42, historyId));
+            Assert.Empty(fixture.Events);
+            Assert.Throws<ArgumentOutOfRangeException>(() => WorkflowRepository.BuildAddNote("note", "oid", historyId));
+        }
     }
 
     [Fact]
@@ -138,9 +151,10 @@ public class AddNoteTests
         string oid = " " + new string('é', 18) + " ";
         string text = "  café 東京 😀  ";
         using var source = new CancellationTokenSource();
-        await fixture.Service.AddNoteAsync(text, oid, 42, source.Token);
-        await fixture.Service.AddNoteAsync(text, oid, 42, source.Token);
+        await fixture.Service.AddNoteAsync(text, oid, 42, 81, source.Token);
+        await fixture.Service.AddNoteAsync(text, oid, 42, 81, source.Token);
         Assert.Equal(new[] { (text, oid), (text, oid) }, fixture.Repository.Writes);
+        Assert.Equal(new[] { 81, 81 }, fixture.Repository.HistoryIds);
         Assert.Equal(new[] { "prepare", "open", "execute", "dispose", "prepare", "open", "execute", "dispose" }, fixture.Events);
         Assert.All(fixture.Repository.Operations, op => Assert.True(op.Disposed));
         Assert.All(fixture.Tokens, token => Assert.Equal(source.Token, token));
@@ -152,7 +166,7 @@ public class AddNoteTests
         var fixture = new Fixture();
         string text = string.Concat(Enumerable.Repeat("😀", 500));
         string oid = string.Concat(Enumerable.Repeat("😀", 10));
-        await fixture.Service.AddNoteAsync(text, oid, 42);
+        await fixture.Service.AddNoteAsync(text, oid, 42, 81);
         Assert.Equal((text, oid), Assert.Single(fixture.Repository.Writes));
         Assert.Equal(new[] { "prepare", "open", "execute", "dispose" }, fixture.Events);
     }
@@ -163,7 +177,7 @@ public class AddNoteTests
     public async Task HydrationUsesOneSnapshotAndOnlyResolvesAddressWhenNeeded(string template, string expected, bool address)
     {
         var fixture = new Fixture();
-        await fixture.Service.AddNoteAsync(template, "oid", 42);
+        await fixture.Service.AddNoteAsync(template, "oid", 42, 81);
         Assert.Equal("oid", Assert.Single(fixture.Location.Oids));
         Assert.Equal(42, Assert.Single(fixture.Location.ActiveAlarmIds));
         Assert.Equal(address ? new[] { (12.50m, -45.125m) } : [], fixture.Address.Coordinates);
@@ -194,7 +208,7 @@ public class AddNoteTests
     {
         var fixture = new Fixture();
         fixture.Location.Value = absent ? null : new NoteLocation(latitude, longitude);
-        await fixture.Service.AddNoteAsync("{{lat}}/{{lon}}/{{current_location_address}}", "oid", 42);
+        await fixture.Service.AddNoteAsync("{{lat}}/{{lon}}/{{current_location_address}}", "oid", 42, 81);
         Assert.Equal((expected, "oid"), Assert.Single(fixture.Repository.Writes));
         Assert.Single(fixture.Location.Oids);
         Assert.Equal(resolves ? 1 : 0, fixture.Address.Coordinates.Count);
@@ -208,7 +222,7 @@ public class AddNoteTests
     {
         var fixture = new Fixture();
         fixture.Address.Value = address;
-        await fixture.Service.AddNoteAsync("{{lat}}/{{lon}}/{{current_location_address}}", "oid", 42);
+        await fixture.Service.AddNoteAsync("{{lat}}/{{lon}}/{{current_location_address}}", "oid", 42, 81);
         Assert.Equal(("12.50/-45.125/N/A", "oid"), Assert.Single(fixture.Repository.Writes));
         Assert.Single(fixture.Address.Coordinates);
     }
@@ -221,7 +235,7 @@ public class AddNoteTests
         var fixture = new Fixture();
         fixture.Address.Value = new string('x', 1001);
         await Assert.ThrowsAsync<ArgumentException>(() => fixture.Service.AddNoteAsync(
-            hydrate ? "{{current_location_address}}" : new string('x', 1001), "oid", 42));
+            hydrate ? "{{current_location_address}}" : new string('x', 1001), "oid", 42, 81));
         Assert.Equal(hydrate ? new[] { "location", "address" } : [], fixture.Events);
         Assert.Empty(fixture.Repository.Operations);
     }
@@ -239,7 +253,7 @@ public class AddNoteTests
         var failure = new InvalidOperationException("provider/write failure");
         fixture.Boundary = (name, _) => name == boundary ? Task.FromException(failure) : Task.CompletedTask;
         Assert.Same(failure, await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            fixture.Service.AddNoteAsync("{{current_location_address}}", "oid", 42)));
+            fixture.Service.AddNoteAsync("{{current_location_address}}", "oid", 42, 81)));
         string[] sequence = ["location", "address", "prepare", "open", "execute", "dispose"];
         int index = Array.IndexOf(sequence, boundary);
         Assert.Equal(sequence.Take(index + 1).Concat(boundary is "open" or "execute" ? ["dispose"] : []), fixture.Events);
@@ -253,7 +267,7 @@ public class AddNoteTests
         var fixture = new Fixture();
         using var source = new CancellationTokenSource();
         source.Cancel();
-        await Canceled(fixture.Service.AddNoteAsync(null!, null!, 42, source.Token), source.Token);
+        await Canceled(fixture.Service.AddNoteAsync(null!, null!, 42, 81, source.Token), source.Token);
         Assert.Empty(fixture.Events);
     }
 
@@ -268,7 +282,7 @@ public class AddNoteTests
         var gate = new Gate();
         using var source = new CancellationTokenSource();
         fixture.Boundary = (name, token) => name == boundary ? gate.WaitAsync(token) : Task.CompletedTask;
-        Task task = fixture.Service.AddNoteAsync("{{current_location_address}}", "oid", 42, source.Token);
+        Task task = fixture.Service.AddNoteAsync("{{current_location_address}}", "oid", 42, 81, source.Token);
         try
         {
             await gate.Entered.Task.WaitAsync(Deadline);
@@ -294,7 +308,7 @@ public class AddNoteTests
         var fixture = new Fixture();
         using var source = new CancellationTokenSource();
         fixture.AfterBoundary = name => { if (name == boundary) source.Cancel(); };
-        await Canceled(fixture.Service.AddNoteAsync("{{current_location_address}}", "oid", 42, source.Token), source.Token);
+        await Canceled(fixture.Service.AddNoteAsync("{{current_location_address}}", "oid", 42, 81, source.Token), source.Token);
         Assert.Equal(boundary == "execute" ? 1 : 0, fixture.Repository.Writes.Count);
         Assert.All(fixture.Repository.Operations, op => Assert.True(op.Disposed));
         Assert.Equal(boundary switch
@@ -312,7 +326,7 @@ public class AddNoteTests
         var gates = sequence.ToDictionary(name => name, _ => new Gate());
         using var source = new CancellationTokenSource();
         fixture.Boundary = (name, token) => gates.TryGetValue(name, out var gate) ? gate.WaitAsync(token) : Task.CompletedTask;
-        Task task = fixture.Service.AddNoteAsync("{{current_location_address}}", "oid", 42, source.Token);
+        Task task = fixture.Service.AddNoteAsync("{{current_location_address}}", "oid", 42, 81, source.Token);
         try
         {
             foreach (string name in sequence)
@@ -338,7 +352,7 @@ public class AddNoteTests
         using var source = new CancellationTokenSource();
         fixture.AfterBoundary = name => { if (name == "execute") source.Cancel(); };
         fixture.Boundary = (name, token) => name == "dispose" ? gate.WaitAsync(token) : Task.CompletedTask;
-        Task task = fixture.Service.AddNoteAsync("plain note", "oid", 42, source.Token);
+        Task task = fixture.Service.AddNoteAsync("plain note", "oid", 42, 81, source.Token);
         try
         {
             await gate.Entered.Task.WaitAsync(Deadline);
@@ -360,7 +374,7 @@ public class AddNoteTests
         var fixture = new Fixture();
         using var providerSource = new CancellationTokenSource(); providerSource.Cancel();
         fixture.Boundary = (name, _) => name == boundary ? Task.FromCanceled(providerSource.Token) : Task.CompletedTask;
-        await Canceled(fixture.Service.AddNoteAsync("{{current_location_address}}", "oid", 42), providerSource.Token);
+        await Canceled(fixture.Service.AddNoteAsync("{{current_location_address}}", "oid", 42, 81), providerSource.Token);
         Assert.Equal(boundary == "location" ? new[] { "location" } : ["location", "address"], fixture.Events);
         Assert.Empty(fixture.Repository.Writes);
     }
@@ -377,7 +391,7 @@ public class AddNoteTests
             (Template: secret + new string('x', 1001), Oid: "oid")
         })
         {
-            var error = await Assert.ThrowsAnyAsync<ArgumentException>(() => fixture.Service.AddNoteAsync(input.Template, input.Oid, 42));
+            var error = await Assert.ThrowsAnyAsync<ArgumentException>(() => fixture.Service.AddNoteAsync(input.Template, input.Oid, 42, 81));
             Assert.DoesNotContain(secret, error.Message);
         }
         Assert.Empty(fixture.Events);
@@ -388,13 +402,14 @@ public class AddNoteTests
     {
         string text = " " + string.Concat(Enumerable.Repeat("😀", 499)) + " ";
         string oid = " " + new string('é', 18) + " ";
-        using var command = WorkflowRepository.BuildAddNote(text, oid);
+        using var command = WorkflowRepository.BuildAddNote(text, oid, 81);
         Assert.Null(command.Connection);
         Assert.Equal(CommandType.StoredProcedure, command.CommandType);
         Assert.Equal("activealarms_AddNote", command.CommandText);
-        Assert.Equal(2, command.Parameters.Count);
-        // These are the current inferred names, not verification of a deployed SQL signature.
-        Assert.Equal(new[] { "@Note", "@OID" }, command.Parameters.Cast<Microsoft.Data.SqlClient.SqlParameter>().Select(p => p.ParameterName));
+        Assert.Equal(3, command.Parameters.Count);
+        Assert.Equal(new[] { "@Note", "@OID", "@HistoryID" }, command.Parameters.Cast<Microsoft.Data.SqlClient.SqlParameter>().Select(p => p.ParameterName));
+        Assert.Equal(SqlDbType.Int, command.Parameters["@HistoryID"].SqlDbType);
+        Assert.Equal(81, command.Parameters["@HistoryID"].Value);
         Assert.Equal(SqlDbType.NVarChar, command.Parameters["@Note"].SqlDbType);
         Assert.Equal(1000, command.Parameters["@Note"].Size);
         Assert.Equal(text, command.Parameters["@Note"].Value);
@@ -407,7 +422,7 @@ public class AddNoteTests
     [Theory]
     [MemberData(nameof(InvalidOids))]
     public void BuilderRejectsEveryInvalidOidDirectly(string? oid) =>
-        Assert.Equal("oid", Assert.ThrowsAny<ArgumentException>(() => WorkflowRepository.BuildAddNote("note", oid!)).ParamName);
+        Assert.Equal("oid", Assert.ThrowsAny<ArgumentException>(() => WorkflowRepository.BuildAddNote("note", oid!, 81)).ParamName);
 
     public static IEnumerable<object[]> InvalidNotes() => new string?[] { null, "", " \t\r\n", new string('x', 1001), string.Concat(Enumerable.Repeat("😀", 501)) }
         .Select(value => new object[] { value! });
@@ -415,7 +430,7 @@ public class AddNoteTests
     [Theory]
     [MemberData(nameof(InvalidNotes))]
     public void BuilderRejectsEveryInvalidNoteDirectly(string? note) =>
-        Assert.Equal("noteText", Assert.ThrowsAny<ArgumentException>(() => WorkflowRepository.BuildAddNote(note!, "oid")).ParamName);
+        Assert.Equal("noteText", Assert.ThrowsAny<ArgumentException>(() => WorkflowRepository.BuildAddNote(note!, "oid", 81)).ParamName);
 
     [Fact]
     public void ConstructorRejectsMissingDependencies()
@@ -443,7 +458,7 @@ public class AddNoteTests
             var service = provider.GetRequiredService<INoteService>();
             Assert.IsType<NoteService>(service);
             Assert.NotSame(service, provider.GetRequiredService<INoteService>());
-            await service.AddNoteAsync("{{lat}}/{{lon}}/{{current_location_address}}", "oid", 42);
+            await service.AddNoteAsync("{{lat}}/{{lon}}/{{current_location_address}}", "oid", 42, 81);
             Assert.Equal(("12.50/-45.125/N/A", "oid"), Assert.Single(fixture.Repository.Writes));
             Assert.Equal(("oid", 42, CancellationToken.None), Assert.Single(details.Calls));
         }
@@ -525,6 +540,7 @@ public class AddNoteTests
     {
         private Fixture fixture = null!;
         public List<(string Text, string Oid)> Writes { get; } = [];
+        public List<int> HistoryIds { get; } = [];
         public List<NoteOperation> Operations { get; } = [];
         internal static NoteRepository Create(Fixture fixture)
         {
@@ -534,6 +550,7 @@ public class AddNoteTests
         protected override object Invoke(MethodInfo? targetMethod, object?[]? args)
         {
             Assert.Equal(nameof(IRepository.PrepareAddNote), targetMethod!.Name);
+            HistoryIds.Add(Assert.IsType<int>(args![2]));
             fixture.Events.Add("prepare");
             // Preparation is synchronous and performs no production I/O. Failure callback must complete.
             Task preparation = fixture.Boundary("prepare", CancellationToken.None);

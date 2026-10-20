@@ -23,7 +23,7 @@ public sealed class NoteService : INoteService
         this.addressResolver = addressResolver;
     }
 
-    public async Task AddNoteAsync(string template, string oid, int activeAlarmId, CancellationToken cancellationToken = default)
+    public async Task AddNoteAsync(string template, string oid, int activeAlarmId, int historyId, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         // Parse before provider access or repository configuration/operation preparation.
@@ -32,6 +32,7 @@ public sealed class NoteService : INoteService
         if (string.IsNullOrWhiteSpace(oid) || oid.Length > 20)
             throw new ArgumentException("OID must be nonblank and at most 20 characters.", nameof(oid));
         if (activeAlarmId <= 0) throw new ArgumentOutOfRangeException(nameof(activeAlarmId));
+        if (historyId <= 0) throw new ArgumentOutOfRangeException(nameof(historyId));
 
         decimal? latitude = null;
         decimal? longitude = null;
@@ -52,7 +53,7 @@ public sealed class NoteService : INoteService
 
         var noteText = renderer.Render(latitude, longitude, address);
         cancellationToken.ThrowIfCancellationRequested();
-        await using var operation = repository.PrepareAddNote(noteText, oid);
+        await using var operation = repository.PrepareAddNote(noteText, oid, historyId);
         await operation.OpenAsync(cancellationToken).ConfigureAwait(false);
         // SET NOCOUNT ON can return -1 on success: affected-row count is not a success predicate.
         _ = await operation.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);

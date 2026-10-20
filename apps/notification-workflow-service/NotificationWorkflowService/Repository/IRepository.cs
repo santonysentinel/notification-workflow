@@ -25,10 +25,10 @@ namespace NotificationWorkflowService.Repository
         // Queue, audit and history writes.
         /// <summary>
         /// Prepares activealarms_AddNote without I/O. Duplicates are allowed.
-        /// Assumed procedure parameter names: @Note (nvarchar(1000)), @OID (varchar(20)).
+        /// Copies original alarm context using @HistoryID; note rendering is unchanged.
         /// OID encoding/representability is governed by the database collation, not ASCII validation.
         /// </summary>
-        IWorkflowOperation PrepareAddNote(string noteText, string oid);
+        IWorkflowOperation PrepareAddNote(string noteText, string oid, int historyId);
         IWorkflowOperation PrepareAddHistoryNote(int historyID, string noteText);
         IWorkflowOperation PreparePushAlertToMcApp(ActiveAlarm a);
         IWorkflowOperation PrepareAddToNotificationQueue(ActiveAlarm a, int insertType);

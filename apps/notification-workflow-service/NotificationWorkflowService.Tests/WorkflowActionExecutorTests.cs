@@ -369,7 +369,7 @@ public class WorkflowActionExecutorTests
 
     private static Call[] Expected(Scenario scenario, ActiveAlarm a, bool step) => scenario.Calls.Select(token => token switch
     {
-        "note" => new Call("note", Text: a.Instruction, Oid: a.ClientID),
+        "note" => new Call("note", Text: a.Instruction, Oid: a.ClientID, HistoryID: a.HistoryID),
         "autocall" => Operation("autocall", a),
         "callHistory" => new Call("historyNote", Text: "Robo Call queued for participant.", HistoryID: a.HistoryID),
         "officers" => Operation("officers", a),
@@ -455,8 +455,8 @@ public class WorkflowActionExecutorTests
 
         public Task SendNotificationsToOfficersInSameGroupAsync(ActiveAlarm a, CancellationToken cancellationToken = default)
         { Record(Operation("officers", a)); return Task.CompletedTask; }
-        public Task AddNoteAsync(string template, string oid, int activeAlarmId, CancellationToken cancellationToken = default)
-        { Record(new Call("note", Text: template, Oid: oid)); return Task.CompletedTask; }
+        public Task AddNoteAsync(string template, string oid, int activeAlarmId, int historyId, CancellationToken cancellationToken = default)
+        { Record(new Call("note", Text: template, Oid: oid, HistoryID: historyId)); return Task.CompletedTask; }
         public Task EnqueueAutoCallAsync(ActiveAlarm a, string platform, CancellationToken cancellationToken = default)
         { Record(Operation("autocall", a)); return Task.CompletedTask; }
         public Task AddHistoryNoteAsync(int historyID, string noteText, CancellationToken cancellationToken = default)

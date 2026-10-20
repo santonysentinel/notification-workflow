@@ -3,6 +3,8 @@
 Both initial and step workflows support profile action 18. The selected profile's
 `Instruction` is the template, `ActiveAlarm.ClientID` is the participant OID, and
 `ActiveAlarm.SystemID` is the active alarm ID passed to participant lookup.
+`ActiveAlarm.HistoryID` is passed separately to persistence to identify the original
+alarm history row. Both IDs must be positive; they are not interchangeable.
 The shared executor awaits `INoteService.AddNoteAsync`, then the parser performs its
 existing final audit, archive and conditional state writes. Normal checkpoint behavior
 is unchanged. The action does not change `ProcessNextStep` or add notification writes.
@@ -56,13 +58,21 @@ against the contract above.
 | --- | --- | --- |
 | activealarms_AddNote | @Note | nvarchar(1000) |
 | activealarms_AddNote | @OID | varchar(20) |
+| activealarms_AddNote | @HistoryID | int |
 
-The procedure name and types/lengths were supplied by the user. **Parameter names `@Note`
-and `@OID` are inferred and must be verified against the deployed procedure.** No stored
-procedure is created or altered by this implementation. Successful completion without an
-exception is treated as success; affected-row counts, including `-1` under `SET NOCOUNT ON`,
-are not success predicates. A procedure that reports failure only through a return/output
-value needs an additional contract before that signal can be handled.
+Deploy the updated [034.sql](../../../../../database/034.sql) in each tenant workflow
+database (`ConnectionStrings:connstr`) before updating the service. SQL retains the
+existing `@oid varchar(32)` and `@note text` parameters and adds optional `@HistoryID int`.
+The application always supplies HistoryID. The procedure copies participant, group,
+equipment and `EventDateTime` from that history row, retaining event ID `888` and
+description `System Entered Note`. `NotifiedDateTime` is the current UTC posting time.
+The original row is unchanged; this is contextual association, not a stored parent-ID
+foreign key. Missing history or an OID mismatch throws instead of creating an unrelated
+note. Legacy callers omitting HistoryID retain the previous standalone-note behavior.
+Template rendering and the application's 1000-character limit remain unchanged.
+
+Successful completion without an exception is treated as success; affected-row counts,
+including `-1` under `SET NOCOUNT ON`, are not success predicates.
 
 Each invocation attempts a new insert. Duplicates are allowed: there is no invocation key,
 deduplication or encompassing transaction. The service does not add automatic retries.
@@ -78,6 +88,9 @@ does not itself schedule a durable retry.
 Offline tests cover template syntax, unavailable data, bounds, invariant formatting,
 one-snapshot/provider ordering, cancellation, SQL parameter metadata, disposal, repeated
 writes, and all three parser entry points' action/state/checkpoint ordering and failure
-behavior. Shared participant-reader tests cover typed SQL parameters, case-insensitive
-column access, future scalar columns, NULLs and missing/ambiguous rows. Live procedure
-execution, address resolution and database collation/ANSI OID handling remain unverified.
+behavior and forwarding the distinct original HistoryID. Shared participant-reader tests
+cover typed SQL parameters, case-insensitive column access, future scalar columns, NULLs
+and missing/ambiguous rows. Isolated SQL regression checks cover copied alarm context,
+posting time, unchanged source rows, full-length text, invalid/mismatched history and
+legacy standalone calls. Production schema/permissions, address resolution and database
+collation/ANSI OID handling still require deployment verification.

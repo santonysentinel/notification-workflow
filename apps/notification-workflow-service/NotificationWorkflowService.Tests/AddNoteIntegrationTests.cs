@@ -54,7 +54,7 @@ public class AddNoteIntegrationTests
         await Parse(parser, source.Token);
 
         var received = Assert.Single(note.Calls);
-        Assert.Equal((Template, "client", alarm.SystemID, source.Token), received);
+        Assert.Equal((Template, "client", alarm.SystemID, alarm.HistoryID, source.Token), received);
         string[] expected = ["note", "audit14", "PrepareInsertIntoAlarmNotification", "PrepareInsertIntoCurrentAlarmNotification"];
         if (kind != 2) expected = ["audit15", .. expected, "PrepareUpdateParserActivty"];
         Assert.Equal(expected, events);
@@ -93,8 +93,8 @@ public class AddNoteIntegrationTests
             Activator.CreateInstance(adapterType, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
                 null, [parser], null)!;
         using var source = new CancellationTokenSource();
-        await operations.AddNoteAsync(Template, "original-oid", 42, source.Token);
-        Assert.Equal((Template, "original-oid", 42, source.Token), Assert.Single(note.Calls));
+        await operations.AddNoteAsync(Template, "original-oid", 42, 81, source.Token);
+        Assert.Equal((Template, "original-oid", 42, 81, source.Token), Assert.Single(note.Calls));
         Assert.Empty(spy.Calls);
     }
 
@@ -205,6 +205,7 @@ public class AddNoteIntegrationTests
             ("Location 12.50/-45.125 —   address  ", "client"),
             ("Location 12.50/-45.125 —   address  ", "client")
         }, fixture.Repository.Writes);
+        Assert.Equal(new[] { 1101, 1101 }, fixture.Repository.HistoryIds);
         Assert.Equal(2, fixture.Location.Oids.Count); Assert.Equal(2, fixture.Address.Coordinates.Count);
         Assert.Equal(2, spy.Calls.Count(c => c.Name == "PrepareInsertIntoCurrentAlarmNotification"));
         Assert.All(fixture.Repository.Operations, op => Assert.True(op.Disposed));
@@ -235,7 +236,7 @@ public class AddNoteIntegrationTests
         Assert.Equal("note profile", alarm.ProfileName); Assert.Equal(10, alarm.ProfileID);
         Set(parser, "activeAlarms", alarms);
         await Parse(parser);
-        Assert.Equal((Template, "client", alarm.SystemID, CancellationToken.None), Assert.Single(note.Calls));
+        Assert.Equal((Template, "client", alarm.SystemID, alarm.HistoryID, CancellationToken.None), Assert.Single(note.Calls));
         Assert.Equal("Add Note", Assert.Single(spy.Calls, c => c.Name == "PrepareInsertIntoAlarmNotification").Arguments[3]);
     }
 
@@ -279,7 +280,7 @@ public class AddNoteIntegrationTests
         spy.Rows = _ => new DataTable();
         Set(parser, "activeAlarms", alarms);
         await Parse(parser);
-        Assert.Equal((instruction, "client", alarm.SystemID, CancellationToken.None), Assert.Single(note.Calls));
+        Assert.Equal((instruction, "client", alarm.SystemID, alarm.HistoryID, CancellationToken.None), Assert.Single(note.Calls));
         Assert.All(spy.Calls, call => Assert.True(call.Operation!.Disposed));
     }
 
@@ -296,7 +297,7 @@ public class AddNoteIntegrationTests
         Assert.IsType<ParticipantNoteLocationProvider>(host.Services.GetRequiredService<INoteLocationProvider>());
         Assert.IsType<UnavailableNoteAddressResolver>(host.Services.GetRequiredService<INoteAddressResolver>());
         var note = host.Services.GetRequiredService<INoteService>(); Assert.IsType<NoteService>(note);
-        await note.AddNoteAsync("{{lat}}/{{current_location_address}}", "oid", 42);
+        await note.AddNoteAsync("{{lat}}/{{current_location_address}}", "oid", 42, 81);
         Assert.Equal(("12.50/N/A", "oid"), Assert.Single(fixture.Repository.Writes));
         Assert.Equal(("oid", 42, CancellationToken.None), Assert.Single(details.Calls));
         // Do not start workers or resolve the notification sender/parser factory (static authentication).
@@ -310,7 +311,7 @@ public class AddNoteIntegrationTests
             .AddSingleton<INoteLocationProvider>(fixture.Location).AddSingleton<INoteAddressResolver>(fixture.Address);
         services.AddNoteServices();
         using var provider = services.BuildServiceProvider();
-        await provider.GetRequiredService<INoteService>().AddNoteAsync("{{current_location_address}}", "oid", 42);
+        await provider.GetRequiredService<INoteService>().AddNoteAsync("{{current_location_address}}", "oid", 42, 81);
         Assert.Equal(("  address  ", "oid"), Assert.Single(fixture.Repository.Writes));
         Assert.Single(fixture.Location.Oids); Assert.Single(fixture.Address.Coordinates);
     }
@@ -335,10 +336,10 @@ public class AddNoteIntegrationTests
 
     private sealed class RecordingNote : INoteService
     {
-        public List<(string Template, string Oid, int ActiveAlarmId, CancellationToken Token)> Calls { get; } = [];
+        public List<(string Template, string Oid, int ActiveAlarmId, int HistoryId, CancellationToken Token)> Calls { get; } = [];
         public Func<string, string, CancellationToken, Task> OnCall { get; set; } = (_, _, _) => Task.CompletedTask;
-        public Task AddNoteAsync(string template, string oid, int activeAlarmId, CancellationToken cancellationToken = default)
-        { Calls.Add((template, oid, activeAlarmId, cancellationToken)); return OnCall(template, oid, cancellationToken); }
+        public Task AddNoteAsync(string template, string oid, int activeAlarmId, int historyId, CancellationToken cancellationToken = default)
+        { Calls.Add((template, oid, activeAlarmId, historyId, cancellationToken)); return OnCall(template, oid, cancellationToken); }
     }
 
     [Theory]
@@ -359,6 +360,7 @@ public class AddNoteIntegrationTests
         Assert.Equal(("client", alarm.SystemID, cancellation.Token), Assert.Single(details.Calls));
         Assert.Equal((12.50m, -45.125m), Assert.Single(fixture.Address.Coordinates));
         Assert.Equal(("Location 12.50/-45.125 —   address  ", "client"), Assert.Single(fixture.Repository.Writes));
+        Assert.Equal(alarm.HistoryID, Assert.Single(fixture.Repository.HistoryIds));
         Assert.Equal(new[] { "details", "address", "prepare", "open", "execute", "dispose" }, fixture.Events);
         Assert.Equal(alarm.SystemID, Assert.Single(spy.Archived));
     }
