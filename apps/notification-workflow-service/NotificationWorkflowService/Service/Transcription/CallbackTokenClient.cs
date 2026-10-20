@@ -3,12 +3,15 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NotificationWorkflowService.Service.Transcription;
 
-public sealed class CallbackTokenClient(IHttpClientFactory factory, TranscriptionOptions options) : ICallbackTokenClient
+public sealed class CallbackTokenClient(IHttpClientFactory factory, TranscriptionOptions options, ILogger<CallbackTokenClient>? logger = null) : ICallbackTokenClient
 {
     internal const string ClientName = "TranscriptionIdentity";
+    private readonly ILogger<CallbackTokenClient> diagnosticsLogger = logger ?? NullLogger<CallbackTokenClient>.Instance;
     private readonly SemaphoreSlim keyLock = new(1, 1);
     private IReadOnlyCollection<SecurityKey>? keys;
     private DateTime keysExpireAt;
@@ -24,38 +27,84 @@ public sealed class CallbackTokenClient(IHttpClientFactory factory, Transcriptio
         try
         {
             using var client = factory.CreateClient(ClientName);
-            using var request = new HttpRequestMessage(HttpMethod.Post, options.Identity.Endpoint("accounts/authenticate2"))
-            { Content = JsonContent.Create(new { signInName = options.Identity.SignInName, password = options.Identity.Password }) };
+            using var request = new HttpRequestMessage(HttpMethod.Post, options.Identity.Endpoint(TranscriptionIdentityOptions.AuthenticationPath))
+            { Content = JsonContent.Create(new { signInname = options.Identity.SignInName, password = options.Identity.Password }) };
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
             if (response.StatusCode != HttpStatusCode.OK)
+            {
+                diagnosticsLogger.LogWarning("Transcription identity authentication returned HTTP {HttpStatus}", (int)response.StatusCode);
                 throw new TranscriptionException(response.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable
                     ? TranscriptionFailure.TransientPreparation : TranscriptionFailure.Validation, "IDENTITY_REJECTED",
                     response.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable);
+            }
             using var body = await TranscriptionHttp.ReadJsonAsync(response.Content, deadline.Token).ConfigureAwait(false);
             var root = body.RootElement;
-            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("isSuccessful", out var success) || success.ValueKind != JsonValueKind.True ||
-                !root.TryGetProperty("jwt", out var value) || value.ValueKind != JsonValueKind.String)
+            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("jwt", out var value) ||
+                value.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(value.GetString()))
                 throw new TranscriptionException(TranscriptionFailure.Validation, "INVALID_IDENTITY_RESPONSE");
             string token = value.GetString()!;
             var handler = new JsonWebTokenHandler { MaximumTokenSizeInBytes = 16000 };
             var validation = await handler.ValidateTokenAsync(token, Parameters(await GetKeysAsync(client, false, deadline.Token).ConfigureAwait(false))).ConfigureAwait(false);
             if (!validation.IsValid && validation.Exception is SecurityTokenSignatureKeyNotFoundException)
                 validation = await handler.ValidateTokenAsync(token, Parameters(await GetKeysAsync(client, true, deadline.Token).ConfigureAwait(false))).ConfigureAwait(false);
-            if (!validation.IsValid || validation.SecurityToken is not JsonWebToken jwt || jwt.ValidTo <= DateTime.UtcNow.Add(minimumValidity))
+            if (!validation.IsValid)
+            {
+                diagnosticsLogger.LogError("Transcription callback token rejected: {TokenRejectionReason}", "TOKEN_VALIDATION_FAILED");
+                if (validation.Exception is { } exception)
+                    TranscriptionDiagnostics.Failure(diagnosticsLogger, "Validate callback token", exception);
                 throw new TranscriptionException(TranscriptionFailure.Validation, "INVALID_CALLBACK_TOKEN");
+            }
+            if (validation.SecurityToken is not JsonWebToken jwt)
+            {
+                diagnosticsLogger.LogError("Transcription callback token rejected: {TokenRejectionReason}", "UNEXPECTED_TOKEN_TYPE");
+                throw new TranscriptionException(TranscriptionFailure.Validation, "INVALID_CALLBACK_TOKEN");
+            }
+            var now = DateTime.UtcNow;
+            var requiredUntil = now.Add(minimumValidity);
+            if (jwt.ValidTo <= requiredUntil)
+            {
+                diagnosticsLogger.LogError(
+                    "Transcription callback token rejected: {TokenRejectionReason}; current UTC {CurrentUtc:O}, expiry UTC {ExpiresUtc:O}, required valid until UTC {RequiredValidUntilUtc:O}, remaining {RemainingValiditySeconds} seconds, required more than {RequiredValiditySeconds} seconds",
+                    "INSUFFICIENT_REMAINING_VALIDITY", now, jwt.ValidTo, requiredUntil,
+                    (jwt.ValidTo - now).TotalSeconds, minimumValidity.TotalSeconds);
+                throw new TranscriptionException(TranscriptionFailure.Validation, "INVALID_CALLBACK_TOKEN");
+            }
             using var payload = JsonDocument.Parse(Base64UrlEncoder.DecodeBytes(jwt.EncodedPayload));
             if (!payload.RootElement.TryGetProperty("permissions", out var permission) || permission.ValueKind != JsonValueKind.String)
+            {
+                diagnosticsLogger.LogError("Transcription callback token rejected: {TokenRejectionReason}", "MISSING_OR_INVALID_PERMISSIONS_CLAIM");
                 throw new TranscriptionException(TranscriptionFailure.Validation, "INVALID_CALLBACK_TOKEN");
+            }
             string[] permissions = permission.GetString()!.Split(',').Select(item => item.Trim()).ToArray();
             if (permissions.Length == 0 || !permissions.All(TranscriptionOptions.DecimalId) || !permissions.Contains(options.Identity.PermissionId, StringComparer.Ordinal))
+            {
+                diagnosticsLogger.LogError("Transcription callback token rejected: {TokenRejectionReason}", "MISSING_OR_INVALID_CALLBACK_PERMISSION");
                 throw new TranscriptionException(TranscriptionFailure.Validation, "MISSING_CALLBACK_PERMISSION");
+            }
             return new CallbackCredential(token, jwt.ValidTo);
         }
-        catch (TranscriptionException) { throw; }
+        catch (TranscriptionException exception)
+        {
+            TranscriptionDiagnostics.Failure(diagnosticsLogger, "Acquire callback credential", exception);
+            throw;
+        }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw new OperationCanceledException(cancellationToken); }
-        catch (OperationCanceledException) { throw new TranscriptionException(TranscriptionFailure.TransientPreparation, "IDENTITY_TIMEOUT", true); }
-        catch (HttpRequestException) { throw new TranscriptionException(TranscriptionFailure.TransientPreparation, "IDENTITY_UNAVAILABLE", true); }
-        catch (Exception) { throw new TranscriptionException(TranscriptionFailure.Validation, "INVALID_IDENTITY_RESPONSE"); }
+        catch (OperationCanceledException exception)
+        {
+            TranscriptionDiagnostics.Failure(diagnosticsLogger, "Acquire callback credential", exception,
+                cancellationReason: $"Identity request exceeded its {options.Identity.TimeoutSeconds}-second deadline.");
+            throw new TranscriptionException(TranscriptionFailure.TransientPreparation, "IDENTITY_TIMEOUT", true);
+        }
+        catch (HttpRequestException exception)
+        {
+            TranscriptionDiagnostics.Failure(diagnosticsLogger, "Acquire callback credential", exception);
+            throw new TranscriptionException(TranscriptionFailure.TransientPreparation, "IDENTITY_UNAVAILABLE", true);
+        }
+        catch (Exception exception)
+        {
+            TranscriptionDiagnostics.Failure(diagnosticsLogger, "Acquire callback credential", exception);
+            throw new TranscriptionException(TranscriptionFailure.Validation, "INVALID_IDENTITY_RESPONSE");
+        }
     }
 
     private TokenValidationParameters Parameters(IReadOnlyCollection<SecurityKey> signingKeys) => new()
@@ -75,7 +124,11 @@ public sealed class CallbackTokenClient(IHttpClientFactory factory, Transcriptio
             if (!refresh && keys is not null && keysExpireAt > DateTime.UtcNow) return keys;
             using var request = new HttpRequestMessage(HttpMethod.Get, options.Identity.Endpoint(options.Identity.JwtJwksPath));
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-            if (response.StatusCode != HttpStatusCode.OK) throw new TranscriptionException(TranscriptionFailure.TransientPreparation, "JWKS_UNAVAILABLE", true);
+            if (response.StatusCode != HttpStatusCode.OK)
+            {
+                diagnosticsLogger.LogWarning("Transcription identity JWKS retrieval returned HTTP {HttpStatus}", (int)response.StatusCode);
+                throw new TranscriptionException(TranscriptionFailure.TransientPreparation, "JWKS_UNAVAILABLE", true);
+            }
             using var document = await TranscriptionHttp.ReadJsonAsync(response.Content, cancellationToken).ConfigureAwait(false);
             var candidate = new JsonWebKeySet(document.RootElement.GetRawText()).Keys
                 .Where(jwk => !jwk.HasPrivateKey && (string.IsNullOrEmpty(jwk.Use) || jwk.Use == "sig") &&

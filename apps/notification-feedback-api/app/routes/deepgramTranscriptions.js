@@ -20,6 +20,10 @@ export function readDeepgramCallbackConfig() {
       process.env.DEEPGRAM_IDENTITY_ALLOW_HTTP === undefined
         ? nconf.get('deepgram:callback:allowInsecureIdentityHttp') === true
         : process.env.DEEPGRAM_IDENTITY_ALLOW_HTTP === 'true',
+    bypassJwtVerification:
+      process.env.DEEPGRAM_CALLBACK_BYPASS_JWT_VERIFICATION === undefined
+        ? nconf.get('deepgram:callback:bypassJwtVerification') === true
+        : process.env.DEEPGRAM_CALLBACK_BYPASS_JWT_VERIFICATION === 'true',
     algorithm:
       process.env.DEEPGRAM_CALLBACK_JWT_ALGORITHM ??
       nconf.get('deepgram:callback:algorithm') ??

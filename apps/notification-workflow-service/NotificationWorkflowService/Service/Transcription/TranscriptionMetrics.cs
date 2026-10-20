@@ -1,5 +1,7 @@
 using System.Diagnostics.Metrics;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NotificationWorkflowService.Service.Transcription;
 
@@ -40,15 +42,18 @@ public sealed class TranscriptionMetrics : IDisposable
     private readonly TranscriptionMetricsOptions options;
     private readonly TimeProvider clock;
     private readonly Counter<long> failures;
+    private readonly ILogger<TranscriptionMetrics> logger;
     private Sample? sample;
     private DateTimeOffset? lastAttempt;
     private sealed record Sample(TranscriptionQueueSnapshot Snapshot, DateTimeOffset At);
 
-    public TranscriptionMetrics(ITranscriptionMetricsRepository repository, TranscriptionMetricsOptions options, TimeProvider? timeProvider = null)
+    public TranscriptionMetrics(ITranscriptionMetricsRepository repository, TranscriptionMetricsOptions options, TimeProvider? timeProvider = null,
+        ILogger<TranscriptionMetrics>? logger = null)
     {
         options.Validate();
         this.repository = repository;
         this.options = options;
+        this.logger = logger ?? NullLogger<TranscriptionMetrics>.Instance;
         clock = timeProvider ?? TimeProvider.System;
         failures = meter.CreateCounter<long>("transcription.metrics.collection_failures", "{failure}");
         meter.CreateObservableGauge("transcription.queue.ready", () => Observe(snapshot => snapshot.ReadyJobs), "{job}");
@@ -72,9 +77,16 @@ public sealed class TranscriptionMetrics : IDisposable
             {
                 var snapshot = await repository.GetMetricsAsync(cancellationToken).WaitAsync(cancellationToken).ConfigureAwait(false);
                 Volatile.Write(ref sample, new Sample(snapshot, clock.GetUtcNow()));
+                logger.LogInformation("Transcription queue metrics refreshed: ready {ReadyJobs}, oldest queue age {QueueAgeSeconds} seconds, outstanding submissions {OutstandingSubmissions}, callback timeouts {CallbackTimeoutSubmissions}, dead letters {DeadLetterJobs}",
+                    snapshot.ReadyJobs, snapshot.QueueAgeSeconds, snapshot.OutstandingSubmissions, snapshot.CallbackTimeoutSubmissions, snapshot.DeadLetterJobs);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-            catch (Exception) { failures.Add(1); throw new TranscriptionException(TranscriptionFailure.Persistence, "METRICS_UNAVAILABLE"); }
+            catch (Exception exception)
+            {
+                failures.Add(1);
+                TranscriptionDiagnostics.Failure(logger, "Refresh queue metrics", exception);
+                throw new TranscriptionException(TranscriptionFailure.Persistence, "METRICS_UNAVAILABLE");
+            }
         }
         finally { refreshLock.Release(); }
     }

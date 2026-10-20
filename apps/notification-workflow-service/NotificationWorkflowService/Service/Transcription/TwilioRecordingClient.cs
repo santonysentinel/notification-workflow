@@ -2,12 +2,15 @@ using System.Buffers.Binary;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NotificationWorkflowService.Service.Transcription;
 
-public sealed class TwilioRecordingClient(IHttpClientFactory factory, TranscriptionOptions options) : ITwilioRecordingClient
+public sealed class TwilioRecordingClient(IHttpClientFactory factory, TranscriptionOptions options, ILogger<TwilioRecordingClient>? logger = null) : ITwilioRecordingClient
 {
     internal const string ClientName = "TranscriptionTwilio";
+    private readonly ILogger<TwilioRecordingClient> diagnosticsLogger = logger ?? NullLogger<TwilioRecordingClient>.Instance;
 
     public async Task<TranscriptionAudio> OpenAsync(TranscriptionWork work, CancellationToken cancellationToken)
     {
@@ -32,6 +35,8 @@ public sealed class TwilioRecordingClient(IHttpClientFactory factory, Transcript
             response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
             if (response.StatusCode != HttpStatusCode.OK)
             {
+                diagnosticsLogger.LogWarning("Transcription Twilio media retrieval returned HTTP {HttpStatus} for job {JobId}, recording {RecordingId}",
+                    (int)response.StatusCode, work.JobId, work.RecordingId);
                 bool retryable = response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.TooManyRequests or HttpStatusCode.RequestTimeout || (int)response.StatusCode >= 500;
                 throw new TranscriptionException(retryable ? TranscriptionFailure.TransientPreparation : TranscriptionFailure.Validation,
                     response.StatusCode == HttpStatusCode.NotFound ? "MEDIA_MISSING" : response.StatusCode == HttpStatusCode.TooManyRequests ? "MEDIA_RATE_LIMIT" : "MEDIA_REJECTED", retryable);
@@ -47,15 +52,29 @@ public sealed class TwilioRecordingClient(IHttpClientFactory factory, Transcript
             return new TranscriptionAudio(new WaveStream(stream, header.Prefix, header.Length, options.MaxAudioBytes), header.Length,
                 new ResponseOwner(response, client));
         }
-        catch (TranscriptionException) { response?.Dispose(); client.Dispose(); throw; }
+        catch (TranscriptionException exception)
+        {
+            TranscriptionDiagnostics.Failure(diagnosticsLogger, "Read recording media", exception, work.JobId, work.RecordingId);
+            response?.Dispose(); client.Dispose(); throw;
+        }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         { response?.Dispose(); client.Dispose(); throw new OperationCanceledException(cancellationToken); }
-        catch (OperationCanceledException)
-        { response?.Dispose(); client.Dispose(); throw new TranscriptionException(TranscriptionFailure.TransientPreparation, "MEDIA_TIMEOUT", true); }
-        catch (InvalidDataException)
-        { response?.Dispose(); client.Dispose(); throw new TranscriptionException(TranscriptionFailure.Validation, "INVALID_WAV"); }
-        catch (Exception)
-        { response?.Dispose(); client.Dispose(); throw new TranscriptionException(TranscriptionFailure.TransientPreparation, "MEDIA_UNAVAILABLE", true); }
+        catch (OperationCanceledException exception)
+        {
+            TranscriptionDiagnostics.Failure(diagnosticsLogger, "Read recording media", exception, work.JobId, work.RecordingId,
+                $"Media retrieval exceeded its {options.MediaHeaderTimeoutSeconds}-second deadline.");
+            response?.Dispose(); client.Dispose(); throw new TranscriptionException(TranscriptionFailure.TransientPreparation, "MEDIA_TIMEOUT", true);
+        }
+        catch (InvalidDataException exception)
+        {
+            TranscriptionDiagnostics.Failure(diagnosticsLogger, "Validate recording WAV", exception, work.JobId, work.RecordingId);
+            response?.Dispose(); client.Dispose(); throw new TranscriptionException(TranscriptionFailure.Validation, "INVALID_WAV");
+        }
+        catch (Exception exception)
+        {
+            TranscriptionDiagnostics.Failure(diagnosticsLogger, "Read recording media", exception, work.JobId, work.RecordingId);
+            response?.Dispose(); client.Dispose(); throw new TranscriptionException(TranscriptionFailure.TransientPreparation, "MEDIA_UNAVAILABLE", true);
+        }
     }
 
     private async Task<(byte[] Prefix, long Length)> ReadWaveHeaderAsync(Stream stream, int channels, int durationSeconds, CancellationToken cancellationToken)

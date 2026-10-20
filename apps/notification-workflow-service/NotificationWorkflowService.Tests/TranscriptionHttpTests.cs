@@ -18,9 +18,10 @@ public sealed class TranscriptionHttpTests
     private const string Recording = "RE22222222222222222222222222222222";
     private const string RequestId = "33333333-3333-4333-8333-333333333333";
     private const string Snapshot = "{\"model\":\"nova-3\",\"version\":\"latest\",\"language\":\"en\",\"utterances\":true,\"multichannel\":true,\"diarize\":false,\"punctuate\":false,\"smart_format\":false,\"mip_opt_out\":true}";
-    private static TranscriptionOptions Options(int timeout = 2, long maxBytes = 134217728, string permissionId = "1188", string algorithm = "RS256", string identityBase = "https://identity.example", bool allowHttp = false) => new()
+    private static TranscriptionOptions Options(int timeout = 2, long maxBytes = 134217728, string permissionId = "1188", string algorithm = "RS256", string identityBase = "https://identity.example", bool allowHttp = false, bool logProviderMessages = false) => new()
     {
         Enabled = true, DeepgramApiKey = "DEEPGRAM-SECRET", SubmissionTimeoutSeconds = timeout, MediaHeaderTimeoutSeconds = timeout, MaxAudioBytes = maxBytes,
+        LogSanitizedProviderErrorMessages = logProviderMessages,
         Identity = new() { BaseUrl = identityBase, AllowInsecureIdentityHttp = allowHttp, SignInName = "LOGIN-NAME", Password = "LOGIN-SECRET", PermissionId = permissionId, Algorithm = algorithm, TimeoutSeconds = timeout },
         Twilio = new() { AccountSid = Account, ApiKeySid = "SK44444444444444444444444444444444", ApiKeySecret = "TWILIO-SECRET" }
     };
@@ -72,7 +73,8 @@ public sealed class TranscriptionHttpTests
             Assert.Contains("model=nova-3", request.RequestUri!.Query);
             Assert.Contains("mip_opt_out=true", request.RequestUri.Query);
             Assert.Contains("multichannel=true", request.RequestUri.Query);
-            Assert.Contains("callback_method=POST", request.RequestUri.Query);
+            Assert.Equal(HttpMethod.Post, request.Method);
+            Assert.DoesNotContain("callback_method", request.RequestUri.Query);
             Assert.Contains("version=latest", request.RequestUri.Query);
             string callback = request.RequestUri.Query.TrimStart('?').Split('&').Single(item => item.StartsWith("callback=", StringComparison.Ordinal))[9..];
             Assert.Equal($"https://{identity.CorrelationId:D}:{credential.Token}@feedback.example.com/webhooks/deepgram/transcriptions/completed", Uri.UnescapeDataString(callback));
@@ -133,6 +135,11 @@ public sealed class TranscriptionHttpTests
 
     [Theory]
     [InlineData(400, "{\"err_code\":\"INVALID_AUDIO\",\"err_msg\":\"secret transcript\"}", TranscriptionFailure.DefiniteRejection, false)]
+    [InlineData(400, "{\"err_code\":\"Bad Request\",\"err_msg\":\"Bad Request: failed to process audio: corrupt or unsupported data\"}", TranscriptionFailure.DefiniteRejection, false)]
+    [InlineData(400, "{\"err_code\":\"Bad Request\",\"request_id\":\"33333333-3333-4333-8333-333333333333\"}", TranscriptionFailure.DefiniteRejection, false)]
+    [InlineData(400, "{\"err_code\":\"Bad Request\",\"request_id\":\"bad\"}", TranscriptionFailure.UncertainAcceptance, false)]
+    [InlineData(400, "{\"err_code\":\"Bad Request\",\"results\":{}}", TranscriptionFailure.UncertainAcceptance, false)]
+    [InlineData(400, "{\"err_code\":\"Bad Request\",\"err_code\":\"Bad Request\"}", TranscriptionFailure.UncertainAcceptance, false)]
     [InlineData(429, "{\"err_code\":\"TOO_MANY_REQUESTS\",\"err_msg\":\"DEEPGRAM-SECRET\"}", TranscriptionFailure.DefiniteRejection, true)]
     [InlineData(429, "{\"err_code\":\"TOO_MANY_REQUESTS\",\"request_id\":\"33333333-3333-4333-8333-333333333333\"}", TranscriptionFailure.DefiniteRejection, true)]
     [InlineData(429, "{\"err_code\":\"TOO_MANY_REQUESTS\",\"request_id\":\"bad\"}", TranscriptionFailure.UncertainAcceptance, false)]
@@ -155,6 +162,202 @@ public sealed class TranscriptionHttpTests
         Assert.DoesNotContain("DEEPGRAM-SECRET", error.ToString());
         Assert.DoesNotContain("CALLBACK.HEADER.SIGNATURE", error.ToString());
         Assert.Equal(1, factory.Calls);
+    }
+
+    [Theory]
+    [InlineData("Bad Request", "Bad Request: No such model/language/tier combination found.", "BAD_REQUEST", "UNSUPPORTED_MODEL_LANGUAGE_TIER")]
+    [InlineData("Bad Request", "Bad Request: failed to process audio: corrupt or unsupported data", "BAD_REQUEST", "CORRUPT_OR_UNSUPPORTED_AUDIO")]
+    [InlineData("INVALID_QUERY_PARAMETER", "Invalid callback url.", "INVALID_QUERY_PARAMETER", "INVALID_CALLBACK_URL")]
+    [InlineData("INVALID_QUERY_PARAMETER", "Failed to deserialize query parameters: CALLBACK.HEADER.SIGNATURE DEEPGRAM-SECRET", "INVALID_QUERY_PARAMETER", "INVALID_QUERY_PARAMETERS")]
+    [InlineData("DEEPGRAM_SECRET", "CALLBACK.HEADER.SIGNATURE DEEPGRAM-SECRET secret transcript", "UNRECOGNIZED", "UNSPECIFIED")]
+    public async Task LogsOnlySafeDeepgramErrorCodesAndReasons(string code, string message, string safeCode, string safeReason)
+    {
+        var logs = new Logs();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logs));
+        var factory = new Factory(async (request, cancellationToken) =>
+        {
+            await request.Content!.CopyToAsync(Stream.Null, cancellationToken);
+            return Json(JsonSerializer.Serialize(new { err_code = code, err_msg = message, request_id = RequestId }), HttpStatusCode.BadRequest);
+        });
+        await using var audio = new TranscriptionAudio(new MemoryStream(Wave()), Wave().Length);
+        var failure = await Assert.ThrowsAsync<TranscriptionException>(() =>
+            new DeepgramClient(factory, Options(), loggerFactory.CreateLogger<DeepgramClient>())
+                .SubmitAsync(audio, Snapshot, Identity(), Credential(), default));
+        Assert.Equal(TranscriptionFailure.DefiniteRejection, failure.Failure);
+        Assert.False(failure.Retryable);
+        var entry = Assert.Single(logs.Entries.Where(item => item.ContainsKey("ProviderErrorCode")));
+        Assert.Equal(safeCode, entry["ProviderErrorCode"]);
+        Assert.Equal(safeReason, entry["ProviderErrorReason"]);
+        Assert.Equal(400, entry["HttpStatus"]);
+        string output = string.Join('\n', logs.Messages) + failure;
+        foreach (string secret in new[] { "CALLBACK.HEADER.SIGNATURE", "DEEPGRAM-SECRET", "DEEPGRAM_SECRET", "secret transcript", "callback=" })
+            Assert.DoesNotContain(secret, output);
+        Assert.Equal(1, factory.Calls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ProviderMessageDiagnosticFlagIsBoundFromConfiguration(bool enabled)
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Transcription:LogSanitizedProviderErrorMessages"] = enabled.ToString()
+        }).Build();
+        var services = new ServiceCollection();
+        services.AddSingleton<IConfiguration>(configuration);
+        services.AddTranscriptionClients();
+        using var provider = services.BuildServiceProvider();
+        Assert.Equal(enabled, provider.GetRequiredService<TranscriptionOptions>().LogSanitizedProviderErrorMessages);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TemporaryProviderMessageLoggingIsOptInAndRedactsCredentialsAndUrls(bool enabled)
+    {
+        var logs = new Logs();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.SetMinimumLevel(LogLevel.Error).AddProvider(logs));
+        var identity = Identity();
+        var credential = Credential();
+        string basic = Convert.ToBase64String(Encoding.UTF8.GetBytes(identity.CorrelationId.ToString("D") + ":" + credential.Token));
+        const string otherJwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJzZWNyZXQifQ.c2lnbmF0dXJl";
+        const string rawUrl = "https://user:password@example.com/callback?token=private-value";
+        string encodedUrl = Uri.EscapeDataString(rawUrl);
+        string providerMessage = $"Invalid request: callback too long; {credential.Token} {otherJwt} {basic} " +
+            $"DEEPGRAM-SECRET LOGIN-NAME LOGIN-SECRET TWILIO-SECRET {identity.SubmissionToken:D} {identity.SubmissionToken:N} " +
+            $"{rawUrl} {encodedUrl}\r\nmessage ended.";
+        var factory = new Factory((_, _) => Task.FromResult(Json(JsonSerializer.Serialize(new { err_code = "Bad Request", err_msg = providerMessage }), HttpStatusCode.BadRequest)));
+        await using var audio = new TranscriptionAudio(new MemoryStream(Wave()), Wave().Length);
+        var error = await Assert.ThrowsAsync<TranscriptionException>(() =>
+            new DeepgramClient(factory, Options(logProviderMessages: enabled), loggerFactory.CreateLogger<DeepgramClient>())
+                .SubmitAsync(audio, Snapshot, identity, credential, default));
+        Assert.Equal(TranscriptionFailure.DefiniteRejection, error.Failure);
+        Assert.Equal("PROVIDER_REJECTED", error.ErrorCode);
+        Assert.Equal(400, error.ProviderHttpStatus);
+        Assert.Equal(enabled, error.ProviderMessageLoggingEnabled);
+        var diagnostic = Assert.Single(logs.Entries.Where(item => item.ContainsKey("ProviderErrorCode")));
+        Assert.Equal(enabled, diagnostic["ProviderMessageLoggingEnabled"]);
+        var entries = logs.Entries.Where(item => item.ContainsKey("ProviderErrorCode") && item.ContainsKey("SanitizedProviderMessage")).ToArray();
+        if (enabled)
+        {
+            string sanitized = Assert.IsType<string>(Assert.Single(entries)["SanitizedProviderMessage"]);
+            Assert.StartsWith("Invalid request: callback too long;", sanitized);
+            Assert.EndsWith("\\u000d\\u000amessage ended.", sanitized);
+            Assert.Contains("[REDACTED_URL]", sanitized);
+            Assert.Contains("[REDACTED_JWT]", sanitized);
+        }
+        else
+        {
+            Assert.Empty(entries);
+            Assert.DoesNotContain("callback too long", string.Join('\n', logs.Messages));
+        }
+        string output = string.Join('\n', logs.Messages);
+        foreach (string secret in new[] { credential.Token, otherJwt, basic, "DEEPGRAM-SECRET", "LOGIN-NAME", "LOGIN-SECRET",
+            "TWILIO-SECRET", identity.SubmissionToken.ToString("D"), identity.SubmissionToken.ToString("N"),
+            rawUrl, encodedUrl, "private-value", "user:password" })
+            Assert.DoesNotContain(secret, output);
+        Assert.False(new TranscriptionOptions().LogSanitizedProviderErrorMessages);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RegisteredSubmissionPipelineIncludesSanitizedMessageInExistingFailureEntries(bool enabled)
+    {
+        var logs = new Logs();
+        var events = new List<string>();
+        var providers = new Providers(events);
+        var services = new ServiceCollection();
+        services.AddSingleton<IConfiguration>(new ConfigurationBuilder().Build());
+        services.AddLogging(builder => builder.SetMinimumLevel(LogLevel.Error).AddProvider(logs));
+        services.AddTranscriptionClients();
+        services.AddSingleton(Options(logProviderMessages: enabled));
+        services.AddSingleton<ITranscriptionSubmissionRepository>(new SubmissionRepository(events));
+        services.AddSingleton<ICallbackTokenClient>(providers);
+        services.AddSingleton<ITwilioRecordingClient>(providers);
+        services.AddSingleton<IHttpClientFactory>(new Factory(async (request, cancellationToken) =>
+        {
+            await request.Content!.CopyToAsync(Stream.Null, cancellationToken);
+            return Json("{\"err_code\":\"Bad Request\",\"err_msg\":\"Actual explanation: CALLBACK.HEADER.SIGNATURE DEEPGRAM-SECRET\"}", HttpStatusCode.BadRequest);
+        }));
+        using var provider = services.BuildServiceProvider();
+
+        var result = await provider.GetRequiredService<ITranscriptionSubmissionService>().SubmitAsync(Work(), "worker", default);
+
+        Assert.Equal(TranscriptionFailure.DefiniteRejection, result.Failure);
+        Assert.Equal("PROVIDER_REJECTED", result.ErrorCode);
+        foreach (string operation in new[] { "Deepgram upload", "Provider upload" })
+        {
+            var entry = Assert.Single(logs.Entries.Where(item => item.TryGetValue("Operation", out var value) && Equals(value, operation)));
+            Assert.Equal(400, entry["HttpStatus"]);
+            Assert.Equal(enabled, entry["ProviderMessageLoggingEnabled"]);
+            Assert.Equal(enabled ? "Actual explanation: [REDACTED] [REDACTED]" : null, entry["SanitizedProviderMessage"]);
+        }
+        string output = string.Join('\n', logs.Messages);
+        foreach (string secret in new[] { "CALLBACK.HEADER.SIGNATURE", "DEEPGRAM-SECRET" })
+            Assert.DoesNotContain(secret, output);
+        if (!enabled) Assert.DoesNotContain("Actual explanation", output);
+    }
+
+    [Fact]
+    public async Task TemporaryProviderMessageLoggingPreservesCompleteNonSensitiveMessage()
+    {
+        string message = "Invalid request: " + new string('x', 8000) + " final explanation.";
+        var logs = new Logs();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logs));
+        var factory = new Factory((_, _) => Task.FromResult(Json(JsonSerializer.Serialize(new { err_code = "Bad Request", err_msg = message }), HttpStatusCode.BadRequest)));
+        await using var audio = new TranscriptionAudio(new MemoryStream(Wave()), Wave().Length);
+        await Assert.ThrowsAsync<TranscriptionException>(() =>
+            new DeepgramClient(factory, Options(logProviderMessages: true), loggerFactory.CreateLogger<DeepgramClient>())
+                .SubmitAsync(audio, Snapshot, Identity(), Credential(), default));
+        var entry = Assert.Single(logs.Entries.Where(item => item.ContainsKey("ProviderErrorCode") && item.ContainsKey("SanitizedProviderMessage")));
+        Assert.Equal(message, entry["SanitizedProviderMessage"]);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InvalidQueryDiagnosticsIncludeExactOptionsAndMeasuredLengthsWithoutCallbackCredentials(bool enabled)
+    {
+        var logs = new Logs();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logs));
+        string snapshot = Snapshot.Replace("\"punctuate\":true", "\"punctuate\":false", StringComparison.Ordinal);
+        var identity = Identity();
+        var credential = Credential();
+        int targetBytes = 0, callbackLength = 0;
+        var factory = new Factory(async (request, cancellationToken) =>
+        {
+            await request.Content!.CopyToAsync(Stream.Null, cancellationToken);
+            targetBytes = Encoding.UTF8.GetByteCount(request.RequestUri!.PathAndQuery);
+            Assert.DoesNotContain("callback_method", request.RequestUri.Query);
+            Assert.Equal(11, request.RequestUri.Query.TrimStart('?').Split('&').Length);
+            string callback = request.RequestUri.Query.TrimStart('?').Split('&').Single(item => item.StartsWith("callback=", StringComparison.Ordinal))[9..];
+            callbackLength = Uri.UnescapeDataString(callback).Length;
+            return Json(JsonSerializer.Serialize(new { err_code = "Bad Request", err_msg = "Invalid query string.", request_id = RequestId }), HttpStatusCode.BadRequest);
+        });
+        await using var audio = new TranscriptionAudio(new MemoryStream(Wave()), Wave().Length);
+        var error = await Assert.ThrowsAsync<TranscriptionException>(() =>
+            new DeepgramClient(factory, Options(logProviderMessages: enabled), loggerFactory.CreateLogger<DeepgramClient>())
+                .SubmitAsync(audio, snapshot, identity, credential, default));
+        Assert.Equal(TranscriptionFailure.DefiniteRejection, error.Failure);
+        var failureEntry = Assert.Single(logs.Entries.Where(item => item.TryGetValue("Operation", out var value) && Equals(value, "Deepgram upload")));
+        if (enabled)
+        {
+            string summary = Assert.IsType<string>(failureEntry["SanitizedProviderRequest"]);
+            Assert.Contains("model=nova-3&version=latest&language=en&utterances=true&multichannel=true&diarize=false&punctuate=false&smart_format=false&mip_opt_out=true", summary);
+            Assert.Contains("callback=[REDACTED]&tag=[REDACTED]", summary);
+            Assert.DoesNotContain("callback_method", summary);
+            Assert.Contains($"request target bytes={targetBytes}", summary);
+            Assert.Contains($"callback URL characters={callbackLength}", summary);
+            Assert.Contains($"callback credential characters={credential.Token.Length}", summary);
+            Assert.Contains($"provider request ID={RequestId}", summary);
+        }
+        else
+            Assert.Null(failureEntry["SanitizedProviderRequest"]);
+        string output = string.Join('\n', logs.Messages);
+        foreach (string secret in new[] { credential.Token, identity.CorrelationId.ToString("D"), "feedback.example.com", "DEEPGRAM-SECRET" })
+            Assert.DoesNotContain(secret, output);
     }
 
     [Theory]
@@ -214,6 +417,41 @@ public sealed class TranscriptionHttpTests
     }
 
     [Theory]
+    [InlineData("https://identity.example")]
+    [InlineData("https://identity.example/legacy/")]
+    [InlineData("http://172.27.112.243:8085/legacy/")]
+    public void AuthenticationUsesTheExactRootedRouteWithoutChangingJwks(string baseUrl)
+    {
+        var identity = Options(identityBase: baseUrl, allowHttp: true).Identity;
+        identity.Validate();
+        string origin = new Uri(baseUrl).GetLeftPart(UriPartial.Authority);
+        Assert.Equal(origin + "/security/v2/auth/authenticate",
+            identity.Endpoint(TranscriptionIdentityOptions.AuthenticationPath).AbsoluteUri);
+        Assert.Equal(origin + "/.well-known/jwks.json", identity.Endpoint(identity.JwtJwksPath).AbsoluteUri);
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"jwt\":null}")]
+    [InlineData("{\"jwt\":\"\"}")]
+    [InlineData("{\"jwt\":\"  \"}")]
+    [InlineData("{\"jwt\":123}")]
+    [InlineData("[]")]
+    public async Task RejectsMissingOrInvalidJwtBeforeJwksRetrieval(string response)
+    {
+        var factory = new Factory((request, _) =>
+        {
+            Assert.Equal(HttpMethod.Post, request.Method);
+            Assert.Equal("/security/v2/auth/authenticate", request.RequestUri!.AbsolutePath);
+            return Task.FromResult(Json(response));
+        });
+        var failure = await Assert.ThrowsAsync<TranscriptionException>(() =>
+            new CallbackTokenClient(factory, Options()).AcquireAsync(TimeSpan.FromMinutes(70), default));
+        Assert.Equal("INVALID_IDENTITY_RESPONSE", failure.ErrorCode);
+        Assert.Equal(1, factory.Calls);
+    }
+
+    [Theory]
     [InlineData("12, 1188,13", 120, true)]
     [InlineData("11188", 120, false)]
     [InlineData("1188,", 120, false)]
@@ -244,6 +482,69 @@ public sealed class TranscriptionHttpTests
     }
 
     [Theory]
+    [InlineData(60, false)]
+    [InlineData(70, false)]
+    [InlineData(71, true)]
+    public async Task LogsInsufficientLiveTokenLifetimeWithoutSecrets(int expiryMinutes, bool valid)
+    {
+        using var rsa = RSA.Create(2048);
+        string jwt = Token(new RsaSecurityKey(rsa) { KeyId = "test" }, "1188", DateTime.UtcNow.AddMinutes(expiryMinutes));
+        var logs = new Logs();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logs));
+        var client = new CallbackTokenClient(IdentityFactory(jwt, Jwks(rsa)), Options(), loggerFactory.CreateLogger<CallbackTokenClient>());
+        var minimumValidity = TimeSpan.FromMinutes(60) + TimeSpan.FromSeconds(600 + 5);
+        if (valid)
+        {
+            var credential = await client.AcquireAsync(minimumValidity, default);
+            Assert.Equal(jwt, credential.Token);
+            Assert.Empty(logs.Messages);
+        }
+        else
+        {
+            var error = await Assert.ThrowsAsync<TranscriptionException>(() => client.AcquireAsync(minimumValidity, default));
+            Assert.Equal("INVALID_CALLBACK_TOKEN", error.ErrorCode);
+            Assert.False(error.Retryable);
+            var entry = Assert.Single(logs.Entries.Where(item => item.ContainsKey("TokenRejectionReason")));
+            Assert.Equal("INSUFFICIENT_REMAINING_VALIDITY", entry["TokenRejectionReason"]);
+            var now = Assert.IsType<DateTime>(entry["CurrentUtc"]);
+            var expiry = Assert.IsType<DateTime>(entry["ExpiresUtc"]);
+            Assert.Equal(minimumValidity.TotalSeconds, Assert.IsType<double>(entry["RequiredValiditySeconds"]));
+            Assert.Equal(now.Add(minimumValidity), Assert.IsType<DateTime>(entry["RequiredValidUntilUtc"]));
+            Assert.Equal((expiry - now).TotalSeconds, Assert.IsType<double>(entry["RemainingValiditySeconds"]));
+        }
+        string output = string.Join('\n', logs.Messages);
+        foreach (string secret in new[] { jwt, "LOGIN-NAME", "LOGIN-SECRET" })
+            Assert.DoesNotContain(secret, output);
+    }
+
+    [Fact]
+    public async Task DefaultJobBudgetAcceptsFreshOneHourTokenThroughSubmission()
+    {
+        using var rsa = RSA.Create(2048);
+        string jwt = Token(new RsaSecurityKey(rsa) { KeyId = "test" }, "1188", DateTime.UtcNow.AddHours(1));
+        var options = new TranscriptionOptions
+        {
+            Enabled = true, DeepgramApiKey = "DEEPGRAM-SECRET",
+            Identity = Options().Identity, Twilio = Options().Twilio
+        };
+        var work = Work();
+        Assert.Equal(45, work.CallbackWaitMinutes);
+        Assert.Equal(600, options.SubmissionTimeoutSeconds);
+        Assert.Equal(3305, work.CallbackWaitMinutes * 60 + options.SubmissionTimeoutSeconds + 5);
+        var events = new List<string>();
+        var repository = new SubmissionRepository(events);
+        var providers = new Providers(events);
+        var tokens = new CallbackTokenClient(IdentityFactory(jwt, Jwks(rsa)), options);
+        var service = new TranscriptionSubmissionService(repository, tokens, providers, providers, options);
+
+        var result = await service.SubmitAsync(work, "worker", default);
+
+        Assert.Equal("accepted", result.Outcome);
+        Assert.Equal(["media", "create", "begin", "post", "save"], events);
+        Assert.Equal(SHA256.HashData(Encoding.UTF8.GetBytes(jwt)), repository.Hash);
+    }
+
+    [Theory]
     [InlineData("issuer")]
     [InlineData("audience")]
     [InlineData("key")]
@@ -263,9 +564,15 @@ public sealed class TranscriptionHttpTests
             SigningCredentials = new(new RsaSecurityKey(invalid == "key" ? other : rsa) { KeyId = "test" }, "RS256")
         };
         string jwt = new JsonWebTokenHandler { SetDefaultTimesOnTokenCreation = false }.CreateToken(descriptor);
-        var error = await Assert.ThrowsAsync<TranscriptionException>(() => new CallbackTokenClient(IdentityFactory(jwt, Jwks(rsa)), Options()).AcquireAsync(TimeSpan.FromMinutes(70), default));
+        var logs = new Logs();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logs));
+        var error = await Assert.ThrowsAsync<TranscriptionException>(() => new CallbackTokenClient(IdentityFactory(jwt, Jwks(rsa)), Options(),
+            loggerFactory.CreateLogger<CallbackTokenClient>()).AcquireAsync(TimeSpan.FromMinutes(70), default));
         Assert.Equal(TranscriptionFailure.Validation, error.Failure);
         Assert.DoesNotContain(jwt, error.ToString());
+        Assert.Contains(logs.Messages, text => text.Contains(invalid == "permissions-type"
+            ? "MISSING_OR_INVALID_PERMISSIONS_CLAIM" : "TOKEN_VALIDATION_FAILED", StringComparison.Ordinal));
+        Assert.DoesNotContain(jwt, string.Join('\n', logs.Messages));
     }
 
     [Fact]
@@ -307,13 +614,42 @@ public sealed class TranscriptionHttpTests
     public async Task PersistenceFailuresOrReplayNeverCauseUnmarkedOrRepeatedPost(string failure)
     {
         var events = new List<string>();
+        var logs = new Logs();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logs));
         var repo = new SubmissionRepository(events) { Failure = failure };
         var providers = new Providers(events);
-        var service = new TranscriptionSubmissionService(repo, providers, providers, providers, Options());
+        var service = new TranscriptionSubmissionService(repo, providers, providers, providers, Options(),
+            loggerFactory.CreateLogger<TranscriptionSubmissionService>());
         var result = await service.SubmitAsync(Work(), "worker", default);
         Assert.Equal(failure == "save", events.Contains("post"));
         if (failure == "save") Assert.Equal(TranscriptionFailure.Persistence, result.Failure);
         if (failure is "blocked" or "begin") Assert.DoesNotContain("save", events);
+        Assert.NotEmpty(logs.Messages);
+        Assert.DoesNotContain("CALLBACK.HEADER.SIGNATURE", string.Join('\n', logs.Messages));
+    }
+
+    [Theory]
+    [InlineData("identity", "IDENTITY_UNAVAILABLE")]
+    [InlineData("media", "MEDIA_UNAVAILABLE")]
+    public async Task DependencyErrorsAreLoggedBeforeMaskingWithoutSecrets(string stage, string code)
+    {
+        var logs = new Logs();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logs));
+        var factory = new Factory((_, _) => throw new HttpRequestException("LOGIN-SECRET TWILIO-SECRET secret transcript"));
+        TranscriptionException failure;
+        if (stage == "identity")
+            failure = await Assert.ThrowsAsync<TranscriptionException>(() =>
+                new CallbackTokenClient(factory, Options(), loggerFactory.CreateLogger<CallbackTokenClient>())
+                    .AcquireAsync(TimeSpan.FromMinutes(1), default));
+        else
+            failure = await Assert.ThrowsAsync<TranscriptionException>(() =>
+                new TwilioRecordingClient(factory, Options(), loggerFactory.CreateLogger<TwilioRecordingClient>())
+                    .OpenAsync(Work(), default));
+        Assert.Equal(code, failure.ErrorCode);
+        Assert.Contains(logs.Messages, text => text.Contains("HttpRequestException", StringComparison.Ordinal));
+        string output = string.Join('\n', logs.Messages);
+        foreach (string secret in new[] { "LOGIN-SECRET", "TWILIO-SECRET", "secret transcript", "CALLBACK.HEADER.SIGNATURE" })
+            Assert.DoesNotContain(secret, output);
     }
 
     [Fact]
@@ -335,7 +671,8 @@ public sealed class TranscriptionHttpTests
         var error = await Assert.ThrowsAsync<TranscriptionException>(() => provider.GetRequiredService<IDeepgramClient>().SubmitAsync(audio, Snapshot, Identity(), Credential(), default));
         string output = string.Join('\n', logger.Messages) + error;
         foreach (string secret in new[] { "DEEPGRAM-SECRET", "CALLBACK.HEADER.SIGNATURE", "secret transcript", "callback=" }) Assert.DoesNotContain(secret, output);
-        Assert.Empty(logger.Messages);
+        Assert.Contains(logger.Messages, text => text.Contains("Deepgram upload", StringComparison.Ordinal) && text.Contains("HttpRequestException", StringComparison.Ordinal));
+        Assert.DoesNotContain(logger.Messages, text => text.Contains("Start processing HTTP request", StringComparison.Ordinal));
     }
 
     private static string Token(SecurityKey key, string permissions, DateTime expires) => new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
@@ -348,9 +685,11 @@ public sealed class TranscriptionHttpTests
     private static Factory IdentityFactory(string jwt, string jwks, string root = "https://identity.example") => new(async (request, cancellationToken) =>
     {
         if (request.Method == HttpMethod.Get) { Assert.Equal(root + "/.well-known/jwks.json", request.RequestUri!.AbsoluteUri); return Json(jwks); }
-        Assert.Equal(root + "/accounts/authenticate2", request.RequestUri!.AbsoluteUri);
-        Assert.Equal("{\"signInName\":\"LOGIN-NAME\",\"password\":\"LOGIN-SECRET\"}", await request.Content!.ReadAsStringAsync(cancellationToken));
-        return Json(JsonSerializer.Serialize(new { isSuccessful = true, jwt }));
+        Assert.Equal(HttpMethod.Post, request.Method);
+        Assert.Equal(root + "/security/v2/auth/authenticate", request.RequestUri!.AbsoluteUri);
+        Assert.Equal("application/json", request.Content!.Headers.ContentType!.MediaType);
+        Assert.Equal("{\"signInname\":\"LOGIN-NAME\",\"password\":\"LOGIN-SECRET\"}", await request.Content.ReadAsStringAsync(cancellationToken));
+        return Json(JsonSerializer.Serialize(new { jwt }));
     });
     private sealed class Handler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
     { protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => send(request, cancellationToken); }
@@ -383,10 +722,16 @@ public sealed class TranscriptionHttpTests
     private sealed class Logs : ILoggerProvider, ILogger
     {
         public List<string> Messages { get; } = [];
+        public List<Dictionary<string, object?>> Entries { get; } = [];
         public ILogger CreateLogger(string categoryName) => this;
         public void Dispose() { }
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;
-        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) => Messages.Add(formatter(state, exception));
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            Messages.Add(formatter(state, exception));
+            if (state is IEnumerable<KeyValuePair<string, object?>> properties)
+                Entries.Add(properties.ToDictionary(item => item.Key, item => item.Value));
+        }
     }
 }

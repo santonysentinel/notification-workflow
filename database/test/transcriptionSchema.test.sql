@@ -28,9 +28,13 @@ BEGIN TRY
     INSERT dbo.AutomatedCallTranscriptionJobs (RecordingId, ConfigurationVersion, ConfigurationJSON)
     VALUES (@RecordingId, 1, N'{"model":"nova-3","utterances":true,"multichannel":true}');
     DECLARE @JobId int = SCOPE_IDENTITY();
-    INSERT dbo.AutomatedCallTranscriptionJobs (RecordingId, ConfigurationVersion, ConfigurationJSON)
-    VALUES (@RecordingId, 2, N'{"model":"nova-3","language":"en"}');
+    IF NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallTranscriptionJobs WHERE SystemID = @JobId AND CallbackWaitMinutes = 45)
+        THROW 51000, 'New jobs must default to a 45-minute callback budget; deploy 041.sql.', 1;
+    INSERT dbo.AutomatedCallTranscriptionJobs (RecordingId, ConfigurationVersion, ConfigurationJSON, CallbackWaitMinutes)
+    VALUES (@RecordingId, 2, N'{"model":"nova-3","language":"en"}', 60);
     DECLARE @OtherJobId int = SCOPE_IDENTITY();
+    IF NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallTranscriptionJobs WHERE SystemID = @OtherJobId AND CallbackWaitMinutes = 60)
+        THROW 51000, 'Explicit per-job callback policy must remain supported.', 1;
     INSERT dbo.AutomatedCallTranscriptionSubmissions
         (TranscriptionJobId, RecordingId, AttemptNumber, CallbackTokenHash, CallbackDeadlineDateTime)
     VALUES (@JobId, @RecordingId, 1, HASHBYTES('SHA2_256', 'test-only-token'), DATEADD(hour, 1, SYSUTCDATETIME()));

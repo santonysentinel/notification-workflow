@@ -14,6 +14,7 @@ public sealed class TranscriptionOptions
     public int MaxDurationSeconds { get; init; } = 3600;
     public long MaxAudioBytes { get; init; } = 128 * 1024 * 1024;
     public bool RequireModelImprovementOptOut { get; init; } = true;
+    public bool LogSanitizedProviderErrorMessages { get; init; }
     public TranscriptionIdentityOptions Identity { get; init; } = new();
     public TranscriptionTwilioOptions Twilio { get; init; } = new();
 
@@ -46,6 +47,8 @@ public sealed class TranscriptionOptions
 
 public sealed class TranscriptionIdentityOptions
 {
+    internal const string AuthenticationPath = "/security/v2/auth/authenticate";
+
     public string BaseUrl { get; init; } = "http://172.27.112.243:8085";
     public string JwtJwksPath { get; init; } = "/.well-known/jwks.json";
     public bool AllowInsecureIdentityHttp { get; init; }
@@ -73,7 +76,7 @@ public sealed class TranscriptionIdentityOptions
 
     internal void Validate()
     {
-        _ = Endpoint("accounts/authenticate2");
+        _ = Endpoint(AuthenticationPath);
         _ = Endpoint(JwtJwksPath);
         if (string.IsNullOrWhiteSpace(SignInName) || string.IsNullOrWhiteSpace(Password) ||
             !TranscriptionOptions.DecimalId(PermissionId) || string.IsNullOrWhiteSpace(Issuer) || string.IsNullOrWhiteSpace(Audience) ||
@@ -105,6 +108,10 @@ public sealed class TranscriptionException(TranscriptionFailure failure, string 
     public TranscriptionFailure Failure { get; } = failure;
     public string ErrorCode { get; } = errorCode;
     public bool Retryable { get; } = retryable;
+    internal int? ProviderHttpStatus { get; init; }
+    internal bool? ProviderMessageLoggingEnabled { get; init; }
+    internal string? SanitizedProviderMessage { get; init; }
+    internal string? SanitizedProviderRequest { get; init; }
 }
 
 public sealed class CallbackCredential
@@ -126,7 +133,7 @@ public sealed class TranscriptionWork
     public DateTime? SendStartedDateTime { get; init; }
     public DateTime? CallbackDeadlineDateTime { get; init; }
     public string ConfigurationJSON { get; init; } = "";
-    public int CallbackWaitMinutes { get; init; } = 60;
+    public int CallbackWaitMinutes { get; init; } = 45;
     public string Provider { get; init; } = "Twilio";
     public string AccountSid { get; init; } = "";
     public string RecordingSid { get; init; } = "";

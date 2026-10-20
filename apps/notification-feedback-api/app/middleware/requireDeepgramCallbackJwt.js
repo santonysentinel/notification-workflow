@@ -4,6 +4,16 @@ import { sendError } from '../../configure/errors.js';
 
 export const correlationPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 let cachedTrust;
+const unavailableReasons = new Set([
+  'JWKS_URL_INVALID',
+  'JWKS_URL_UNSAFE',
+  'IDENTITY_HTTP_BASE_INVALID',
+  'IDENTITY_HTTP_NOT_ALLOWED',
+  'CALLBACK_TRUST_INVALID',
+  'CALLBACK_KEY_UNAVAILABLE',
+  'CALLBACK_DATABASE_MISSING',
+  'JWKS_VERIFICATION_UNAVAILABLE'
+]);
 
 async function fetchKeys(url, options) {
   const timeout = AbortSignal.timeout(5000);
@@ -45,7 +55,10 @@ export async function verifyDeepgramCallbackJwt(token, config) {
         ? new URL(config.jwksUrl)
         : new URL(config.jwtJwksPath ?? '/.well-known/jwks.json', config.identityBaseUrl);
     } catch {
-      throw Object.assign(new Error('Configuration unavailable'), { status: 503 });
+      throw Object.assign(new Error('Configuration unavailable'), {
+        status: 503,
+        reason: 'JWKS_URL_INVALID'
+      });
     }
     if (
       !['https:', 'http:'].includes(jwksUrl.protocol) ||
@@ -54,7 +67,10 @@ export async function verifyDeepgramCallbackJwt(token, config) {
       jwksUrl.search ||
       jwksUrl.hash
     ) {
-      throw Object.assign(new Error('Configuration unavailable'), { status: 503 });
+      throw Object.assign(new Error('Configuration unavailable'), {
+        status: 503,
+        reason: 'JWKS_URL_UNSAFE'
+      });
     }
     if (jwksUrl.protocol === 'http:') {
       let expected;
@@ -64,10 +80,16 @@ export async function verifyDeepgramCallbackJwt(token, config) {
         expected = new URL(config.jwtJwksPath ?? '/.well-known/jwks.json', base);
         if (expected.origin !== base.origin) throw new Error();
       } catch {
-        throw Object.assign(new Error('Configuration unavailable'), { status: 503 });
+        throw Object.assign(new Error('Configuration unavailable'), {
+          status: 503,
+          reason: 'IDENTITY_HTTP_BASE_INVALID'
+        });
       }
       if (config.allowInsecureIdentityHttp !== true || expected.href !== jwksUrl.href)
-        throw Object.assign(new Error('Configuration unavailable'), { status: 503 });
+        throw Object.assign(new Error('Configuration unavailable'), {
+          status: 503,
+          reason: 'IDENTITY_HTTP_NOT_ALLOWED'
+        });
     }
   }
   if (
@@ -78,7 +100,10 @@ export async function verifyDeepgramCallbackJwt(token, config) {
     !config.audience.trim() ||
     !/^[1-9]\d*$/.test(String(config.permissionId ?? ''))
   ) {
-    throw Object.assign(new Error('Configuration unavailable'), { status: 503 });
+    throw Object.assign(new Error('Configuration unavailable'), {
+      status: 503,
+      reason: 'CALLBACK_TRUST_INVALID'
+    });
   }
   const identity = JSON.stringify([algorithm, config.publicKey ?? jwksUrl.href]);
   if (cachedTrust?.identity !== identity) {
@@ -93,7 +118,10 @@ export async function verifyDeepgramCallbackJwt(token, config) {
           });
       cachedTrust = { identity, key };
     } catch {
-      throw Object.assign(new Error('Configuration unavailable'), { status: 503 });
+      throw Object.assign(new Error('Configuration unavailable'), {
+        status: 503,
+        reason: 'CALLBACK_KEY_UNAVAILABLE'
+      });
     }
   }
   try {
@@ -123,7 +151,8 @@ export async function verifyDeepgramCallbackJwt(token, config) {
       err instanceof TypeError ||
       (jwksUrl && ['ERR_JOSE_GENERIC', 'ERR_JWKS_INVALID', 'ERR_JWK_INVALID'].includes(err?.code));
     throw Object.assign(new Error('Callback verification failed'), {
-      status: unavailable ? 503 : 401
+      status: unavailable ? 503 : 401,
+      reason: unavailable ? 'JWKS_VERIFICATION_UNAVAILABLE' : 'JWT_REJECTED'
     });
   }
 }
@@ -158,8 +187,18 @@ export default function requireDeepgramCallbackJwt({
     try {
       const config = getConfig();
       if (typeof config.database !== 'string' || !config.database.trim())
-        throw Object.assign(new Error('Configuration unavailable'), { status: 503 });
-      await verifyJwt(token, config);
+        throw Object.assign(new Error('Configuration unavailable'), {
+          status: 503,
+          reason: 'CALLBACK_DATABASE_MISSING'
+        });
+      if (config.bypassJwtVerification === true) {
+        req.log?.warn('deepgram.callback.jwt_verification.bypassed', {
+          verificationBypassed: true,
+          correlationId
+        });
+      } else {
+        await verifyJwt(token, config);
+      }
       req.deepgramCallback = {
         correlationId,
         tokenHash: createHash('sha256').update(token, 'utf8').digest(),
@@ -167,6 +206,14 @@ export default function requireDeepgramCallbackJwt({
       };
       return next();
     } catch (err) {
+      if (err?.status === 503) {
+        req.log?.error('deepgram.callback.verification.unavailable', {
+          statusCode: 503,
+          reason: unavailableReasons.has(err.reason)
+            ? err.reason
+            : 'CALLBACK_VERIFICATION_UNAVAILABLE'
+        });
+      }
       return sendError(
         res,
         err?.status === 503 ? 503 : 401,

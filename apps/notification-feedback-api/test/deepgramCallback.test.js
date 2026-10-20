@@ -7,13 +7,47 @@ import requireDeepgramCallbackJwt from '../app/middleware/requireDeepgramCallbac
 import { normalizeDeepgramCallback } from '../app/utils/deepgramTranscription.js';
 import { createHash } from 'node:crypto';
 import sinon from 'sinon';
-import { createDeepgramTranscriptionsRouter } from '../app/routes/deepgramTranscriptions.js';
+import nconf from 'nconf';
+import {
+  createDeepgramTranscriptionsRouter,
+  readDeepgramCallbackConfig
+} from '../app/routes/deepgramTranscriptions.js';
 import requireBearerToken from '../app/middleware/requireBearerToken.js';
 import * as callbackRepository from '../../../pkg/repository/automatedCallRepository.js';
 import { initialize } from '../../../pkg/repository/sqlserver.js';
 
+describe('Deepgram callback bypass configuration', () => {
+  for (const [environment, file, expected] of [
+    [undefined, undefined, false],
+    [undefined, false, false],
+    [undefined, true, true],
+    [undefined, 'true', false],
+    ['true', false, true],
+    ['false', true, false],
+    ['TRUE', true, false],
+    ['1', true, false],
+    ['', true, false]
+  ]) {
+    it(`uses strict opt-in and environment precedence: ${environment}/${file}`, () => {
+      const name = 'DEEPGRAM_CALLBACK_BYPASS_JWT_VERIFICATION';
+      const previous = process.env[name];
+      const get = sinon.stub(nconf, 'get');
+      get.withArgs('deepgram:callback:bypassJwtVerification').returns(file);
+      try {
+        if (environment === undefined) delete process.env[name];
+        else process.env[name] = environment;
+        expect(readDeepgramCallbackConfig().bypassJwtVerification).to.equal(expected);
+      } finally {
+        get.restore();
+        if (previous === undefined) delete process.env[name];
+        else process.env[name] = previous;
+      }
+    });
+  }
+});
+
 describe('Deepgram callback JWT', () => {
-  let keys, config, app;
+  let keys, config, app, log;
   const correlationId = '11111111-1111-4111-8111-111111111111';
   before(async () => {
     keys = await generateKeyPair('RS256');
@@ -28,6 +62,11 @@ describe('Deepgram callback JWT', () => {
       database: 'AutoCallDB'
     };
     app = express();
+    log = { error: sinon.spy(), warn: sinon.spy() };
+    app.use((req, res, next) => {
+      req.log = log;
+      next();
+    });
     app.post('/callback', requireDeepgramCallbackJwt({ getConfig: () => config }), (req, res) =>
       res.json({
         correlationId: req.deepgramCallback.correlationId,
@@ -59,6 +98,112 @@ describe('Deepgram callback JWT', () => {
       correlationId,
       tokenHash: createHash('sha256').update(jwt).digest('hex')
     });
+  });
+  it('bypasses JWT trust, expiry, permission and JWKS checks only when explicitly enabled', async () => {
+    const jwt = await token(
+      { permissions: 'wrong-permission' },
+      { issuer: 'untrusted-issuer', audience: 'untrusted-audience', expiry: 1 }
+    );
+    config = { database: 'AutoCallDB', bypassJwtVerification: true };
+    const fetchStub = sinon.stub(globalThis, 'fetch').rejects(new Error('Must not fetch keys'));
+    try {
+      const response = await send(jwt);
+      expect(response.status).to.equal(200);
+      expect(response.body.tokenHash).to.equal(createHash('sha256').update(jwt).digest('hex'));
+      expect(fetchStub.called).to.equal(false);
+      expect(log.warn.firstCall.args).to.deep.equal([
+        'deepgram.callback.jwt_verification.bypassed',
+        { verificationBypassed: true, correlationId }
+      ]);
+      expect(JSON.stringify(log.warn.args)).not.to.contain(jwt);
+    } finally {
+      fetchStub.restore();
+    }
+  });
+  for (const value of [undefined, false, null, 'true', 1]) {
+    it(`does not bypass JWT verification for a non-boolean opt-in: ${value}`, async () => {
+      const jwt = await token({}, { expiry: 1 });
+      config.bypassJwtVerification = value;
+      expect((await send(jwt)).status).to.equal(401);
+      expect(log.warn.called).to.equal(false);
+    });
+  }
+  it('still requires a database when JWT verification is bypassed', async () => {
+    const jwt = await token();
+    config.bypassJwtVerification = true;
+    config.database = '';
+    expect((await send(jwt)).status).to.equal(503);
+    expect(log.warn.called).to.equal(false);
+    expect(log.error.firstCall.args[1].reason).to.equal('CALLBACK_DATABASE_MISSING');
+  });
+  it('retains Basic parsing, persisted token binding, payload checks and private-route protection during bypass', async () => {
+    const trustedConfig = { ...config };
+    const jwt = await token({}, { expiry: 1 });
+    const tokenHash = createHash('sha256').update(jwt).digest();
+    config = { database: 'AutoCallDB', bypassJwtVerification: true };
+    const submission = {
+      RecordingId: 7,
+      CallbackTokenHash: tokenHash,
+      Channels: 1,
+      ConfigurationJSON: '{"model":"nova-3"}'
+    };
+    const repo = {
+      getDeepgramCallbackContext: sinon.stub().resolves(submission),
+      completeDeepgramCallback: sinon.stub().resolves({ Outcome: 'recorded', Applied: true })
+    };
+    app = express();
+    app.use((req, res, next) => {
+      req.log = log;
+      next();
+    });
+    app.use(
+      '/webhooks/deepgram/transcriptions',
+      createDeepgramTranscriptionsRouter({ repository: repo, getConfig: () => config })
+    );
+    app.use(requireBearerToken());
+    app.get('/private', (_req, res) => res.sendStatus(200));
+    const path = '/webhooks/deepgram/transcriptions/completed';
+    const body = {
+      metadata: { request_id: '33333333-3333-4333-8333-333333333333', channels: 1, duration: 2 },
+      results: { channels: [{ alternatives: [{ transcript: '' }] }], utterances: [] }
+    };
+    const authorization = 'Basic ' + Buffer.from(correlationId + ':' + jwt).toString('base64');
+    const callback = (payload = body, auth = authorization) =>
+      request(app).post(path).set('Authorization', auth).send(payload);
+    await callback().expect(204);
+    expect(repo.completeDeepgramCallback.firstCall.args[0].tokenHash.equals(tokenHash)).to.equal(
+      true
+    );
+    await callback(
+      body,
+      'Basic ' + Buffer.from(correlationId + ':not-a-jwt').toString('base64')
+    ).expect(401);
+    await callback(
+      body,
+      'Basic ' + Buffer.from('bad-correlation:' + jwt).toString('base64')
+    ).expect(401);
+    await request(app).post(path).send(body).expect(401);
+    await request(app)
+      .post(path)
+      .set('Authorization', [authorization, authorization])
+      .send(body)
+      .expect(401);
+    expect(repo.getDeepgramCallbackContext.callCount).to.equal(1);
+    await callback({}).expect(400);
+    repo.getDeepgramCallbackContext.resolves({
+      ...submission,
+      CallbackTokenHash: Buffer.alloc(32)
+    });
+    await callback().expect(401);
+    repo.getDeepgramCallbackContext.resolves(null);
+    await callback().expect(401);
+    expect(repo.completeDeepgramCallback.callCount).to.equal(1);
+    await request(app).get('/private').set('Authorization', authorization).expect(401);
+    repo.getDeepgramCallbackContext.resetHistory();
+    config = { ...trustedConfig, bypassJwtVerification: false };
+    await callback().expect(401);
+    expect(repo.getDeepgramCallbackContext.called).to.equal(false);
+    expect(JSON.stringify(log.warn.args)).not.to.contain(jwt);
   });
   for (const claims of [
     { permissions: '11188' },
@@ -150,6 +295,85 @@ describe('Deepgram callback JWT', () => {
     config.publicKey = await exportSPKI(keys.publicKey);
     config.algorithm = 'HS256';
     await send(jwt).then((response) => expect(response.status).to.equal(503));
+  });
+  for (const [reason, patch] of [
+    ['CALLBACK_DATABASE_MISSING', { database: '' }],
+    ['JWKS_URL_INVALID', { publicKey: undefined, identityBaseUrl: undefined }],
+    [
+      'JWKS_URL_UNSAFE',
+      { publicKey: undefined, jwksUrl: 'https://user:secret@identity.example/keys' }
+    ],
+    [
+      'IDENTITY_HTTP_BASE_INVALID',
+      {
+        publicKey: undefined,
+        jwksUrl: 'http://identity.example/keys',
+        identityBaseUrl: 'http://user:secret@identity.example'
+      }
+    ],
+    [
+      'IDENTITY_HTTP_NOT_ALLOWED',
+      { publicKey: undefined, identityBaseUrl: 'http://identity.example' }
+    ],
+    ['CALLBACK_TRUST_INVALID', { permissionId: '' }],
+    ['CALLBACK_KEY_UNAVAILABLE', { publicKey: 'invalid public key' }]
+  ]) {
+    it(`logs a safe reason for unavailable callback verification: ${reason}`, async () => {
+      const jwt = await token();
+      Object.assign(config, patch);
+      const response = await send(jwt);
+      expect(response.status).to.equal(503);
+      expect(log.error.calledOnce).to.equal(true);
+      expect(log.error.firstCall.args).to.deep.equal([
+        'deepgram.callback.verification.unavailable',
+        { statusCode: 503, reason }
+      ]);
+      const output = JSON.stringify(log.error.args) + JSON.stringify(response.body);
+      expect(output).not.to.contain(jwt);
+      expect(output).not.to.contain('user:secret');
+    });
+  }
+  it('logs JWKS unavailability without exposing the dependency response or callback JWT', async () => {
+    const jwt = await token();
+    config.publicKey = undefined;
+    config.jwksUrl = 'https://identity.example/diagnostic-unavailable-keys';
+    const fetchStub = sinon
+      .stub(globalThis, 'fetch')
+      .resolves(new Response('SECRET dependency response', { status: 503 }));
+    try {
+      expect((await send(jwt)).status).to.equal(503);
+      expect(log.error.firstCall.args).to.deep.equal([
+        'deepgram.callback.verification.unavailable',
+        { statusCode: 503, reason: 'JWKS_VERIFICATION_UNAVAILABLE' }
+      ]);
+      expect(JSON.stringify(log.error.args)).not.to.contain(jwt);
+      expect(JSON.stringify(log.error.args)).not.to.contain('SECRET');
+    } finally {
+      fetchStub.restore();
+    }
+  });
+  it('does not echo unrecognized dependency reason codes into logs', async () => {
+    const jwt = await token();
+    app = express();
+    app.use((req, res, next) => {
+      req.log = log;
+      next();
+    });
+    app.post(
+      '/callback',
+      requireDeepgramCallbackJwt({
+        getConfig: () => config,
+        verifyJwt: async () => {
+          throw Object.assign(new Error(jwt), { status: 503, reason: jwt });
+        }
+      })
+    );
+    expect((await send(jwt)).status).to.equal(503);
+    expect(log.error.firstCall.args).to.deep.equal([
+      'deepgram.callback.verification.unavailable',
+      { statusCode: 503, reason: 'CALLBACK_VERIFICATION_UNAVAILABLE' }
+    ]);
+    expect(JSON.stringify(log.error.args)).not.to.contain(jwt);
   });
   it('rejects a different signing key, a symmetric token, missing expiry and a future not-before', async () => {
     const claims = {

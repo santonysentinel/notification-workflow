@@ -26,6 +26,106 @@ public sealed class TranscriptionWorkerTests
     { JobId = claim.SystemID, LeaseToken = claim.LeaseToken, RecordingId = claim.SystemID, ConfigurationJSON = Snapshot, DurationSeconds = duration, CurrentSubmissionId = status is null ? null : 1, SubmissionStatus = status };
 
     [Fact]
+    public async Task PassCountIsLoggedBeforeAnyItemAndWorkMetadataIsSafe()
+    {
+        var repository = new Lifecycle(1, 2);
+        var logs = new Logs();
+        using var worker = new TranscriptionWorker(repository, new Submission(repository), Options(2), Providers(), logs);
+        await worker.RunCycleAsync(default);
+        await Finish(worker.DrainAsync());
+        var count = Assert.Single(logs.Entries.Where(entry => entry.Properties.ContainsKey("ClaimedJobs")));
+        Assert.Equal(2, count.Properties["ClaimedJobs"]);
+        int countIndex = logs.Messages.FindIndex(text => text.Contains("read 2 jobs", StringComparison.Ordinal));
+        int itemIndex = logs.Messages.FindIndex(text => text.Contains("processing job", StringComparison.Ordinal));
+        Assert.True(countIndex >= 0 && itemIndex > countIndex);
+        var rows = logs.Entries.Where(entry => entry.Properties.ContainsKey("CallbackWaitMinutes")).ToArray();
+        Assert.Equal(2, rows.Length);
+        Assert.Equal(new[] { 1, 2 }, rows.Select(entry => Assert.IsType<int>(entry.Properties["JobId"])));
+        Assert.All(rows, entry =>
+        {
+            Assert.Equal(entry.Properties["JobId"], entry.Properties["RecordingId"]);
+            Assert.Equal(1, entry.Properties["DurationSeconds"]);
+            Assert.Equal(45, entry.Properties["CallbackWaitMinutes"]);
+            Assert.Null(entry.Exception);
+        });
+        string output = string.Join('\n', logs.Messages);
+        Assert.DoesNotContain(Snapshot, output);
+        Assert.DoesNotContain("test-key", output);
+        Assert.DoesNotContain("LeaseToken", output);
+        Assert.DoesNotContain("https://", output);
+    }
+
+    [Fact]
+    public async Task IdleAndBusyPassesBothLogExplicitZeroReadCounts()
+    {
+        var idleLogs = new Logs();
+        var idle = new Lifecycle();
+        using var idleWorker = new TranscriptionWorker(idle, new Submission(idle), Options(), Providers(), idleLogs);
+        await idleWorker.RunCycleAsync(default);
+        Assert.Equal(0, Assert.Single(idleLogs.Entries.Where(entry => entry.Properties.ContainsKey("ClaimedJobs"))).Properties["ClaimedJobs"]);
+
+        var gate = Signal();
+        var busyLogs = new Logs();
+        var busy = new Lifecycle(1, 2);
+        var submission = new Submission(busy) { Handler = (_, _) => gate.Task };
+        using var busyWorker = new TranscriptionWorker(busy, submission, Options(), Providers(), busyLogs);
+        await busyWorker.RunCycleAsync(default);
+        await busyWorker.RunCycleAsync(default);
+        var counts = busyLogs.Entries.Where(entry => entry.Properties.ContainsKey("ClaimedJobs")).ToArray();
+        Assert.Equal(new[] { 1, 0 }, counts.Select(entry => Assert.IsType<int>(entry.Properties["ClaimedJobs"])));
+        Assert.Contains(busyLogs.Messages, text => text.Contains("claim skipped", StringComparison.Ordinal));
+        Assert.Single(busy.Capacities);
+        gate.SetResult();
+        await Finish(busyWorker.DrainAsync());
+    }
+
+    [Fact]
+    public async Task RenewalExceptionIsLoggedBeforeOwnershipIsAbandoned()
+    {
+        var logs = new Logs();
+        var repository = new Lifecycle(1)
+        {
+            Renewal = (_, _) => Task.FromException<bool>(new InvalidOperationException("TOKEN secret transcript"))
+        };
+        var submission = new Submission(repository);
+        using var worker = new TranscriptionWorker(repository, submission, Options(), Providers(), logs);
+        await worker.RunCycleAsync(default);
+        await Finish(worker.DrainAsync());
+        var entry = Assert.Single(logs.Entries.Where(entry => entry.Level == LogLevel.Error));
+        Assert.Equal("Lease renewal", entry.Properties["Operation"]);
+        Assert.Equal(typeof(InvalidOperationException).FullName, entry.Properties["FailureType"]);
+        Assert.NotNull(entry.Properties["FailureStackTrace"]);
+        Assert.Equal(1, entry.Properties["JobId"]);
+        Assert.Equal(0, submission.Calls);
+        Assert.DoesNotContain("TOKEN", string.Join('\n', logs.Messages));
+    }
+
+    [Fact]
+    public void DiagnosticsIncludeClassifiedCodesAndInnerStacksButNeverRawMessages()
+    {
+        var logs = new Logs();
+        void ThrowInner() => throw new HttpRequestException("TOKEN secret audio URL", null, System.Net.HttpStatusCode.BadGateway);
+        var inner = Assert.Throws<HttpRequestException>(ThrowInner);
+        void ThrowOuter() => throw new InvalidOperationException("secret transcript", inner);
+        var outer = Assert.Throws<InvalidOperationException>(ThrowOuter);
+        TranscriptionDiagnostics.Failure(logs, "Test failure", outer, 1, 7);
+        Assert.Equal(2, logs.Entries.Count);
+        Assert.Equal(502, logs.Entries[1].Properties["HttpStatus"]);
+        Assert.All(logs.Entries, entry =>
+        {
+            Assert.NotNull(entry.Properties["FailureStackTrace"]);
+            Assert.Null(entry.Exception);
+        });
+        TranscriptionDiagnostics.Failure(logs, "Test code",
+            new TranscriptionException(TranscriptionFailure.TransientPreparation, "IDENTITY_TIMEOUT", true), 1, 7);
+        Assert.Equal("IDENTITY_TIMEOUT", logs.Entries[2].Properties["ErrorCode"]);
+        Assert.Equal(true, logs.Entries[2].Properties["Retryable"]);
+        string output = string.Join('\n', logs.Messages);
+        Assert.DoesNotContain("TOKEN", output);
+        Assert.DoesNotContain("secret transcript", output);
+    }
+
+    [Fact]
     public async Task QueueMetricsAreBoundedTagFreeAndWithholdStaleSamples()
     {
         var clock = new FakeTimeProvider();
@@ -425,6 +525,9 @@ public sealed class TranscriptionWorkerTests
         Assert.True(repository.Recoveries >= 2);
         Assert.DoesNotContain("TOKEN", string.Join('\n', logs.Messages));
         Assert.Contains(logs.Messages, text => text.Contains("next poll", StringComparison.Ordinal));
+        Assert.Contains(logs.Messages, text => text.Contains(" started;", StringComparison.Ordinal));
+        Assert.Contains(logs.Messages, text => text.EndsWith(" stopped", StringComparison.Ordinal));
+        Assert.Contains(logs.Entries, entry => entry.Level == LogLevel.Error && entry.Properties.ContainsKey("FailureStackTrace"));
     }
 
     [Theory]
@@ -444,6 +547,9 @@ public sealed class TranscriptionWorkerTests
         await worker.RunCycleAsync(default);
         await Finish(worker.DrainAsync());
         Assert.DoesNotContain("TOKEN", string.Join('\n', logs.Messages));
+        var entry = Assert.Single(logs.Entries.Where(entry => entry.Level == LogLevel.Error));
+        Assert.Equal(1, entry.Properties["JobId"]);
+        Assert.NotNull(entry.Properties["FailureStackTrace"]);
     }
 
     [Theory]
@@ -549,10 +655,18 @@ public sealed class TranscriptionWorkerTests
 
     private sealed class Logs : ILogger<TranscriptionWorker>
     {
+        public sealed record Entry(LogLevel Level, IReadOnlyDictionary<string, object?> Properties, Exception? Exception);
         public List<string> Messages { get; } = [];
+        public List<Entry> Entries { get; } = [];
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-        { lock (Messages) Messages.Add(formatter(state, exception)); }
+        {
+            lock (Messages)
+            {
+                Messages.Add(formatter(state, exception));
+                Entries.Add(new(logLevel, ((IEnumerable<KeyValuePair<string, object?>>)state!).ToDictionary(pair => pair.Key, pair => pair.Value), exception));
+            }
+        }
     }
 }

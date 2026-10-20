@@ -11,7 +11,9 @@ import { Logger as logger, MorganAccessStream } from './loggers.js';
 import routes from '../app/routes/routes.js';
 import twilioVoiceRouter from '../app/routes/twilioVoice.js';
 import twilioRecordingsRouter from '../app/routes/twilioRecordings.js';
-import deepgramTranscriptionsRouter from '../app/routes/deepgramTranscriptions.js';
+import deepgramTranscriptionsRouter, {
+  readDeepgramCallbackConfig
+} from '../app/routes/deepgramTranscriptions.js';
 import { mountRecordingContentRoute } from '../app/routes/recordingContent.js';
 import { setupDefaultMetricsConfig, initializeMetrics } from '../app/services/metricsService.js';
 import {
@@ -343,6 +345,13 @@ setupDefaultMetricsConfig();
 nconf.file({
   file: `./${configFile}`
 });
+
+if (readDeepgramCallbackConfig().bypassJwtVerification) {
+  logger.warn(
+    '[SECURITY WARNING] Deepgram callback JWT verification bypass is ENABLED; disable after temporary diagnostics',
+    { event: 'deepgram.callback.jwt_verification.bypass.enabled' }
+  );
+}
 
 // Initialize metrics client when enabled
 if (nconf.get('logging:enableMetrics') !== false) {
