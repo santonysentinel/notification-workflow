@@ -695,6 +695,37 @@ describe('Deepgram callback normalization', () => {
       language: 'en'
     });
   });
+  it('accepts provider timestamp rounding beyond the precise audio duration without changing timestamps', () => {
+    const body = makeBody();
+    body.metadata.duration = 13.667937;
+    const utterance = body.results.utterances[0];
+    utterance.start = utterance.words[0].start = 13.28;
+    utterance.end = utterance.words[0].end = 13.679999;
+
+    const result = normalizeDeepgramCallback(body, context);
+    expect(result).not.to.equal(null);
+    expect(result.success).to.equal(true);
+    expect(result.transcripts[0]).to.include({
+      startTimeMilliseconds: 13280,
+      endTimeMilliseconds: 13680
+    });
+    expect(JSON.parse(result.transcripts[0].wordsJSON)[0].end).to.equal(13.679999);
+    expect(result.response).to.equal(body);
+    expect(body.metadata.duration).to.equal(13.667937);
+  });
+  for (const [end, accepted] of [
+    [2.05, true],
+    [2.050001, false],
+    [3, false],
+    [NaN, false],
+    [Infinity, false]
+  ]) {
+    it(`bounds utterance duration rounding to 50 milliseconds: end ${end}`, () => {
+      const body = makeBody();
+      body.results.utterances[0].end = end;
+      expect(normalizeDeepgramCallback(body, context) !== null).to.equal(accepted);
+    });
+  }
   it('hashes equivalent JSON consistently regardless of object key order', () => {
     const body = makeBody();
     expect(

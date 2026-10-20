@@ -100,6 +100,11 @@ BEGIN TRY
     UPDATE dbo.AutomatedCallTranscriptionJobs
     SET Status = 'COMPLETED', CompletedSubmissionId = @CompletedSubmissionId, CompletedDateTime = SYSUTCDATETIME()
     WHERE SystemID = @CompletedJobId;
+    INSERT dbo.AutomatedCallTranscripts
+        (CallId, RecordingId, SubmissionId, Sentence, AudioChannel, StartTimeMilliseconds, EndTimeMilliseconds, TranscriptText)
+    VALUES
+        (@CallId, @RecordingId, @CompletedSubmissionId, 1, 1, 1250, 2500, N'world'),
+        (@CallId, @RecordingId, @CompletedSubmissionId, 0, 0, 0, 1000, N'Hello');
 
     INSERT dbo.AutomatedCallTranscriptionJobs
         (RecordingId, ConfigurationVersion, ConfigurationJSON, Status, AttemptCount, LastErrorCode)
@@ -208,21 +213,51 @@ BEGIN TRY
         (
             SELECT 1 FROM OPENJSON(@Transcriptions)
             WITH (TranscriptionJobId int, RecordingId int, ConfigurationVersion int,
-                  TranscriptionStatus varchar(20), CompletedSubmissionId int, SubmissionStatus varchar(20))
+                  TranscriptionStatus varchar(20), CompletedSubmissionId int, SubmissionStatus varchar(20),
+                  Messages nvarchar(max) AS JSON)
             WHERE TranscriptionJobId = @CompletedJobId AND RecordingId = @RecordingId AND ConfigurationVersion = 1
               AND TranscriptionStatus = 'COMPLETED' AND CompletedSubmissionId = @CompletedSubmissionId
               AND SubmissionStatus = 'COMPLETED'
+              AND (SELECT COUNT(*) FROM OPENJSON(Messages)) = 2
         )
         OR NOT EXISTS
         (
             SELECT 1 FROM OPENJSON(@Transcriptions)
             WITH (TranscriptionJobId int, ConfigurationVersion int, TranscriptionStatus varchar(20),
-                  SubmissionId int, SubmissionStatus varchar(20), SubmissionAttemptNumber int, SubmissionErrorCode varchar(100))
+                  SubmissionId int, SubmissionStatus varchar(20), SubmissionAttemptNumber int, SubmissionErrorCode varchar(100),
+                  Messages nvarchar(max) AS JSON)
             WHERE TranscriptionJobId = @FailedJobId AND ConfigurationVersion = 2 AND TranscriptionStatus = 'FAILED'
               AND SubmissionId = @LatestSubmissionId AND SubmissionStatus = 'FAILED'
               AND SubmissionAttemptNumber = 2 AND SubmissionErrorCode = 'LATEST_ERROR'
+              AND Messages = N'[]'
         )
         THROW 51000, 'Every transcription configuration must retain its job status and latest submission status.', 1;
+
+    DECLARE @Messages nvarchar(max);
+    SELECT @Messages = Messages
+    FROM OPENJSON(@Transcriptions)
+    WITH (TranscriptionJobId int, Messages nvarchar(max) AS JSON)
+    WHERE TranscriptionJobId = @CompletedJobId;
+
+    IF NOT EXISTS
+    (
+        SELECT 1 FROM OPENJSON(@Messages) AS message
+        CROSS APPLY OPENJSON(message.value)
+        WITH (Sentence int, AudioChannel int, StartTimeMilliseconds int, EndTimeMilliseconds int, TranscriptText nvarchar(max)) AS detail
+        WHERE message.[key] = '0' AND detail.Sentence = 0 AND detail.AudioChannel = 0
+          AND detail.StartTimeMilliseconds = 0 AND detail.EndTimeMilliseconds = 1000
+          AND detail.TranscriptText = N'Hello'
+    )
+        OR NOT EXISTS
+        (
+            SELECT 1 FROM OPENJSON(@Messages) AS message
+            CROSS APPLY OPENJSON(message.value)
+            WITH (Sentence int, AudioChannel int, StartTimeMilliseconds int, EndTimeMilliseconds int, TranscriptText nvarchar(max)) AS detail
+            WHERE message.[key] = '1' AND detail.Sentence = 1 AND detail.AudioChannel = 1
+              AND detail.StartTimeMilliseconds = 1250 AND detail.EndTimeMilliseconds = 2500
+              AND detail.TranscriptText = N'world'
+        )
+        THROW 51000, 'Messages must be ordered and retain each sentence, channel, text, and recording-relative millisecond timestamps.', 1;
 
     DELETE @Result;
     INSERT @Result EXEC dbo.automatedcalls_GetAllCallForPOGroup 'missing-group', @Start, @End;

@@ -76,7 +76,20 @@ BEGIN
                 latest.AttemptNumber AS SubmissionAttemptNumber,
                 latest.SubmittedDateTime,
                 latest.CallbackReceivedDateTime,
-                latest.LastErrorCode AS SubmissionErrorCode
+                latest.LastErrorCode AS SubmissionErrorCode,
+                -- Message timestamps are offsets from the start of the recording.
+                JSON_QUERY(COALESCE((
+                    SELECT
+                        t.Sentence,
+                        t.AudioChannel,
+                        t.StartTimeMilliseconds,
+                        t.EndTimeMilliseconds,
+                        t.TranscriptText
+                    FROM dbo.AutomatedCallTranscripts AS t
+                    WHERE t.SubmissionId = j.CompletedSubmissionId
+                    ORDER BY t.Sentence, t.AudioChannel
+                    FOR JSON PATH, INCLUDE_NULL_VALUES
+                ), N'[]')) AS Messages
             FROM dbo.AutomatedCallTranscriptionJobs AS j
             INNER JOIN dbo.AutomatedCallRecordings AS r ON r.SystemID = j.RecordingId
             OUTER APPLY

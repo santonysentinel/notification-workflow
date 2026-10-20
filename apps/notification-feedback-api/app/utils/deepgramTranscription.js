@@ -11,6 +11,8 @@ const seconds = (value) =>
 const confidence = (value) =>
   value == null ||
   (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1);
+// Provider timestamps can round slightly past the precise audio duration.
+const durationToleranceSeconds = 0.05;
 
 export function normalizeDeepgramCallback(body, context) {
   if (!object(body)) return null;
@@ -86,7 +88,7 @@ export function normalizeDeepgramCallback(body, context) {
       !seconds(utterance.start) ||
       !seconds(utterance.end) ||
       utterance.end < utterance.start ||
-      utterance.end > duration + 0.01 ||
+      utterance.end > duration + durationToleranceSeconds ||
       !Number.isInteger(utterance.channel) ||
       utterance.channel < 0 ||
       utterance.channel >= channels.length ||
