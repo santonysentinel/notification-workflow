@@ -10,8 +10,11 @@ namespace NotificationWorkflowService.Tests;
 
 public sealed class AutoCallEnqueueTests
 {
+    internal static string RoboCallOptions(int flowId = 12, string? showTranscript = "true", string extra = "")
+        => "{\"participantRoboCall\":{\"FlowId\":" + flowId + ",\"FlowName\":\"DEV Flow 1\"" +
+           (showTranscript is null ? "" : ",\"ShowParticipantResponseTranscript\":" + showTranscript) + extra + "}}";
     private static ActiveAlarm Alarm() => new()
-    { SystemID = 42, HistoryID = 81, ClientID = "oid-42", POGroupNum = "group-42", ProfileID = 7, StateNo = 3, CurrentLoopNumber = 1, FlowId = 12 };
+    { SystemID = 42, HistoryID = 81, ClientID = "oid-42", POGroupNum = "group-42", ProfileID = 7, StateNo = 3, CurrentLoopNumber = 1, OptionsJson = RoboCallOptions() };
     private static AutoCallFlow Flow(string content = "{{OffenderName}} {{alarmname}} {{callId}} {{feedbackBaseUrl}} {{executionId}} {{recipient}}")
         => new(12, "{\"schemaVersion\":1}", "<CallFlow initialStep=\"hello\"><Step id=\"hello\"><Response><Say>" + content + "</Say></Response></Step></CallFlow>");
     private static AutoCallRequest Capture(ActiveAlarm? alarm = null, string platform = "DEV1", AutoCallFlow? flow = null,
@@ -71,8 +74,8 @@ public sealed class AutoCallEnqueueTests
         Assert.NotEqual(original.EnqueueIdempotencyKey, Capture(alarm).EnqueueIdempotencyKey);
         alarm = Alarm(); alarm.StateNo++;
         Assert.NotEqual(original.EnqueueIdempotencyKey, Capture(alarm).EnqueueIdempotencyKey);
-        alarm = Alarm(); alarm.FlowId++;
-        Assert.NotEqual(original.EnqueueIdempotencyKey, Capture(alarm, flow: Flow() with { SystemId = alarm.FlowId }).EnqueueIdempotencyKey);
+        alarm = Alarm(); alarm.OptionsJson = RoboCallOptions(13);
+        Assert.NotEqual(original.EnqueueIdempotencyKey, Capture(alarm, flow: Flow() with { SystemId = 13 }).EnqueueIdempotencyKey);
         alarm = Alarm(); alarm.HistoryID++;
         Assert.NotEqual(original.EnqueueIdempotencyKey, Capture(alarm).EnqueueIdempotencyKey);
         alarm = Alarm(); alarm.ProfileID++;
@@ -87,15 +90,16 @@ public sealed class AutoCallEnqueueTests
     }
 
     [Theory]
+    [InlineData("true", true)]
+    [InlineData("false", false)]
+    [InlineData("null", true)]
     [InlineData(null, true)]
-    [InlineData("{}", true)]
-    [InlineData("{\"postRecordingTranscript\":true}", true)]
-    [InlineData("{\"postRecordingTranscript\":false}", false)]
-    public async Task ProfilePolicyIsCombinedWithOriginalHistoryWithoutChangingOccurrenceIdentity(string? json, bool expected)
+    public async Task ProfilePolicyIsCombinedWithOriginalHistoryWithoutChangingOccurrenceIdentity(string? showTranscript, bool expected)
     {
         var alarm = Alarm();
         var original = Capture(alarm);
-        alarm.OptionsJson = json;
+        alarm.OptionsJson = RoboCallOptions(showTranscript: showTranscript,
+            extra: ",\"WaitForCallCompletion\":false,\"CallTimeoutSeconds\":null,\"PrimaryCallDevice\":{\"Type\":\"Custom\",\"PhoneNumber\":\"+19499299458\"}");
         var repository = new Repository();
         await new AutoCallEnqueueService(repository, new ParticipantCurrentDetailsTests.Stub()).EnqueueAsync(alarm, "DEV1");
         var request = Assert.IsType<AutoCallRequest>(repository.Request);
@@ -107,27 +111,49 @@ public sealed class AutoCallEnqueueTests
         Assert.Equal(Capture(alarm).OptionsJson, request.OptionsJson);
     }
 
+    [Fact]
+    public async Task FlowIdComesFromParticipantRoboCallOptionsCaseInsensitively()
+    {
+        var alarm = Alarm();
+        alarm.OptionsJson = "{\"futureRoboCall\":{\"FlowId\":99},\"ParticipantRoboCall\":{\"flowId\":12,\"showParticipantResponseTranscript\":false}}";
+        var repository = new Repository();
+        await new AutoCallEnqueueService(repository, new ParticipantCurrentDetailsTests.Stub()).EnqueueAsync(alarm, "DEV1");
+        var request = Assert.IsType<AutoCallRequest>(repository.Request);
+        Assert.Equal(12, request.FlowId);
+        Assert.Equal(Capture().EnqueueIdempotencyKey, request.EnqueueIdempotencyKey);
+        using var options = JsonDocument.Parse(request.OptionsJson);
+        Assert.False(options.RootElement.GetProperty("postRecordingTranscript").GetBoolean());
+    }
+
     [Theory]
+    [InlineData(null)]
     [InlineData("")]
+    [InlineData(" ")]
     [InlineData("null")]
     [InlineData("[]")]
     [InlineData("{broken")]
-    [InlineData("{\"historyId\":999}")]
-    [InlineData("{\"PostRecordingTranscript\":false}")]
-    [InlineData("{\"postRecordingTranscript\":\"false\"}")]
-    [InlineData("{\"postRecordingTranscript\":0}")]
-    [InlineData("{\"postRecordingTranscript\":null}")]
-    [InlineData("{\"postRecordingTranscript\":true,\"postRecordingTranscript\":false}")]
-    [InlineData("{\"postRecordingTranscript\":false,\"extra\":true}")]
-    public async Task InvalidProfilePolicyFailsBeforeDatabaseAccess(string json)
+    [InlineData("{}")]
+    [InlineData("{\"postRecordingTranscript\":false}")]
+    [InlineData("{\"participantRoboCall\":null}")]
+    [InlineData("{\"participantRoboCall\":[]}")]
+    [InlineData("{\"participantRoboCall\":{}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":null}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":0}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":-4}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4.5}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":\"4\"}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"flowid\":5}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4},\"ParticipantRoboCall\":{\"FlowId\":4}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"ShowParticipantResponseTranscript\":\"false\"}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"ShowParticipantResponseTranscript\":0}}")]
+    public async Task InvalidProfilePolicyFailsBeforeDatabaseAccess(string? json)
     {
         var alarm = Alarm();
         alarm.OptionsJson = json;
         var repository = new Repository();
         var details = new ParticipantCurrentDetailsTests.Stub();
-        var failure = await Record.ExceptionAsync(() => new AutoCallEnqueueService(repository, details).EnqueueAsync(alarm, "DEV1"));
-        Assert.True(failure is JsonException or InvalidOperationException);
-        Assert.ThrowsAny<Exception>(() => Capture(alarm));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => new AutoCallEnqueueService(repository, details).EnqueueAsync(alarm, "DEV1"));
+        Assert.Throws<InvalidOperationException>(() => Capture(alarm));
         Assert.Equal(0, repository.Reads);
         Assert.Equal(0, repository.Writes);
         Assert.Empty(details.Calls);
@@ -158,7 +184,7 @@ public sealed class AutoCallEnqueueTests
         var repository = new Repository();
         var details = new ParticipantCurrentDetailsTests.Stub();
         var service = new AutoCallEnqueueService(repository, details);
-        var alarm = Alarm(); alarm.FlowId = 0;
+        var alarm = Alarm(); alarm.OptionsJson = RoboCallOptions(0);
         await Assert.ThrowsAsync<InvalidOperationException>(() => service.EnqueueAsync(alarm, "DEV1"));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.EnqueueAsync(Alarm(), "DEV1", new CancellationToken(true)));
         Assert.Equal(0, repository.Reads);

@@ -24,12 +24,12 @@ public sealed class AutoCallEnqueueService(IAutoCallQueueRepository repository, 
     public async Task<int> EnqueueAsync(ActiveAlarm alarm, string platform, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (alarm.SystemID <= 0 || alarm.FlowId <= 0 || alarm.HistoryID <= 0 || string.IsNullOrWhiteSpace(platform))
-            throw new InvalidOperationException("Auto-call action requires alarm identity, original HistoryID, platform and FlowId.");
+        if (alarm.SystemID <= 0 || alarm.HistoryID <= 0 || string.IsNullOrWhiteSpace(platform))
+            throw new InvalidOperationException("Auto-call action requires alarm identity, original HistoryID and platform.");
         AutoCallContactService.ValidateOid(alarm.ClientID);
         ValidatePOGroupNum(alarm.POGroupNum);
-        _ = ReadPostRecordingTranscript(alarm.OptionsJson);
-        var flow = await repository.ReadFlowAsync(alarm.FlowId, cancellationToken).ConfigureAwait(false);
+        var options = ParticipantRoboCallOptions.Parse(alarm.OptionsJson);
+        var flow = await repository.ReadFlowAsync(options.FlowId, cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
         var details = await participantDetails.ReadAsync(alarm.ClientID, alarm.SystemID, cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
@@ -41,8 +41,8 @@ public sealed class AutoCallEnqueueService(IAutoCallQueueRepository repository, 
         IReadOnlyDictionary<string, JsonElement> participantDetails)
     {
         if (alarm.HistoryID <= 0) throw new InvalidOperationException("Auto-call enqueue requires the original HistoryID.");
-        bool postRecordingTranscript = ReadPostRecordingTranscript(alarm.OptionsJson);
-        if (flow.SystemId != alarm.FlowId) throw new InvalidOperationException("Call flow identity does not match the workflow action.");
+        var options = ParticipantRoboCallOptions.Parse(alarm.OptionsJson);
+        if (flow.SystemId != options.FlowId) throw new InvalidOperationException("Call flow identity does not match the workflow action.");
         using var graph = JsonDocument.Parse(flow.TemplateJson);
         if (graph.RootElement.ValueKind != JsonValueKind.Object) throw new InvalidOperationException("Call flow graph must be a JSON object.");
         using var text = new StringReader(flow.TwiML);
@@ -62,33 +62,15 @@ public sealed class AutoCallEnqueueService(IAutoCallQueueRepository repository, 
         {
             Contract = "autocall-request-v1", Platform = platform.ToUpperInvariant(),
             ActiveAlarmId = alarm.SystemID, alarm.HistoryID, Oid = alarm.ClientID,
-            alarm.ProfileID, Step = alarm.StateNo, Loop = alarm.CurrentLoopNumber, alarm.FlowId
+            alarm.ProfileID, Step = alarm.StateNo, Loop = alarm.CurrentLoopNumber, FlowId = options.FlowId
         });
         byte[] hash = SHA256.HashData(identity);
         hash[6] = (byte)((hash[6] & 15) | 128);
         hash[8] = (byte)((hash[8] & 63) | 128);
         var key = new Guid(hash.AsSpan(0, 16), bigEndian: true);
-        return new AutoCallRequest(alarm.SystemID, alarm.ClientID, alarm.FlowId, JsonSerializer.Serialize(participantDetails), key, alarm.POGroupNum,
-            JsonSerializer.Serialize(new { historyId = alarm.HistoryID, postRecordingTranscript }));
-    }
-
-    private static bool ReadPostRecordingTranscript(string? optionsJson)
-    {
-        if (optionsJson is null) return true;
-        using var options = JsonDocument.Parse(optionsJson);
-        if (options.RootElement.ValueKind != JsonValueKind.Object)
-            throw new InvalidOperationException("Auto-call profile options must be a JSON object.");
-        bool postRecordingTranscript = true;
-        bool found = false;
-        foreach (var property in options.RootElement.EnumerateObject())
-        {
-            if (property.Name != "postRecordingTranscript" || found ||
-                property.Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
-                throw new InvalidOperationException("Auto-call profile options allow only one boolean postRecordingTranscript; HistoryID comes from the alarm.");
-            postRecordingTranscript = property.Value.GetBoolean();
-            found = true;
-        }
-        return postRecordingTranscript;
+        // The central queue contract keeps its own name for the profile's ShowParticipantResponseTranscript setting.
+        return new AutoCallRequest(alarm.SystemID, alarm.ClientID, options.FlowId, JsonSerializer.Serialize(participantDetails), key, alarm.POGroupNum,
+            JsonSerializer.Serialize(new { historyId = alarm.HistoryID, postRecordingTranscript = options.ShowParticipantResponseTranscript }));
     }
 
     internal static void ValidatePOGroupNum(string? poGroupNum)

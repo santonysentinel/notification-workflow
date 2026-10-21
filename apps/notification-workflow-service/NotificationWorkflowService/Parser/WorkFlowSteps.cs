@@ -754,7 +754,6 @@
                                 a.StateTime = pi.StateTime;
                                 a.NextStateNo = pi.NextState;
                                 a.Instruction = pi.Instruction;
-                                a.FlowId = pi.FlowId;
                                 a.OptionsJson = pi.OptionsJson;
                                 a.ProfileName = p.ProfileName;
                                 a.ProfileID = p.ProfileID;

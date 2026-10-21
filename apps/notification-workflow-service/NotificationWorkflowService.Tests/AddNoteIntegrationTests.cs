@@ -398,7 +398,7 @@ public class AddNoteIntegrationTests
             : new WorkFlowCommon(NullLogger<WorkFlowCommon>.Instance, Configuration(), sender, (IRepository)spy, fixture.Service, enqueue);
         var alarm = Alarm();
         alarm.Priority = 19;
-        alarm.FlowId = 12;
+        alarm.OptionsJson = AutoCallEnqueueTests.RoboCallOptions();
         alarm.OffenderName = "";
         Set(parser, "platForm", "offline");
         Set(parser, "activeAlarms", new List<ActiveAlarm> { alarm });

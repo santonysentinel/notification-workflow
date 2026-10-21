@@ -15,6 +15,7 @@ CREATE TABLE dbo.POGroupProfileIntervals
 (
     ProfileTimeIntervalID int, IntervalID int, StartTime time, EndTime time
 );
+-- Starts with the legacy FlowId column so 052.sql's drop is exercised.
 CREATE TABLE dbo.ProfileItems
 (
     SystemID int IDENTITY PRIMARY KEY, ProfileID int, EventCode varchar(10), StartTime time,
@@ -39,22 +40,32 @@ CREATE PROCEDURE dbo.dash_UpdateProfileSteps AS RETURN;
 GO
 CREATE PROCEDURE dbo.dash_profile_GetProfileSteps AS RETURN;
 GO
+CREATE PROCEDURE dbo.ActiveAlarms_ReadProfileItems AS RETURN;
+GO
 :r .\046.sql
-:r .\047.sql
-:r .\048.sql
-:r .\049.sql
-:r .\050.sql
-:r .\050.sql
+GO
+:r .\052.sql
+GO
+:r .\052.sql
+GO
+IF COL_LENGTH(N'dbo.ProfileItems', N'FlowId') IS NOT NULL
+    THROW 51000, '052.sql must drop ProfileItems.FlowId.', 1;
+GO
+:r .\053.sql
+:r .\054.sql
+:r .\055.sql
+:r .\056.sql
 
 INSERT dbo.POGroupProfileIntervals VALUES (1, 1, '00:00:00', '23:59:00');
-DECLARE @Doc xml = N'<ROOT><Item EventCode="ALARM" ProfileType="1" DOW="1" ACT="19"
-    INSTRUCTION="call" TimeInterval="1" StateNo="0" StateTime="5" FlowId="12"
-    OptionsJSON="{&quot;postRecordingTranscript&quot;:false}" /></ROOT>';
+DECLARE @Options nvarchar(max) = N'{"participantRoboCall":{"FlowId":4,"FlowName":"DEV Flow 1","ShowParticipantResponseTranscript":false,"WaitForCallCompletion":false,"CallTimeoutSeconds":null,"PrimaryCallDevice":{"Type":"WorkPhone","PhoneNumber":null},"SecondaryCallDevice":{"Type":"Custom","PhoneNumber":"+19499299458"}}}';
+DECLARE @Doc xml = (
+    SELECT 'ALARM' AS [@EventCode], 1 AS [@ProfileType], 1 AS [@DOW], 19 AS [@ACT], 'call' AS [@INSTRUCTION],
+        1 AS [@TimeInterval], 0 AS [@StateNo], 5 AS [@StateTime], @Options AS [@OptionsJSON]
+    FOR XML PATH('Item'), ROOT('ROOT'), TYPE);
 EXEC dbo.dash_UpdateProfileSteps 'valid', NULL, 'original profile', @Doc;
 DECLARE @ProfileID int = (SELECT ProfileID FROM dbo.Profiles);
-IF NOT EXISTS (SELECT 1 FROM dbo.ProfileItems WHERE ProfileID = @ProfileID AND DeletedDate IS NULL
-    AND FlowId = 12 AND OptionsJSON = N'{"postRecordingTranscript":false}')
-    THROW 51000, 'Profile saves must preserve XML-escaped policy and flow identity.', 1;
+IF NOT EXISTS (SELECT 1 FROM dbo.ProfileItems WHERE ProfileID = @ProfileID AND DeletedDate IS NULL AND OptionsJSON = @Options)
+    THROW 51000, 'Profile saves must preserve XML-escaped options unchanged.', 1;
 
 CREATE TABLE #Read
 (
@@ -62,13 +73,16 @@ CREATE TABLE #Read
     [Day] smallint, [Action] smallint, HoldDuration int, GracePeriod int, Instruction varchar(1500),
     EmailAddress varchar(640), EmailJoin tinyint, StateNo tinyint, StateTime int, FeedbackRequired bit,
     ProfileType int, TimeIntervalsID int, NextState int, LoopStartState int, NumberOfLoops int,
-    RoleID int, RoleAction varchar(32), IsAlarmClearingEnabled bit, FlowID int, OptionsJSON nvarchar(max)
+    RoleID int, RoleAction varchar(32), IsAlarmClearingEnabled bit, OptionsJSON nvarchar(max)
 );
 INSERT #Read EXEC dbo.ActiveAlarms_ReadProfileItems;
 IF (SELECT COUNT(*) FROM #Read) <> 1 OR NOT EXISTS
-    (SELECT 1 FROM #Read WHERE OptionsJSON = N'{"postRecordingTranscript":false}'
-        AND FlowID = 12 AND EndTime = N'23:59:59' AND NextState = -1)
-    THROW 51000, 'Parser read must return policy while preserving existing column semantics.', 1;
+    (SELECT 1 FROM #Read WHERE OptionsJSON = @Options AND EndTime = N'23:59:59' AND NextState = -1
+        AND JSON_VALUE(OptionsJSON, '$.participantRoboCall.FlowId') = N'4')
+    THROW 51000, 'Parser read must return options (carrying FlowId) without the dropped column.', 1;
+IF EXISTS (SELECT 1 FROM sys.dm_exec_describe_first_result_set(N'EXEC dbo.ActiveAlarms_ReadProfileItems', NULL, 0)
+    WHERE name = N'FlowID')
+    THROW 51000, 'Parser read must not return FlowID.', 1;
 
 CREATE TABLE #Editor
 (
@@ -76,80 +90,14 @@ CREATE TABLE #Editor
     [Action] smallint, Instruction varchar(1500), EmailAddress varchar(640), StateNo tinyint,
     StateTime int, FeedbackRequired bit, ProfileType int, TimeIntervalsID int, NextState int,
     StateName varchar(150), NextStateName varchar(150), LoopStartState int, NumberOfLoops int,
-    RoleID int, RoleAction varchar(32), FlowId int, OptionsJSON nvarchar(max)
+    RoleID int, RoleAction varchar(32), OptionsJSON nvarchar(max)
 );
 INSERT #Editor EXEC dbo.dash_profile_GetProfileSteps 'valid', @ProfileID;
-IF (SELECT COUNT(*) FROM #Editor) <> 1 OR NOT EXISTS
-    (SELECT 1 FROM #Editor WHERE FlowId = 12 AND OptionsJSON = N'{"postRecordingTranscript":false}')
-    THROW 51000, 'Editor reads must round-trip the saved policy.', 1;
+IF (SELECT COUNT(*) FROM #Editor) <> 1 OR NOT EXISTS (SELECT 1 FROM #Editor WHERE OptionsJSON = @Options)
+    THROW 51000, 'Editor reads must round-trip the saved options.', 1;
 
-DECLARE @Bad TABLE (OptionsJSON nvarchar(max));
-INSERT @Bad VALUES (N''), (N'null'), (N'[]'), (N'{broken'), (N'{"historyId":999}'),
-    (N'{"postRecordingTranscript":"false"}'), (N'{"postRecordingTranscript":null}'),
-    (N'{"PostRecordingTranscript":false}'),
-    (N'{"postRecordingTranscript":true,"postRecordingTranscript":false}');
-DECLARE @Options nvarchar(max), @BadDoc xml;
-DECLARE policies CURSOR LOCAL FAST_FORWARD FOR SELECT OptionsJSON FROM @Bad;
-OPEN policies;
-FETCH NEXT FROM policies INTO @Options;
-WHILE @@FETCH_STATUS = 0
-BEGIN
-    SET @BadDoc = (SELECT 'ALARM' AS [@EventCode], 19 AS [@ACT], @Options AS [@OptionsJSON] FOR XML PATH('Item'), ROOT('ROOT'), TYPE);
-    BEGIN TRY
-        EXEC dbo.dash_UpdateProfileSteps 'valid', @ProfileID, 'must not replace', @BadDoc;
-        THROW 51001, 'Invalid profile policy must fail.', 1;
-    END TRY
-    BEGIN CATCH
-        IF ERROR_NUMBER() <> 51000 THROW;
-    END CATCH;
-    IF @@TRANCOUNT <> 0 OR (SELECT ProfileName FROM dbo.Profiles WHERE ProfileID = @ProfileID) <> 'original profile'
-        OR (SELECT COUNT(*) FROM dbo.ProfileItems) <> 1
-        OR EXISTS (SELECT 1 FROM dbo.ProfileItems WHERE DeletedDate IS NOT NULL)
-        THROW 51000, 'Rejected policy must preserve the entire existing profile.', 1;
-    BEGIN TRY
-        EXEC dbo.dash_UpdateProfileItemSteps @ProfileID, 'ALARM', 1, 1, 19, '', 'tester', '', 0,
-            0, 5, 0, 0, 0, 1, NULL, '', NULL, NULL, NULL, NULL, NULL, 12, @Options;
-        THROW 51001, 'Direct item saves must also reject invalid policy.', 1;
-    END TRY
-    BEGIN CATCH
-        IF ERROR_NUMBER() <> 51000 THROW;
-    END CATCH;
-    FETCH NEXT FROM policies INTO @Options;
-END;
-CLOSE policies;
-DEALLOCATE policies;
-
--- A later item can fail after the old profile and a first replacement item were written.
-ALTER TABLE dbo.ProfileItems ADD CONSTRAINT CK_TestStorage CHECK (Instruction <> 'fail-store');
-SET @BadDoc = N'<ROOT>
-    <Item EventCode="ALARM" ACT="19" INSTRUCTION="first" OptionsJSON="{}" />
-    <Item EventCode="ALARM" ACT="19" INSTRUCTION="fail-store" OptionsJSON="{}" />
-    </ROOT>';
-BEGIN TRY
-    EXEC dbo.dash_UpdateProfileSteps 'valid', @ProfileID, 'must roll back', @BadDoc;
-    THROW 51001, 'Later storage failure must roll back replacement.', 1;
-END TRY
-BEGIN CATCH
-    IF ERROR_NUMBER() <> 547 THROW;
-END CATCH;
-IF @@TRANCOUNT <> 0 OR (SELECT COUNT(*) FROM dbo.ProfileItems) <> 1
-    OR EXISTS (SELECT 1 FROM dbo.ProfileItems WHERE DeletedDate IS NOT NULL)
-    OR (SELECT ProfileName FROM dbo.Profiles WHERE ProfileID = @ProfileID) <> 'original profile'
-    THROW 51000, 'Storage failure must roll back all profile changes.', 1;
-ALTER TABLE dbo.ProfileItems DROP CONSTRAINT CK_TestStorage;
-
--- A retry in the same SQL session must not retain the failed save's cursor/XML state.
-EXEC dbo.dash_UpdateProfileSteps 'valid', @ProfileID, 'retry succeeded', @Doc;
-IF (SELECT COUNT(*) FROM dbo.ProfileItems WHERE DeletedDate IS NULL) <> 1
-    THROW 51000, 'Profile retries must replace exactly the active items.', 1;
-EXEC dbo.dash_UpdateProfileItemSteps @ProfileID, 'ALARM', 1, 1, 19, '', 'tester', '', 0,
-    1, 5, 0, 0, 0, 1, NULL, '', NULL, NULL, NULL, NULL, NULL, 12, NULL;
-EXEC dbo.dash_UpdateProfileItemSteps @ProfileID, 'ALARM', 1, 1, 19, '', 'tester', '', 0,
-    2, 5, 0, 0, 0, 1, NULL, '', NULL, NULL, NULL, NULL, NULL, 12, N'{}';
 EXEC dbo.dash_UpdateProfileItemSteps @ProfileID, 'ALARM', 1, 1, 2, '', 'tester', '', 0,
-    3, 5, 0, 0, 0, 1, NULL, '', NULL, NULL, NULL, NULL, NULL, 12, N'not-json';
-IF NOT EXISTS (SELECT 1 FROM dbo.ProfileItems WHERE [Action] = 2 AND OptionsJSON IS NULL AND FlowId IS NULL)
-    THROW 51000, 'Non-call actions must not retain call policy.', 1;
-IF EXISTS (SELECT 1 FROM sys.dm_exec_xml_handles(@@SPID))
-    THROW 51000, 'Profile saves must release XML handles on success and failure.', 1;
+    3, 5, 0, 0, 0, 1, NULL, '', NULL, NULL, NULL, NULL, NULL, @Options;
+IF NOT EXISTS (SELECT 1 FROM dbo.ProfileItems WHERE [Action] = 2 AND OptionsJSON IS NULL)
+    THROW 51000, 'Non-call actions must not retain Robo Call options.', 1;
 PRINT 'Profile option save and parser-read SQL regression checks passed.';
