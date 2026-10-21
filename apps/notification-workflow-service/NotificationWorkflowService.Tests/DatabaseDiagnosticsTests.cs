@@ -72,7 +72,7 @@ public sealed class DatabaseDiagnosticsTests
         var repository = new AutoCallQueueRepository(new ConfigurationBuilder().Build(), logger);
         await Assert.ThrowsAsync<InvalidOperationException>(() => repository.ReadFlowAsync(1));
         await Assert.ThrowsAsync<InvalidOperationException>(() => repository.EnqueueAsync(
-            new AutoCallRequest(1, "oid", 1, "{}", Guid.NewGuid(), "group")));
+            new AutoCallRequest(1, "oid", 1, "{}", Guid.NewGuid(), "group", "{\"historyId\":1,\"postRecordingTranscript\":true}")));
         Assert.Equal(new[] { "ReadCallFlowTemplate", "dbo.activealarms_call_InsertJob" },
             logger.Entries.Select(entry => entry.Properties["Operation"]));
     }

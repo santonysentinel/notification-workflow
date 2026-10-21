@@ -67,13 +67,18 @@ namespace ActiveAlarmsParser
                     case "TRANSCRIPTION":
                         services.AddHostedService<TranscriptionWorker>();
                         break;
+                    case "TENANTNOTES":
+                        services.AddHostedService<AutoCallNoteWorker>();
+                        break;
                     default:
-                        throw new InvalidOperationException("WorkerMode must be 'Normal', 'Step', 'AutoCall' or 'Transcription'.");
+                        throw new InvalidOperationException("WorkerMode must be 'Normal', 'Step', 'AutoCall', 'Transcription' or 'TenantNotes'.");
                 }
                 services.AddTransient<NotificationSender>();
                 services.AddTransient<IRepository, Repository>();
                 services.AddNoteServices();
                 services.AddAutoCallContacts();
+                services.AddSingleton<IAutoCallNoteRepository, AutoCallNoteRepository>();
+                services.AddSingleton<AutoCallNoteDeliveryService>();
                 services.AddTranscriptionClients();
                 services.AddSingleton<NotificationWorkflowService.Repository.INotificationRepository, NotificationWorkflowService.Repository.NotificationRepository>();
                 services.AddTransient<WorkFlowCommon>();

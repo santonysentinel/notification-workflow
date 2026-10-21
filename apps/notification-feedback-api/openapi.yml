@@ -703,6 +703,16 @@ components:
           type: integer
           format: int32
           minimum: 1
+        options:
+          type: object
+          additionalProperties: false
+          required: [historyId, postRecordingTranscript]
+          description: Immutable tenant note options. Omit for legacy requests without tenant notes.
+          properties:
+            historyId:
+              $ref: '#/components/schemas/SqlId'
+            postRecordingTranscript:
+              type: boolean
     TwilioVoiceForm:
       type: object
       required: [AccountSid, CallSid, To]

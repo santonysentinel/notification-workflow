@@ -41,6 +41,7 @@ CREATE TABLE dbo.AutomatedCallQueue
     FlowId int NULL,
     CallStatus int NULL,
     VariablesJSON nvarchar(max) NULL,
+    OptionsJSON nvarchar(max) NULL,
     EnqueueIdempotencyKey uniqueidentifier NULL,
     CreatedDateTime datetime2(3) NOT NULL DEFAULT (SYSUTCDATETIME()),
     StartedDateTime datetime2(3) NULL,

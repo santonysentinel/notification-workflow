@@ -12,6 +12,7 @@ export async function addToAutomatedCallQueue(
     priority,
     availableAt,
     maxAttempts,
+    options,
   },
   { platform, timeoutMs, transaction } = {},
 ) {
@@ -62,6 +63,29 @@ export async function addToAutomatedCallQueue(
       val: enqueueIdempotencyKey,
     },
   };
+  if (options !== undefined) {
+    if (
+      !options ||
+      typeof options !== "object" ||
+      Array.isArray(options) ||
+      Object.keys(options).length !== 2 ||
+      !Number.isInteger(options.historyId) ||
+      options.historyId <= 0 ||
+      options.historyId > 2147483647 ||
+      typeof options.postRecordingTranscript !== "boolean"
+    ) {
+      throw new TypeError(
+        "options requires a positive historyId and boolean postRecordingTranscript",
+      );
+    }
+    params.OptionsJSON = {
+      type: sql.NVarChar(sql.MAX),
+      val: JSON.stringify({
+        historyId: options.historyId,
+        postRecordingTranscript: options.postRecordingTranscript,
+      }),
+    };
+  }
 
   const optionalParams = {
     CallStatus: { type: sql.Int, val: callStatus },

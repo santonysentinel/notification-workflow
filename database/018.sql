@@ -548,6 +548,7 @@ BEGIN
             UPDATE dbo.AutomatedCallTranscriptionJobs SET Status = 'COMPLETED', CompletedSubmissionId = @SubmissionId,
                 CompletionOrigin = 'PROVIDER', CompletedDateTime = @Now, LockedBy = NULL, LockedUntil = NULL, LeaseToken = NULL,
                 LastErrorCode = NULL, LastErrorMessage = NULL, UpdatedDateTime = @Now WHERE SystemID = @JobId;
+            EXEC dbo.transcription_QueueTranscriptNote @JobId;
         END
         ELSE IF @Success = 0 AND @Winner IS NULL
             AND (@Current = @SubmissionId OR (@Current IS NULL AND @Attempt = @AttemptCount))

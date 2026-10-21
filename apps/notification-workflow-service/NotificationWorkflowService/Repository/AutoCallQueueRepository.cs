@@ -61,6 +61,7 @@ public sealed class AutoCallQueueRepository(IConfiguration configuration, ILogge
         command.Parameters.Add("@VariablesJSON", SqlDbType.NVarChar, -1).Value = request.VariablesJson;
         command.Parameters.Add("@EnqueueIdempotencyKey", SqlDbType.UniqueIdentifier).Value = request.EnqueueIdempotencyKey;
         command.Parameters.Add("@POGroupNum", SqlDbType.VarChar, 20).Value = request.POGroupNum;
+        command.Parameters.Add("@OptionsJSON", SqlDbType.NVarChar, -1).Value = request.OptionsJson;
         return command;
     }
 }

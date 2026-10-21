@@ -69,7 +69,8 @@ describe('POST /autocall', () => {
         callStatus: undefined,
         priority: undefined,
         availableAt: undefined,
-        maxAttempts: undefined
+        maxAttempts: undefined,
+        options: undefined
       },
       { platform: 'TEST' }
     ]);
@@ -104,6 +105,15 @@ describe('POST /autocall', () => {
     expect(addToAutomatedCallQueue.firstCall.args[0].oid).to.equal('authenticated');
   });
 
+  it('forwards immutable history and transcript options', async () => {
+    const options = { historyId: 81, postRecordingTranscript: true };
+    const response = await request(app)
+      .post('/api/v1/autocall')
+      .send({ ...validJob, options });
+    expect(response.status).to.equal(201);
+    expect(addToAutomatedCallQueue.firstCall.args[0].options).to.deep.equal(options);
+  });
+
   it('rejects a missing JSON body', async () => {
     const response = await request(app).post('/api/v1/autocall');
 
@@ -112,6 +122,20 @@ describe('POST /autocall', () => {
   });
 
   const invalidJobs = [
+    ['null options', { ...validJob, options: null }],
+    ['missing history ID', { ...validJob, options: { postRecordingTranscript: true } }],
+    [
+      'invalid history ID',
+      { ...validJob, options: { historyId: 0, postRecordingTranscript: true } }
+    ],
+    [
+      'invalid transcript flag',
+      { ...validJob, options: { historyId: 81, postRecordingTranscript: 'true' } }
+    ],
+    [
+      'extra options',
+      { ...validJob, options: { historyId: 81, postRecordingTranscript: true, extra: 1 } }
+    ],
     ['missing fields', {}],
     ['non-integer alarm ID', { ...validJob, activeAlarmId: '123' }],
     ['missing flow ID', { ...validJob, flowId: undefined }],
@@ -196,7 +220,7 @@ describe('POST /autocall', () => {
       const variables = { OffenderName: 'Alex & Co', AlarmText: 'Low battery' };
       expect(
         await repository.addToAutomatedCallQueue(
-          { ...validJob, variables },
+          { ...validJob, variables, options: { historyId: 81, postRecordingTranscript: true } },
           { platform: 'AutoCallDB' }
         )
       ).to.equal(42);
@@ -212,6 +236,10 @@ describe('POST /autocall', () => {
       expect(bindings.EnqueueIdempotencyKey).to.deep.equal({
         type: sql.UniqueIdentifier,
         value: validJob.enqueueIdempotencyKey
+      });
+      expect(bindings.OptionsJSON).to.deep.equal({
+        type: sql.NVarChar(sql.MAX),
+        value: '{"historyId":81,"postRecordingTranscript":true}'
       });
     } finally {
       if (original === undefined) delete pools.AUTOCALLDB;

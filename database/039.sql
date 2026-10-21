@@ -7,6 +7,10 @@ IF COL_LENGTH(N'dbo.AutomatedCallQueue', N'POGroupNum') IS NULL
     THROW 51000, 'Deploy 037.sql before the POGroup-aware enqueue procedure.', 1;
 GO
 
+IF COL_LENGTH(N'dbo.AutomatedCallQueue', N'OptionsJSON') IS NULL
+    ALTER TABLE dbo.AutomatedCallQueue ADD OptionsJSON nvarchar(max) NULL;
+GO
+
 CREATE OR ALTER PROCEDURE dbo.activealarms_call_InsertJob
     @ActiveAlarmID int,
     @OID varchar(20) = NULL,
@@ -17,7 +21,8 @@ CREATE OR ALTER PROCEDURE dbo.activealarms_call_InsertJob
     @MaxAttempts int = 10,
     @VariablesJSON nvarchar(max) = NULL,
     @EnqueueIdempotencyKey uniqueidentifier = NULL,
-    @POGroupNum varchar(20) = NULL
+    @POGroupNum varchar(20) = NULL,
+    @OptionsJSON nvarchar(max) = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -34,13 +39,23 @@ BEGIN
         THROW 51000, 'A complete auto-call request snapshot is required.', 1;
     IF @POGroupNum IS NOT NULL AND LEN(LTRIM(RTRIM(@POGroupNum))) = 0
         THROW 51000, 'POGroupNum must be nonblank when supplied.', 1;
+    IF @OptionsJSON IS NOT NULL
+    BEGIN
+        IF ISJSON(@OptionsJSON) <> 1 OR LEFT(LTRIM(@OptionsJSON), 1) <> '{'
+            THROW 51000, 'OptionsJSON must be an object.', 1;
+        IF (SELECT COUNT(*) FROM OPENJSON(@OptionsJSON)) <> 2
+            OR NOT EXISTS (SELECT 1 FROM OPENJSON(@OptionsJSON) WHERE [key] COLLATE Latin1_General_100_BIN2 = 'historyId' AND type = 2 AND TRY_CONVERT(int, value) > 0)
+            OR NOT EXISTS (SELECT 1 FROM OPENJSON(@OptionsJSON) WHERE [key] COLLATE Latin1_General_100_BIN2 = 'postRecordingTranscript' AND type = 3)
+            THROW 51000, 'Options require a positive historyId and boolean postRecordingTranscript.', 1;
+    END;
 
     BEGIN TRY
         BEGIN TRANSACTION;
         DECLARE @JobId int, @ExistingAlarm int, @ExistingOid varchar(20), @ExistingFlow int,
-            @ExistingVariables nvarchar(max), @ExistingPOGroupNum varchar(20);
+            @ExistingVariables nvarchar(max), @ExistingPOGroupNum varchar(20), @ExistingOptions nvarchar(max);
         SELECT @JobId = SystemID, @ExistingAlarm = ActiveAlarmID, @ExistingOid = OID,
-            @ExistingFlow = FlowId, @ExistingVariables = VariablesJSON, @ExistingPOGroupNum = POGroupNum
+            @ExistingFlow = FlowId, @ExistingVariables = VariablesJSON, @ExistingPOGroupNum = POGroupNum,
+            @ExistingOptions = OptionsJSON
         FROM dbo.AutomatedCallQueue WITH (UPDLOCK, HOLDLOCK)
         WHERE EnqueueIdempotencyKey = @EnqueueIdempotencyKey;
 
@@ -55,6 +70,10 @@ BEGIN
                 OR (@ExistingPOGroupNum IS NOT NULL AND @POGroupNum IS NULL)
                 OR @ExistingPOGroupNum COLLATE Latin1_General_100_BIN2 <> @POGroupNum COLLATE Latin1_General_100_BIN2
                 OR DATALENGTH(@ExistingPOGroupNum) <> DATALENGTH(@POGroupNum)
+                OR (@ExistingOptions IS NULL AND @OptionsJSON IS NOT NULL)
+                OR (@ExistingOptions IS NOT NULL AND @OptionsJSON IS NULL)
+                OR JSON_VALUE(@ExistingOptions, '$.historyId') <> JSON_VALUE(@OptionsJSON, '$.historyId')
+                OR JSON_VALUE(@ExistingOptions, '$.postRecordingTranscript') <> JSON_VALUE(@OptionsJSON, '$.postRecordingTranscript')
                 THROW 51001, 'Enqueue key conflicts with the original request snapshot.', 1;
         END
         ELSE
@@ -63,10 +82,10 @@ BEGIN
                 THROW 51000, 'An existing published call flow is required.', 1;
             INSERT dbo.AutomatedCallQueue
                 (ActiveAlarmID, OID, FlowId, CallStatus, Priority, AvailableAt, MaxAttempts,
-                 VariablesJSON, EnqueueIdempotencyKey, POGroupNum)
+                 VariablesJSON, EnqueueIdempotencyKey, POGroupNum, OptionsJSON)
             VALUES
                 (@ActiveAlarmID, @OID, @FlowId, @CallStatus, @Priority, COALESCE(@AvailableAt, SYSUTCDATETIME()), @MaxAttempts,
-                 @VariablesJSON, @EnqueueIdempotencyKey, @POGroupNum);
+                 @VariablesJSON, @EnqueueIdempotencyKey, @POGroupNum, @OptionsJSON);
             SET @JobId = SCOPE_IDENTITY();
         END;
         COMMIT;

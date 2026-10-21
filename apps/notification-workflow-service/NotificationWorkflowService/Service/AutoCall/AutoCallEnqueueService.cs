@@ -9,7 +9,7 @@ using NotificationWorkflowService.Repository;
 namespace NotificationWorkflowService.Service.AutoCall;
 
 public sealed record AutoCallFlow(int SystemId, string TemplateJson, string TwiML);
-public sealed record AutoCallRequest(int ActiveAlarmId, string Oid, int FlowId, string VariablesJson, Guid EnqueueIdempotencyKey, string POGroupNum);
+public sealed record AutoCallRequest(int ActiveAlarmId, string Oid, int FlowId, string VariablesJson, Guid EnqueueIdempotencyKey, string POGroupNum, string OptionsJson);
 
 public interface IAutoCallQueueRepository
 {
@@ -24,8 +24,8 @@ public sealed class AutoCallEnqueueService(IAutoCallQueueRepository repository, 
     public async Task<int> EnqueueAsync(ActiveAlarm alarm, string platform, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (alarm.SystemID <= 0 || alarm.FlowId <= 0 || string.IsNullOrWhiteSpace(platform))
-            throw new InvalidOperationException("Auto-call action requires alarm identity, platform and FlowId.");
+        if (alarm.SystemID <= 0 || alarm.FlowId <= 0 || alarm.HistoryID <= 0 || string.IsNullOrWhiteSpace(platform))
+            throw new InvalidOperationException("Auto-call action requires alarm identity, original HistoryID, platform and FlowId.");
         AutoCallContactService.ValidateOid(alarm.ClientID);
         ValidatePOGroupNum(alarm.POGroupNum);
         var flow = await repository.ReadFlowAsync(alarm.FlowId, cancellationToken).ConfigureAwait(false);
@@ -39,6 +39,7 @@ public sealed class AutoCallEnqueueService(IAutoCallQueueRepository repository, 
     internal static AutoCallRequest CaptureRequest(ActiveAlarm alarm, string platform, AutoCallFlow flow,
         IReadOnlyDictionary<string, JsonElement> participantDetails)
     {
+        if (alarm.HistoryID <= 0) throw new InvalidOperationException("Auto-call enqueue requires the original HistoryID.");
         if (flow.SystemId != alarm.FlowId) throw new InvalidOperationException("Call flow identity does not match the workflow action.");
         using var graph = JsonDocument.Parse(flow.TemplateJson);
         if (graph.RootElement.ValueKind != JsonValueKind.Object) throw new InvalidOperationException("Call flow graph must be a JSON object.");
@@ -65,7 +66,8 @@ public sealed class AutoCallEnqueueService(IAutoCallQueueRepository repository, 
         hash[6] = (byte)((hash[6] & 15) | 128);
         hash[8] = (byte)((hash[8] & 63) | 128);
         var key = new Guid(hash.AsSpan(0, 16), bigEndian: true);
-        return new AutoCallRequest(alarm.SystemID, alarm.ClientID, alarm.FlowId, JsonSerializer.Serialize(participantDetails), key, alarm.POGroupNum);
+        return new AutoCallRequest(alarm.SystemID, alarm.ClientID, alarm.FlowId, JsonSerializer.Serialize(participantDetails), key, alarm.POGroupNum,
+            JsonSerializer.Serialize(new { historyId = alarm.HistoryID, postRecordingTranscript = true }));
     }
 
     internal static void ValidatePOGroupNum(string? poGroupNum)

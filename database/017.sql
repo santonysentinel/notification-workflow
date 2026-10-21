@@ -398,6 +398,7 @@ BEGIN
                     LastStatusSequenceNumber=@SequenceNumber,LastStatusDateTime=@Timestamp,UpdatedDateTime=@Now,
                     EndedDateTime=CASE WHEN @Terminal=1 THEN @Timestamp ELSE EndedDateTime END,
                     CallDurationSeconds=CASE WHEN @Terminal=1 THEN @CallDurationSeconds ELSE CallDurationSeconds END WHERE SystemID=@CallId;
+                IF @CallStatus='completed' EXEC dbo.automatedcalls_QueueCompletionNote @CallId;
                 IF @Terminal=1 AND @QueueId IS NOT NULL AND @QueueLeaseToken IS NOT NULL
                 BEGIN
                     UPDATE dbo.AutomatedCallQueue SET Status=CASE WHEN @CallStatus='completed' THEN 'COMPLETED' ELSE 'FAILED' END,

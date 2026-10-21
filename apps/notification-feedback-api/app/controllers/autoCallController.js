@@ -29,9 +29,29 @@ export async function createAutoCall(req, res) {
     callStatus,
     priority,
     availableAt,
-    maxAttempts
+    maxAttempts,
+    options
   } = body;
   const oid = req.oid ?? body.oid;
+
+  if (
+    options !== undefined &&
+    (!options ||
+      typeof options !== 'object' ||
+      Array.isArray(options) ||
+      Object.keys(options).length !== 2 ||
+      !Number.isInteger(options.historyId) ||
+      options.historyId <= 0 ||
+      options.historyId > 2147483647 ||
+      typeof options.postRecordingTranscript !== 'boolean')
+  ) {
+    return sendError(
+      res,
+      400,
+      'options requires a positive historyId and boolean postRecordingTranscript',
+      { traceId, path }
+    );
+  }
 
   if (
     !Number.isInteger(activeAlarmId) ||
@@ -105,7 +125,8 @@ export async function createAutoCall(req, res) {
         callStatus,
         priority,
         availableAt: scheduledAt,
-        maxAttempts
+        maxAttempts,
+        options
       },
       { platform }
     );

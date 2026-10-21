@@ -47,6 +47,9 @@ public sealed class AutoCallEnqueueTests
         Assert.Equal("oid-42", request.Oid);
         Assert.Equal(12, request.FlowId);
         Assert.Equal("group-42", request.POGroupNum);
+        using var options = JsonDocument.Parse(request.OptionsJson);
+        Assert.Equal(81, options.RootElement.GetProperty("historyId").GetInt32());
+        Assert.True(options.RootElement.GetProperty("postRecordingTranscript").GetBoolean());
         using var variables = JsonDocument.Parse(request.VariablesJson);
         Assert.Equal(5, variables.RootElement.EnumerateObject().Count());
         Assert.Equal("Alex & Co", variables.RootElement.GetProperty("offenderName").GetString());
@@ -116,6 +119,23 @@ public sealed class AutoCallEnqueueTests
         Assert.Empty(details.Calls);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task MissingOriginalHistoryDoesNotReadOrEnqueue(int historyId)
+    {
+        var repository = new Repository();
+        var details = new ParticipantCurrentDetailsTests.Stub();
+        var alarm = Alarm();
+        alarm.HistoryID = historyId;
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new AutoCallEnqueueService(repository, details).EnqueueAsync(alarm, "DEV1"));
+        Assert.Throws<InvalidOperationException>(() => Capture(alarm));
+        Assert.Equal(0, repository.Reads);
+        Assert.Equal(0, repository.Writes);
+        Assert.Empty(details.Calls);
+    }
+
     [Fact]
     public void EnqueueCommandUsesTypedSnapshotAndUuid()
     {
@@ -133,6 +153,9 @@ public sealed class AutoCallEnqueueTests
         Assert.Equal(SqlDbType.VarChar, command.Parameters["@POGroupNum"].SqlDbType);
         Assert.Equal(20, command.Parameters["@POGroupNum"].Size);
         Assert.Equal(request.POGroupNum, command.Parameters["@POGroupNum"].Value);
+        Assert.Equal(SqlDbType.NVarChar, command.Parameters["@OptionsJSON"].SqlDbType);
+        Assert.Equal(-1, command.Parameters["@OptionsJSON"].Size);
+        Assert.Equal(request.OptionsJson, command.Parameters["@OptionsJSON"].Value);
     }
 
     [Theory]

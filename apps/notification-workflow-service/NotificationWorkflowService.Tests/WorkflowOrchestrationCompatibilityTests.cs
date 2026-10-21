@@ -150,6 +150,8 @@ public class WorkflowOrchestrationCompatibilityTests
     [InlineData("autocall", typeof(AutoCallWorker))]
     [InlineData("Transcription", typeof(TranscriptionWorker))]
     [InlineData("transcription", typeof(TranscriptionWorker))]
+    [InlineData("TenantNotes", typeof(AutoCallNoteWorker))]
+    [InlineData("tenantnotes", typeof(AutoCallNoteWorker))]
     public void RealHostBuildSelectsWorkerAndRetainsNormalFactoryAndCompatibilityRegistrations(string mode, Type workerType)
     {
         ServiceDescriptor[] descriptors = [];
@@ -183,7 +185,7 @@ public class WorkflowOrchestrationCompatibilityTests
     {
         var exception = Assert.Throws<InvalidOperationException>(() =>
             Program.CreateHostBuilder(["--WorkerMode", mode]).Build());
-        Assert.Equal("WorkerMode must be 'Normal', 'Step', 'AutoCall' or 'Transcription'.", exception.Message);
+        Assert.Equal("WorkerMode must be 'Normal', 'Step', 'AutoCall', 'Transcription' or 'TenantNotes'.", exception.Message);
     }
 
     [Fact]
