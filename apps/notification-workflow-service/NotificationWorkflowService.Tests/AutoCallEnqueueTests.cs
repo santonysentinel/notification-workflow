@@ -86,6 +86,53 @@ public sealed class AutoCallEnqueueTests
         Assert.NotEqual(original.POGroupNum, changedGroup.POGroupNum);
     }
 
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData("{}", true)]
+    [InlineData("{\"postRecordingTranscript\":true}", true)]
+    [InlineData("{\"postRecordingTranscript\":false}", false)]
+    public async Task ProfilePolicyIsCombinedWithOriginalHistoryWithoutChangingOccurrenceIdentity(string? json, bool expected)
+    {
+        var alarm = Alarm();
+        var original = Capture(alarm);
+        alarm.OptionsJson = json;
+        var repository = new Repository();
+        await new AutoCallEnqueueService(repository, new ParticipantCurrentDetailsTests.Stub()).EnqueueAsync(alarm, "DEV1");
+        var request = Assert.IsType<AutoCallRequest>(repository.Request);
+        using var options = JsonDocument.Parse(request.OptionsJson);
+        Assert.Equal(81, options.RootElement.GetProperty("historyId").GetInt32());
+        Assert.Equal(expected, options.RootElement.GetProperty("postRecordingTranscript").GetBoolean());
+        Assert.Equal(2, options.RootElement.EnumerateObject().Count());
+        Assert.Equal(original.EnqueueIdempotencyKey, request.EnqueueIdempotencyKey);
+        Assert.Equal(Capture(alarm).OptionsJson, request.OptionsJson);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("null")]
+    [InlineData("[]")]
+    [InlineData("{broken")]
+    [InlineData("{\"historyId\":999}")]
+    [InlineData("{\"PostRecordingTranscript\":false}")]
+    [InlineData("{\"postRecordingTranscript\":\"false\"}")]
+    [InlineData("{\"postRecordingTranscript\":0}")]
+    [InlineData("{\"postRecordingTranscript\":null}")]
+    [InlineData("{\"postRecordingTranscript\":true,\"postRecordingTranscript\":false}")]
+    [InlineData("{\"postRecordingTranscript\":false,\"extra\":true}")]
+    public async Task InvalidProfilePolicyFailsBeforeDatabaseAccess(string json)
+    {
+        var alarm = Alarm();
+        alarm.OptionsJson = json;
+        var repository = new Repository();
+        var details = new ParticipantCurrentDetailsTests.Stub();
+        var failure = await Record.ExceptionAsync(() => new AutoCallEnqueueService(repository, details).EnqueueAsync(alarm, "DEV1"));
+        Assert.True(failure is JsonException or InvalidOperationException);
+        Assert.ThrowsAny<Exception>(() => Capture(alarm));
+        Assert.Equal(0, repository.Reads);
+        Assert.Equal(0, repository.Writes);
+        Assert.Empty(details.Calls);
+    }
+
     [Fact]
     public async Task MissingVariablesAreDeferredToPreparationRatherThanRequiredOnAlarm()
     {

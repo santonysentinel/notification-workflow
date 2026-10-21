@@ -44,7 +44,23 @@ BEGIN
         DECLARE @RoleAction int;
         DECLARE @FlowId int;
         DECLARE @OptionsJSON nvarchar(max);
+        DECLARE @XMLDoc int;
 
+        DECLARE @Options TABLE (OptionsJSON nvarchar(max));
+        INSERT @Options
+        SELECT item.value('(@OptionsJSON)[1]', 'nvarchar(max)')
+        FROM @doc.nodes('/ROOT/Item[@ACT = "19"][@OptionsJSON]') items(item);
+        IF EXISTS (SELECT 1 FROM @Options
+            WHERE ISJSON(OptionsJSON) <> 1 OR LEFT(LTRIM(OptionsJSON), 1) <> '{')
+            THROW 51000, 'Auto-call profile options must be a JSON object.', 1;
+        IF EXISTS (SELECT 1 FROM @Options o
+            WHERE (SELECT COUNT(*) FROM OPENJSON(o.OptionsJSON)) > 1)
+            OR EXISTS (SELECT 1 FROM @Options o CROSS APPLY OPENJSON(o.OptionsJSON) j
+                WHERE j.[key] COLLATE Latin1_General_100_BIN2 <> 'postRecordingTranscript' OR j.type <> 3)
+            THROW 51000, 'Auto-call profile options allow only one boolean postRecordingTranscript; HistoryID comes from the alarm.', 1;
+
+        BEGIN TRY
+        BEGIN TRANSACTION;
         IF @ProfileID IS NULL
         BEGIN
             INSERT INTO Profiles (
@@ -77,10 +93,9 @@ BEGIN
                 AND DeletedDate IS NULL;
         END;
 
-        DECLARE @XMLDoc int;
         EXEC sp_xml_preparedocument @XMLDoc OUTPUT, @doc;
 
-        DECLARE myCursor CURSOR FOR
+        DECLARE myCursor CURSOR LOCAL FAST_FORWARD FOR
         SELECT EventCode,
             ProfileType,
             DOW,
@@ -184,8 +199,18 @@ BEGIN
         CLOSE myCursor;
         DEALLOCATE myCursor;
         EXEC sp_xml_removedocument @XMLDoc;
+        SET @XMLDoc = NULL;
+        COMMIT TRANSACTION;
 
         SELECT 1 AS success, '' AS msg;
+        END TRY
+        BEGIN CATCH
+            IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;
+            IF CURSOR_STATUS('local', 'myCursor') >= 0 CLOSE myCursor;
+            IF CURSOR_STATUS('local', 'myCursor') > -3 DEALLOCATE myCursor;
+            IF @XMLDoc IS NOT NULL EXEC sp_xml_removedocument @XMLDoc;
+            THROW;
+        END CATCH;
     END
     ELSE
     BEGIN

@@ -325,6 +325,24 @@ public class WorkflowReferenceDataTests
         Assert.Equal(expected, profiles[10].Events["event"][1][0].FlowId);
     }
 
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("OptionsJSON", null)]
+    [InlineData("optionsjson", "{\"postRecordingTranscript\":false}")]
+    [InlineData("OptionsJson", "{}")]
+    public async Task ProfileBuilderReadsOptionalOptionsWithoutChangingTheirText(string? column, string? json)
+    {
+        using var table = Profiles();
+        if (column is not null)
+        {
+            table.Columns.Add(column, typeof(string));
+            table.Rows[0][column] = (object?)json ?? DBNull.Value;
+        }
+        await using var reader = table.CreateDataReader();
+        var profiles = await WorkflowReferenceDataBuilders.BuildProfilesAsync(reader);
+        Assert.Equal(json, profiles[10].Events["event"][1][0].OptionsJson);
+    }
+
     [Fact]
     public async Task HolidayBuilderPreservesContiguousOrderDatesDuplicatesAndEmptyGroupSentinelAsync()
     {

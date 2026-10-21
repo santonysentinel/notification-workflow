@@ -1,10 +1,12 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using ActiveAlarmsParser;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using NotificationWorkflowService.Entity;
 using NotificationWorkflowService.Parser;
+using NotificationWorkflowService.Service.AutoCall;
 using Xunit;
 
 namespace NotificationWorkflowService.Tests;
@@ -175,6 +177,39 @@ public class WorkflowSelectionCharacterizationTests
     }
 
     [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task SelectedItemOptionsReplacePreviousPolicyIncludingNull(int kind)
+    {
+        var parser = Parser(kind);
+        var alarm = Alarm();
+        alarm.StateNo = 2;
+        alarm.HistoryID = 81;
+        alarm.OptionsJson = "{\"postRecordingTranscript\":true}";
+        var item = Item(2, "robo-call");
+        item.Action = 19;
+        item.OptionsJson = "{\"postRecordingTranscript\":false}";
+        AddProfile(parser, item, 10, false);
+        await PopulateAsync(parser, [alarm]);
+        Assert.Equal(item.OptionsJson, alarm.OptionsJson);
+        AssertPolicy(false);
+        item.OptionsJson = null;
+        await PopulateAsync(parser, [alarm]);
+        Assert.Null(alarm.OptionsJson);
+        AssertPolicy(true);
+
+        void AssertPolicy(bool expected)
+        {
+            var request = AutoCallEnqueueService.CaptureRequest(alarm, "DEV1",
+                new AutoCallFlow(12, "{}", "<CallFlow/>"), new Dictionary<string, JsonElement>());
+            using var options = JsonDocument.Parse(request.OptionsJson);
+            Assert.Equal(expected, options.RootElement.GetProperty("postRecordingTranscript").GetBoolean());
+            Assert.Equal(81, options.RootElement.GetProperty("historyId").GetInt32());
+        }
+    }
+
+    [Theory]
     [InlineData(false, "0", 1)]
     [InlineData(false, "1", 3)]
     [InlineData(true, "0", 1)]
@@ -218,6 +253,7 @@ public class WorkflowSelectionCharacterizationTests
         ineligibleNext.LoopStartState = loopStart;
         var next = Item(4, "next");
         next.LoopStartState = -1;
+        next.OptionsJson = null;
         AddProfile(parser, next, 10, false, ineligibleNext, current);
         List<ActiveAlarm> alarms = [alarm];
 
@@ -434,6 +470,7 @@ public class WorkflowSelectionCharacterizationTests
         EndTime = FixedDay.AddHours(23).AddMinutes(59).AddSeconds(59).AddTicks(1),
         StateNo = state,
         FlowId = 12,
+        OptionsJson = "{\"postRecordingTranscript\":false}",
         Action = 2,
         Email = label + "@example.test",
         EmailJoin = 1,
@@ -473,6 +510,7 @@ public class WorkflowSelectionCharacterizationTests
         Assert.Equal(item.NextState, alarm.NextStateNo);
         Assert.Equal(item.Instruction, alarm.Instruction);
         Assert.Equal(item.FlowId, alarm.FlowId);
+        Assert.Equal(item.OptionsJson, alarm.OptionsJson);
         Assert.Equal("profile-" + profileId, alarm.ProfileName);
         Assert.Equal(profileId, alarm.ProfileID);
         Assert.Equal(item.RoleID, alarm.RoleID);

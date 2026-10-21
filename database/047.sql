@@ -31,6 +31,16 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
+    IF @Action = 19 AND @OptionsJSON IS NOT NULL
+    BEGIN
+        IF ISJSON(@OptionsJSON) <> 1 OR LEFT(LTRIM(@OptionsJSON), 1) <> '{'
+            THROW 51000, 'Auto-call profile options must be a JSON object.', 1;
+        IF (SELECT COUNT(*) FROM OPENJSON(@OptionsJSON)) > 1
+            OR EXISTS (SELECT 1 FROM OPENJSON(@OptionsJSON)
+                WHERE [key] COLLATE Latin1_General_100_BIN2 <> 'postRecordingTranscript' OR type <> 3)
+            THROW 51000, 'Auto-call profile options allow only one boolean postRecordingTranscript; HistoryID comes from the alarm.', 1;
+    END;
+
     DECLARE @StartTime time;
     DECLARE @EndTime time;
 

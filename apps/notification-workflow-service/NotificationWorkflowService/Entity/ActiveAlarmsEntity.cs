@@ -49,6 +49,7 @@ namespace NotificationWorkflowService.Entity
         public String Instruction { get; set; }
         public int ProfileID { get; set; }
         public int FlowId { get; set; }
+        public string? OptionsJson { get; set; }
         public int LoopStartState { get; set; }
         public int CurrentLoopNumber { get; set; }
         public int ProcessNextStep { get; set; }
@@ -99,6 +100,7 @@ namespace NotificationWorkflowService.Entity
     {
         public int ProfileID { get; set; }
         public int FlowId { get; set; }
+        public string? OptionsJson { get; set; }
         public String EventCode { get; set; }
         public DateTime StartTime { get; set; }
         public DateTime EndTime { get; set; }
