@@ -14,19 +14,22 @@ public sealed record AutoCallNoteTask
     public long SystemID { get; init; }
     public Guid DeliveryId { get; init; }
     public Guid LeaseToken { get; init; }
-    public int CallId { get; init; }
+    public int? CallId { get; init; }
     public string Kind { get; init; } = "";
     public string OID { get; init; } = "";
     public int HistoryID { get; init; }
     public DateTime OccurredAt { get; init; }
     public int? RecordingId { get; init; }
     public string? MessagesJSON { get; init; }
+    public int? QueueId { get; init; }
+    public int? ActiveAlarmID { get; init; }
 }
 
 public interface IAutoCallNoteRepository
 {
     Task<AutoCallNoteTask?> ClaimAsync(CancellationToken token);
     Task PostAsync(string platform, AutoCallNoteTask task, IReadOnlyList<string> notes, CancellationToken token);
+    Task ReleaseWaitAsync(string platform, AutoCallNoteTask task, CancellationToken token);
     Task FinishAsync(AutoCallNoteTask task, bool success, CancellationToken token);
 }
 
@@ -49,6 +52,16 @@ public sealed class AutoCallNoteRepository(IConfiguration configuration) : IAuto
         await using var connection = Connection(platform);
         await connection.ExecuteAsync(new CommandDefinition("dbo.activealarms_PostAutoCallNotes",
             new { task.DeliveryId, task.HistoryID, task.OID, NotesJSON = JsonSerializer.Serialize(notes) },
+            commandType: CommandType.StoredProcedure, commandTimeout: 30, cancellationToken: token)).ConfigureAwait(false);
+    }
+
+    public async Task ReleaseWaitAsync(string platform, AutoCallNoteTask task, CancellationToken token)
+    {
+        if (task.ActiveAlarmID is not > 0 || task.QueueId is not > 0)
+            throw new InvalidOperationException("Invalid Robo Call wait release payload.");
+        await using var connection = Connection(platform);
+        await connection.ExecuteAsync(new CommandDefinition("dbo.ActiveAlarms_ReleaseAutoCallWait",
+            new { task.ActiveAlarmID, task.QueueId, task.OID },
             commandType: CommandType.StoredProcedure, commandTimeout: 30, cancellationToken: token)).ConfigureAwait(false);
     }
 
@@ -119,9 +132,12 @@ public sealed class AutoCallNoteDeliveryService(IAutoCallNoteRepository reposito
             string value = await routing.GetAsync($"dna.client.{task.OID.ToUpperInvariant()}", deadline.Token).ConfigureAwait(false)
                 ?? throw new InvalidOperationException("Tenant routing was not found.");
             string platform = AutoCallContactService.ParsePlatform(value);
-            await repository.PostAsync(platform, task, AutoCallNoteFormatter.Format(task), deadline.Token).ConfigureAwait(false);
+            if (task.Kind == "RELEASE")
+                await repository.ReleaseWaitAsync(platform, task, deadline.Token).ConfigureAwait(false);
+            else
+                await repository.PostAsync(platform, task, AutoCallNoteFormatter.Format(task), deadline.Token).ConfigureAwait(false);
             await repository.FinishAsync(task, true, deadline.Token).ConfigureAwait(false);
-            logger.LogInformation("Auto-call tenant note {DeliveryId} delivered for call {CallId}", task.DeliveryId, task.CallId);
+            logger.LogInformation("Auto-call tenant {Kind} task {DeliveryId} delivered for call {CallId}", task.Kind, task.DeliveryId, task.CallId);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch (Exception exception)

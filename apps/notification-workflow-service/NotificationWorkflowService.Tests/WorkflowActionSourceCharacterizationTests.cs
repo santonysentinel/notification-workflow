@@ -80,12 +80,14 @@ public class WorkflowActionSourceCharacterizationTests
         string display = steps ? "a.CurrentStateNo" : "a.StateNo+1";
         string loop = steps ? "a.CurrentLoopNumber" : "0";
         string fallback = steps ? "a.CurrentStateNo+1" : "a.StateNo+1";
+        // Only the next-state rows use the Robo Call wait expiry; the archive row keeps the normal expiry.
+        Assert.Contains($"DateTime nextStateExpiry = a.NextStateExpiry({expiry}, DateTime.UtcNow);", tail);
         var expected = new List<string>
         {
             $"CreateAlarmAuditAsync(14,sb.ToString(),a.HistoryID,{step},cancellationToken)",
             $"insertIntoAlarmNotificationAsync(a.SystemID,{step},{expiry},PriorityMapping[a.Priority],cancellationToken)",
-            $"insertIntoCurrentAlarmNotificationAsync(a.SystemID,a.NextStateNo,{expiry},{display},{loop},a.ProcessNextStep,cancellationToken)",
-            $"insertIntoCurrentAlarmNotificationAsync(a.SystemID,{fallback},{expiry},{display},0,1,cancellationToken)"
+            $"insertIntoCurrentAlarmNotificationAsync(a.SystemID,a.NextStateNo,nextStateExpiry,{display},{loop},a.ProcessNextStep,a.RoboCallWaitQueueId,cancellationToken)",
+            $"insertIntoCurrentAlarmNotificationAsync(a.SystemID,{fallback},nextStateExpiry,{display},0,1,a.RoboCallWaitQueueId,cancellationToken)"
         };
         if (!steps)
             expected.Add("updateParserActivtyAsync(sysID,cancellationToken)");
@@ -111,7 +113,7 @@ public class WorkflowActionSourceCharacterizationTests
         Assert.DoesNotMatch(@"\binsert\s*=\s*false\s*;", CodeMask(parse));
         if (IsSteps(file))
         {
-            Assert.Equal(3, Regex.Matches(CodeMask(parse), @"DateTime\.UtcNow\.AddMinutes\(a\.StateTime\)").Count);
+            Assert.Equal(2, Regex.Matches(CodeMask(parse), @"DateTime\.UtcNow\.AddMinutes\(a\.StateTime\)").Count);
             Assert.DoesNotContain("ExpiryTimeApplied", CodeMask(parse));
         }
         else
@@ -198,7 +200,7 @@ public class WorkflowActionSourceCharacterizationTests
     {
         string source = ReadSource(file);
         string state = Method(source, "insertIntoCurrentAlarmNotification");
-        Assert.Contains("repository.PrepareInsertIntoCurrentAlarmNotification(AlarmSystemID, CurentStateNo, ExpiryTime, DisplayStateNo, currentLoopNumber, processNext)", state);
+        Assert.Contains("repository.PrepareInsertIntoCurrentAlarmNotification(AlarmSystemID, CurentStateNo, ExpiryTime, DisplayStateNo, currentLoopNumber, processNext, autoCallQueueId)", state);
         DateTime expiry = new(2026, 10, 1, 12, 34, 56, DateTimeKind.Utc);
         const int alarmSystemID = 11, nextStateNo = 23, displayStateNo = 24, currentLoopNumber = 25, processNext = 1;
         using var stateCommand = WorkflowRepository.BuildInsertIntoCurrentAlarmNotification(

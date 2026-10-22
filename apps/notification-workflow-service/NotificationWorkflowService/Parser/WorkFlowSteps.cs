@@ -589,6 +589,45 @@
             return success;
         }
 
+        internal const string RoboCallWaitTimeoutNote = "Robo Call wait timed out; continuing workflow.";
+
+        // AutoCallQueueId is only returned once tenant script 057.sql is deployed.
+        private static int? ReadOptionalInt(DbDataReader reader, string column)
+        {
+            for (int i = 0; i < reader.FieldCount; i++)
+            {
+                if (!string.Equals(reader.GetName(i), column, StringComparison.OrdinalIgnoreCase)) continue;
+                return reader.IsDBNull(i) ? null : Convert.ToInt32(reader.GetValue(i));
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// A state row that expires while still carrying its Robo Call queue job was not released by call completion,
+        /// so the wait timed out. The note is best effort and never blocks the workflow.
+        /// </summary>
+        private async Task PostRoboCallWaitTimeoutNotesAsync(IEnumerable<ActiveAlarm> alarms, CancellationToken cancellationToken)
+        {
+            foreach (ActiveAlarm a in alarms)
+            {
+                if (a.ExpiredRoboCallWaitQueueId is null) continue;
+                int queueId = a.ExpiredRoboCallWaitQueueId.Value;
+                a.ExpiredRoboCallWaitQueueId = null;
+                try
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await using var operation = repository.PrepareAddHistoryNote(a.HistoryID, RoboCallWaitTimeoutNote);
+                    await operation.OpenAsync(cancellationToken).ConfigureAwait(false);
+                    await operation.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception ex)
+                {
+                    log.LogError(ex, "[{Platform}] Failed to post Robo Call wait timeout note for HistoryID {HistoryID}, QueueId {QueueId}", platForm, a.HistoryID, queueId);
+                }
+            }
+        }
+
         /// <summary>
         /// Gets the active alarms that have expired from the CurrentNotificationState Table and processes their next state.
         /// </summary>
@@ -650,8 +689,10 @@
                                         a.CurrentStateNo = Convert.ToInt32(MyDataReader["CurrentStateNo"]) + 1;
                                     }
                                     a.CurrentLoopNumber = Convert.ToInt32(MyDataReader["CurrentLoopNo"]);
+                                    a.ExpiredRoboCallWaitQueueId = ReadOptionalInt(MyDataReader, "AutoCallQueueId");
                                     activeAlarms.Add(a);
                                 }
+                                await PostRoboCallWaitTimeoutNotesAsync(activeAlarms, cancellationToken).ConfigureAwait(false);
                                 await getPriorityAndEmailAsync(activeAlarms, cancellationToken).ConfigureAwait(false);
                                 success = true;
                                 break;
@@ -853,13 +894,14 @@
                     await insertIntoAlarmNotificationAsync(a.SystemID, a.CurrentStateNo, DateTime.UtcNow.AddMinutes(a.StateTime), PriorityMapping[a.Priority], cancellationToken).ConfigureAwait(false);
 
                     log.LogInformation(String.Format("StepParserAfterCheck::AlarmSystemID::{0}::CurrentStateNo::{1}::NextStateNo::{2}::ProcessNextStep::{3}::StateTime::{4}::CurrentLoopNumber::{5}::insert::{6}", a.SystemID, a.CurrentStateNo, a.NextStateNo, a.ProcessNextStep, a.StateTime, a.CurrentStateNo, insert.ToString()));
+                    DateTime nextStateExpiry = a.NextStateExpiry(DateTime.UtcNow.AddMinutes(a.StateTime), DateTime.UtcNow);
                     if (a.NextStateNo != -1 && insert)
                     {
-                        await insertIntoCurrentAlarmNotificationAsync(a.SystemID, a.NextStateNo, DateTime.UtcNow.AddMinutes(a.StateTime), a.CurrentStateNo, a.CurrentLoopNumber, a.ProcessNextStep, cancellationToken).ConfigureAwait(false);
+                        await insertIntoCurrentAlarmNotificationAsync(a.SystemID, a.NextStateNo, nextStateExpiry, a.CurrentStateNo, a.CurrentLoopNumber, a.ProcessNextStep, a.RoboCallWaitQueueId, cancellationToken).ConfigureAwait(false);
                     }
                     else if (insert)
                     {
-                        await insertIntoCurrentAlarmNotificationAsync(a.SystemID, a.CurrentStateNo + 1, DateTime.UtcNow.AddMinutes(a.StateTime), a.CurrentStateNo, 0, 1, cancellationToken).ConfigureAwait(false);
+                        await insertIntoCurrentAlarmNotificationAsync(a.SystemID, a.CurrentStateNo + 1, nextStateExpiry, a.CurrentStateNo, 0, 1, a.RoboCallWaitQueueId, cancellationToken).ConfigureAwait(false);
                     }
 
                     //DateTime ExpiryTime = DateTime.Parse(a.ExpiryTime);
@@ -914,7 +956,7 @@
                 await operation.OpenAsync(cancellationToken).ConfigureAwait(false);
                 await operation.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
-            public Task EnqueueAutoCallAsync(ActiveAlarm alarm, string platform, CancellationToken cancellationToken = default) => parser.autoCallService.EnqueueAsync(alarm, platform, cancellationToken);
+            public Task<int> EnqueueAutoCallAsync(ActiveAlarm alarm, string platform, CancellationToken cancellationToken = default) => parser.autoCallService.EnqueueAsync(alarm, platform, cancellationToken);
             public Task AddNoteAsync(string template, string oid, int activeAlarmId, int historyId, CancellationToken cancellationToken = default) => parser.noteService.AddNoteAsync(template, oid, activeAlarmId, historyId, cancellationToken);
             public Task SendNotificationsToOfficersInSameGroupAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.SendNotificationsToOfficersInSameGroupAsync(a, cancellationToken);
             public Task<bool> PushAlertToMcAppAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.PushAlertToMcAppAsync(a, cancellationToken);
@@ -1255,12 +1297,12 @@
         /// <param name="currentLoopNumber">The currentLoopNumber<see cref="int"/>.</param>
         /// <param name="processNext">The processNext<see cref="int"/>.</param>
         /// <returns>The <see cref="bool"/>.</returns>
-        private async Task<bool> insertIntoCurrentAlarmNotificationAsync(int AlarmSystemID, int CurentStateNo, DateTime ExpiryTime, int DisplayStateNo, int currentLoopNumber, int processNext, CancellationToken cancellationToken = default)
+        private async Task<bool> insertIntoCurrentAlarmNotificationAsync(int AlarmSystemID, int CurentStateNo, DateTime ExpiryTime, int DisplayStateNo, int currentLoopNumber, int processNext, int? autoCallQueueId = null, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
             //Create a connection to the SQL Server;
-            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertIntoCurrentAlarmNotification(AlarmSystemID, CurentStateNo, ExpiryTime, DisplayStateNo, currentLoopNumber, processNext)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertIntoCurrentAlarmNotification(AlarmSystemID, CurentStateNo, ExpiryTime, DisplayStateNo, currentLoopNumber, processNext, autoCallQueueId)))
             {
                 try
                 {

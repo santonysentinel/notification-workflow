@@ -57,6 +57,23 @@ namespace NotificationWorkflowService.Entity
         public Boolean FeedbackREQ { get; set; }
         public Boolean IsAlarmClearingEnabled { get; set; }
         public String ExpiryTime { get; set; }
+        /// <summary>Queue job the next step is waiting on; set by a Robo Call action with WaitForCallCompletion.</summary>
+        public int? RoboCallWaitQueueId { get; set; }
+        public int RoboCallWaitSeconds { get; set; }
+        /// <summary>Queue job still recorded on an expired state row, meaning the Robo Call wait timed out.</summary>
+        public int? ExpiredRoboCallWaitQueueId { get; set; }
+
+        /// <summary>
+        /// Next-state expiry: the parser's normal expiry, or for a Robo Call wait now + max(StateTime, call timeout)
+        /// so the step waits for the call (released early by the TenantNotes worker when the call ends).
+        /// </summary>
+        public DateTime NextStateExpiry(DateTime normalExpiry, DateTime utcNow)
+        {
+            if (RoboCallWaitQueueId is null) return normalExpiry;
+            var stateTime = TimeSpan.FromMinutes(StateTime);
+            var timeout = TimeSpan.FromSeconds(RoboCallWaitSeconds);
+            return utcNow + (stateTime > timeout ? stateTime : timeout);
+        }
         public String EventDateTimeLocal { get; set; }
         public String EventDateTimeUTC { get; set; }
         public String ZoneID { get; set; }

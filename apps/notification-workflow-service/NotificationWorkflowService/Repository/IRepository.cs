@@ -44,7 +44,7 @@ namespace NotificationWorkflowService.Repository
         IWorkflowOperation PrepareReadCurrentActiveAlarmPoint(bool reloadConnectionString = false);
         IWorkflowOperation PrepareUpdateParserActivty(int? systemID, string? parserId);
         IWorkflowOperation PrepareInsertIntoAlarmNotification(int alarmSystemID, int currentStateNo, DateTime expiryTime, string? action);
-        IWorkflowOperation PrepareInsertIntoCurrentAlarmNotification(int alarmSystemID, int currentStateNo, DateTime expiryTime, int displayStateNo, int currentLoopNumber, int processNext);
+        IWorkflowOperation PrepareInsertIntoCurrentAlarmNotification(int alarmSystemID, int currentStateNo, DateTime expiryTime, int displayStateNo, int currentLoopNumber, int processNext, int? autoCallQueueId = null);
         IWorkflowOperation PrepareGetExpiredAlarms(DateTime currentTime);
     }
 }

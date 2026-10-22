@@ -69,8 +69,12 @@ public sealed class AutoCallEnqueueService(IAutoCallQueueRepository repository, 
         hash[8] = (byte)((hash[8] & 63) | 128);
         var key = new Guid(hash.AsSpan(0, 16), bigEndian: true);
         // The central queue contract keeps its own name for the profile's ShowParticipantResponseTranscript setting.
+        // waitForCompletion is only written when true so non-waiting snapshots keep their original two-key shape.
+        string queueOptions = options.WaitForCallCompletion
+            ? JsonSerializer.Serialize(new { historyId = alarm.HistoryID, postRecordingTranscript = options.ShowParticipantResponseTranscript, waitForCompletion = true })
+            : JsonSerializer.Serialize(new { historyId = alarm.HistoryID, postRecordingTranscript = options.ShowParticipantResponseTranscript });
         return new AutoCallRequest(alarm.SystemID, alarm.ClientID, options.FlowId, JsonSerializer.Serialize(participantDetails), key, alarm.POGroupNum,
-            JsonSerializer.Serialize(new { historyId = alarm.HistoryID, postRecordingTranscript = options.ShowParticipantResponseTranscript }));
+            queueOptions);
     }
 
     internal static void ValidatePOGroupNum(string? poGroupNum)

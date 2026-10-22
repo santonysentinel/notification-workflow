@@ -150,6 +150,11 @@ public sealed class WorkflowRepositoryTests
             P("@AlarmSystemID", SqlDbType.Int, 11), P("@CurrentStateNo", SqlDbType.Int, 24),
             P("@ExpiryTime", SqlDbType.DateTime, Time), P("@ParserStateNo", SqlDbType.Int, 23),
             P("@ProcessNextStep", SqlDbType.Bit, 1), P("@CurrentLoopNumber", SqlDbType.Int, 25));
+        Contract(WorkflowRepository.BuildInsertIntoCurrentAlarmNotification(11, 23, Time, 24, 25, 1, 909), "ActiveAlarms_InsertIntoCNotificationState",
+            P("@AlarmSystemID", SqlDbType.Int, 11), P("@CurrentStateNo", SqlDbType.Int, 24),
+            P("@ExpiryTime", SqlDbType.DateTime, Time), P("@ParserStateNo", SqlDbType.Int, 23),
+            P("@ProcessNextStep", SqlDbType.Bit, 1), P("@CurrentLoopNumber", SqlDbType.Int, 25),
+            P("@AutoCallQueueId", SqlDbType.Int, 909));
         Contract(WorkflowRepository.BuildGetExpiredAlarms(Time), "ActiveAlarms_RemoveExpiredNotificationAlarms",
             P("@CurrentTime", SqlDbType.DateTime, Time));
         using var last = WorkflowRepository.BuildReadLastSuccessfulProcess(int.MaxValue);

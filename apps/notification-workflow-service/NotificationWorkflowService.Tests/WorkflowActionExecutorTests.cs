@@ -102,6 +102,42 @@ public class WorkflowActionExecutorTests
     }
 
     [Theory]
+    [InlineData(false, """{"participantRoboCall":{"FlowId":4,"WaitForCallCompletion":false,"CallTimeoutSeconds":90}}""", 909, null, 0)]
+    [InlineData(false, """{"participantRoboCall":{"FlowId":4,"WaitForCallCompletion":true,"CallTimeoutSeconds":90}}""", 909, 909, 90)]
+    [InlineData(true, """{"participantRoboCall":{"FlowId":4,"WaitForCallCompletion":true,"CallTimeoutSeconds":null}}""", 909, 909, 300)]
+    [InlineData(true, """{"participantRoboCall":{"FlowId":4,"WaitForCallCompletion":true}}""", 0, null, 0)]
+    public async Task RoboCallWait_IsRecordedOnlyWhenOptionsAskAndAQueueJobExistsAsync(
+        bool step, string optionsJson, int queueId, int? expectedQueueId, int expectedSeconds)
+    {
+        var fixture = new Fixture(step, 19);
+        fixture.Alarm.OptionsJson = optionsJson;
+        fixture.Alarm.RoboCallWaitQueueId = 12345;
+        fixture.Operations.QueueId = queueId;
+
+        AssertResult(Find(19, 0), step, await fixture.ExecuteAsync());
+
+        Assert.Equal(expectedQueueId, fixture.Alarm.RoboCallWaitQueueId);
+        if (expectedQueueId is not null) Assert.Equal(expectedSeconds, fixture.Alarm.RoboCallWaitSeconds);
+        Assert.Equal(["autocall", "historyNote"], fixture.Operations.Calls.Select(call => call.Name));
+    }
+
+    [Fact]
+    public void NextStateExpiry_UsesLongerOfStateTimeAndCallTimeoutOnlyWhenWaiting()
+    {
+        var now = new DateTime(2025, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+        var normal = now.AddMinutes(-7);
+        var alarm = new ActiveAlarm { StateTime = 2 };
+        Assert.Equal(normal, alarm.NextStateExpiry(normal, now));
+
+        alarm.RoboCallWaitQueueId = 5;
+        alarm.RoboCallWaitSeconds = 300;
+        Assert.Equal(now.AddSeconds(300), alarm.NextStateExpiry(normal, now));
+
+        alarm.RoboCallWaitSeconds = 60;
+        Assert.Equal(now.AddMinutes(2), alarm.NextStateExpiry(normal, now));
+    }
+
+    [Theory]
     [MemberData(nameof(Cases))]
     public async Task FalseBooleanReturns_AreIgnoredAndOfficerOperationIsNotExpandedAsync(bool step, int priority, int role)
     {
@@ -417,7 +453,8 @@ public class WorkflowActionExecutorTests
                 SystemID = 101, HistoryID = 211, ClientID = "client", AlarmID = "alarm", POGroupNum = "group",
                 StateNo = 31, CurrentStateNo = 47, NextStateNo = 53, ProcessNextStep = InitialProcessNext,
                 Priority = priority, RoleAction = role, RoleID = 61, Instruction = "Call officers",
-                EmailAddresses = OfficerMail, EmailJoin = 1
+                EmailAddresses = OfficerMail, EmailJoin = 1,
+                OptionsJson = """{"participantRoboCall":{"FlowId":4}}"""
             };
             Operations = new RecordingOperations(Alarm);
             Victims = new()
@@ -457,8 +494,9 @@ public class WorkflowActionExecutorTests
         { Record(Operation("officers", a)); return Task.CompletedTask; }
         public Task AddNoteAsync(string template, string oid, int activeAlarmId, int historyId, CancellationToken cancellationToken = default)
         { Record(new Call("note", Text: template, Oid: oid, HistoryID: historyId)); return Task.CompletedTask; }
-        public Task EnqueueAutoCallAsync(ActiveAlarm a, string platform, CancellationToken cancellationToken = default)
-        { Record(Operation("autocall", a)); return Task.CompletedTask; }
+        public int QueueId { get; set; } = 909;
+        public Task<int> EnqueueAutoCallAsync(ActiveAlarm a, string platform, CancellationToken cancellationToken = default)
+        { Record(Operation("autocall", a)); return Task.FromResult(QueueId); }
         public Task AddHistoryNoteAsync(int historyID, string noteText, CancellationToken cancellationToken = default)
         { Record(new Call("historyNote", Text: noteText, HistoryID: historyID)); return Task.CompletedTask; }
         public Task<bool> PushAlertToMcAppAsync(ActiveAlarm a, CancellationToken cancellationToken = default)

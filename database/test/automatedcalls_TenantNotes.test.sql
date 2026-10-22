@@ -48,7 +48,7 @@ BEGIN TRY
     (
         SystemID bigint, DeliveryId uniqueidentifier, LeaseToken uniqueidentifier, CallId int,
         Kind varchar(20), OID varchar(20), HistoryID int, OccurredAt datetime2(3),
-        RecordingId int, MessagesJSON nvarchar(max)
+        RecordingId int, MessagesJSON nvarchar(max), QueueId int, ActiveAlarmID int
     );
     INSERT @Claim EXEC dbo.automatedcalls_ClaimNote;
     IF EXISTS (SELECT 1 FROM @Claim)
@@ -155,7 +155,133 @@ BEGIN TRY
     IF (SELECT COUNT(*) FROM dbo.AutomatedCallNoteOutbox WHERE CallId = @DisabledCall) <> 1
         OR EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE CallId = @DisabledCall AND Kind <> 'COMPLETED')
         THROW 51000, 'Disabling transcripts must retain only the completion note.', 1;
+    IF EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'RELEASE')
+        THROW 51000, 'Jobs enqueued without waitForCompletion must never release a workflow wait.', 1;
+
+    -- Robo Call waits: every terminal path queues exactly one RELEASE for its queue job.
+    UPDATE dbo.AutomatedCallNoteOutbox SET Status = 'SKIPPED' WHERE Status IN ('READY', 'PROCESSING');
+    DECLARE @WaitOptions nvarchar(max) = N'{"historyId":82,"postRecordingTranscript":false,"waitForCompletion":true}';
+    DECLARE @WaitKey uniqueidentifier = NEWID(), @Worker varchar(100) = 'wait-test';
+    DECLARE @FirstWaitKey uniqueidentifier = @WaitKey;
+    DELETE @Queue;
+    INSERT @Queue EXEC dbo.activealarms_call_InsertJob @ActiveAlarmID = 44, @OID = 'original-oid',
+        @FlowId = @FlowId, @VariablesJSON = N'{}', @EnqueueIdempotencyKey = @WaitKey,
+        @POGroupNum = 'note-group', @OptionsJSON = @WaitOptions;
+    INSERT @Queue EXEC dbo.activealarms_call_InsertJob @ActiveAlarmID = 44, @OID = 'original-oid',
+        @FlowId = @FlowId, @VariablesJSON = N'{}', @EnqueueIdempotencyKey = @WaitKey, @POGroupNum = 'note-group',
+        @OptionsJSON = N'{"waitForCompletion":true,"historyId":82,"postRecordingTranscript":false}';
+    IF (SELECT COUNT(DISTINCT SystemID) FROM @Queue) <> 1
+        THROW 51000, 'Equivalent wait options must replay the same queue identity.', 1;
+    DECLARE @WaitQueue int = (SELECT TOP (1) SystemID FROM @Queue);
+    SET @Lease = NEWID();
+    UPDATE dbo.AutomatedCallQueue SET Status = 'PROCESSING', LeaseToken = @Lease, LockedBy = @Worker,
+        LockedUntil = DATEADD(minute, 5, SYSUTCDATETIME()) WHERE SystemID = @WaitQueue;
+    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, QueueLeaseToken, Provider, OID, PhoneE164, FlowId, CallStatus)
+    VALUES (@WaitQueue, @Lease, 'Twilio', 'original-oid', '+15555550101', @FlowId, 'in-progress');
+    DECLARE @WaitCall int = SCOPE_IDENTITY();
+    UPDATE dbo.AutomatedCallQueue SET CurrentAttemptId = @WaitCall WHERE SystemID = @WaitQueue;
+    EXEC dbo.automatedcalls_Status @WaitCall, 'CAcccccccccccccccccccccccccccccccc', '+15555550101',
+        'ringing', 1, @End, NULL;
+    IF EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'RELEASE')
+        THROW 51000, 'Non-terminal callbacks must not release the workflow wait.', 1;
+    EXEC dbo.automatedcalls_Status @WaitCall, 'CAcccccccccccccccccccccccccccccccc', '+15555550101',
+        'no-answer', 2, @End, 0;
+    EXEC dbo.automatedcalls_Status @WaitCall, 'CAcccccccccccccccccccccccccccccccc', '+15555550101',
+        'no-answer', 2, @End, 0;
+    IF (SELECT COUNT(*) FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'RELEASE') <> 1 OR NOT EXISTS
+    (
+        SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'RELEASE' AND QueueId = @WaitQueue
+          AND SourceId = @WaitQueue AND ActiveAlarmID = 44 AND HistoryID = 82 AND OID = 'original-oid'
+          AND CallId = @WaitCall AND Status = 'READY'
+    )
+        THROW 51000, 'Any final call outcome must queue one release with the original routing.', 1;
+    DELETE @Claim;
+    INSERT @Claim EXEC dbo.automatedcalls_ClaimNote;
+    IF NOT EXISTS (SELECT 1 FROM @Claim WHERE Kind = 'RELEASE' AND QueueId = @WaitQueue AND ActiveAlarmID = 44
+        AND HistoryID = 82 AND OID = 'original-oid')
+        THROW 51000, 'Release tasks must be claimable immediately with queue and alarm identity.', 1;
+    SELECT @Id = SystemID, @Token = LeaseToken FROM @Claim;
+    EXEC dbo.automatedcalls_FinishNote @Id, @Token, 1;
+
+    -- Preparation failure releases without a provider call attempt.
+    SET @WaitKey = NEWID();
+    DELETE @Queue;
+    INSERT @Queue EXEC dbo.activealarms_call_InsertJob @ActiveAlarmID = 45, @OID = 'original-oid',
+        @FlowId = @FlowId, @VariablesJSON = N'{}', @EnqueueIdempotencyKey = @WaitKey,
+        @POGroupNum = 'note-group', @OptionsJSON = @WaitOptions;
+    DECLARE @PrepQueue int = (SELECT SystemID FROM @Queue);
+    SET @Lease = NEWID();
+    UPDATE dbo.AutomatedCallQueue SET Status = 'PROCESSING', LeaseToken = @Lease, LockedBy = @Worker,
+        LockedUntil = DATEADD(minute, 5, SYSUTCDATETIME()) WHERE SystemID = @PrepQueue;
+    EXEC dbo.automatedcalls_FailPreparation @PrepQueue, @Lease, @Worker;
+    IF NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'RELEASE' AND QueueId = @PrepQueue
+        AND CallId IS NULL AND ActiveAlarmID = 45)
+        THROW 51000, 'Preparation failures must release the workflow wait.', 1;
+
+    -- Recovery: WAIT keeps the job alive; DEAD_LETTER is final and releases.
+    SET @WaitKey = NEWID();
+    DELETE @Queue;
+    INSERT @Queue EXEC dbo.activealarms_call_InsertJob @ActiveAlarmID = 46, @OID = 'original-oid',
+        @FlowId = @FlowId, @VariablesJSON = N'{}', @EnqueueIdempotencyKey = @WaitKey,
+        @POGroupNum = 'note-group', @OptionsJSON = @WaitOptions;
+    DECLARE @DeadQueue int = (SELECT SystemID FROM @Queue);
+    SET @Lease = NEWID();
+    UPDATE dbo.AutomatedCallQueue SET Status = 'PROCESSING', LeaseToken = @Lease, LockedBy = @Worker,
+        LockedUntil = DATEADD(minute, 5, SYSUTCDATETIME()) WHERE SystemID = @DeadQueue;
+    EXEC dbo.automatedcalls_RecoveryDisposition @DeadQueue, @Lease, @Worker, 'WAIT', 'TEST', 1, 3, 3, 24;
+    IF EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'RELEASE' AND QueueId = @DeadQueue)
+        THROW 51000, 'Recoverable dispositions must not release the workflow wait.', 1;
+    SET @Lease = NEWID();
+    UPDATE dbo.AutomatedCallQueue SET Status = 'PROCESSING', LeaseToken = @Lease, LockedBy = @Worker,
+        LockedUntil = DATEADD(minute, 5, SYSUTCDATETIME()) WHERE SystemID = @DeadQueue;
+    EXEC dbo.automatedcalls_RecoveryDisposition @DeadQueue, @Lease, @Worker, 'DEAD_LETTER', 'TEST', 1, 3, 3, 24;
+    IF NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'RELEASE' AND QueueId = @DeadQueue AND ActiveAlarmID = 46)
+        THROW 51000, 'Giving up on a queue job must release the workflow wait.', 1;
+
+    -- Reconciliation: a non-terminal observation keeps waiting; a terminal one releases.
+    SET @WaitKey = NEWID();
+    DELETE @Queue;
+    INSERT @Queue EXEC dbo.activealarms_call_InsertJob @ActiveAlarmID = 47, @OID = 'original-oid',
+        @FlowId = @FlowId, @VariablesJSON = N'{}', @EnqueueIdempotencyKey = @WaitKey,
+        @POGroupNum = 'note-group', @OptionsJSON = @WaitOptions;
+    DECLARE @ObservedQueue int = (SELECT SystemID FROM @Queue);
+    SET @Lease = NEWID();
+    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, QueueLeaseToken, Provider, providerCallId, OID, PhoneE164, FlowId, CallStatus)
+    VALUES (@ObservedQueue, @Lease, 'Twilio', 'CAdddddddddddddddddddddddddddddddd', 'original-oid', '+15555550102', @FlowId, 'in-progress');
+    DECLARE @ObservedCall int = SCOPE_IDENTITY();
+    UPDATE dbo.AutomatedCallQueue SET Status = 'PROCESSING', LeaseToken = @Lease, LockedBy = @Worker, CurrentAttemptId = @ObservedCall,
+        LockedUntil = DATEADD(minute, 5, SYSUTCDATETIME()) WHERE SystemID = @ObservedQueue;
+    EXEC dbo.automatedcalls_Observe @ObservedQueue, @Lease, @Worker, @ObservedCall, 'CAdddddddddddddddddddddddddddddddd', 'in-progress';
+    IF EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'RELEASE' AND QueueId = @ObservedQueue)
+        THROW 51000, 'In-progress reconciliation must not release the workflow wait.', 1;
+    SET @Lease = NEWID();
+    UPDATE dbo.AutomatedCallQueue SET Status = 'PROCESSING', LeaseToken = @Lease, LockedBy = @Worker,
+        LockedUntil = DATEADD(minute, 5, SYSUTCDATETIME()) WHERE SystemID = @ObservedQueue;
+    EXEC dbo.automatedcalls_Observe @ObservedQueue, @Lease, @Worker, @ObservedCall, 'CAdddddddddddddddddddddddddddddddd', 'busy';
+    IF NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'RELEASE' AND QueueId = @ObservedQueue
+        AND CallId = @ObservedCall AND ActiveAlarmID = 47)
+        THROW 51000, 'Terminal reconciliation must release the workflow wait.', 1;
     COMMIT;
+
+    BEGIN TRY
+        EXEC dbo.activealarms_call_InsertJob @ActiveAlarmID = 44, @OID = 'original-oid', @FlowId = @FlowId,
+            @VariablesJSON = N'{}', @EnqueueIdempotencyKey = @FirstWaitKey, @POGroupNum = 'note-group',
+            @OptionsJSON = N'{"historyId":82,"postRecordingTranscript":false}';
+        THROW 51002, 'Enqueue replay must not change wait policy.', 1;
+    END TRY
+    BEGIN CATCH
+        IF ERROR_NUMBER() <> 51001 THROW;
+    END CATCH;
+    BEGIN TRY
+        DECLARE @BadWaitKey uniqueidentifier = NEWID();
+        EXEC dbo.activealarms_call_InsertJob @ActiveAlarmID = 48, @OID = 'original-oid', @FlowId = @FlowId,
+            @VariablesJSON = N'{}', @EnqueueIdempotencyKey = @BadWaitKey, @POGroupNum = 'note-group',
+            @OptionsJSON = N'{"historyId":82,"postRecordingTranscript":false,"waitForCompletion":"yes"}';
+        THROW 51002, 'Wait policy must be a JSON boolean.', 1;
+    END TRY
+    BEGIN CATCH
+        IF ERROR_NUMBER() <> 51000 THROW;
+    END CATCH;
 
     BEGIN TRY
         EXEC dbo.activealarms_call_InsertJob @ActiveAlarmID = 42, @OID = 'original-oid', @FlowId = @FlowId,

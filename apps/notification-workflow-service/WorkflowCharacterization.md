@@ -99,6 +99,9 @@ Normal action audits use step 1; steps use CurrentStateNo.
 - Normal expiry is min(event timestamp + StateTime, UTC now + StateTime). Parsing the
   received timestamp also occurs even though the parsed value is unused.
 - Step expiry uses UTC now + StateTime, not the stored previous expiry.
+- Exception (both parsers): after a Robo Call (action 19) with
+  `WaitForCallCompletion`, next-step expiry is UTC now + max(StateTime, CallTimeoutSeconds)
+  and the row carries `AutoCallQueueId`; see docs/autocall/README.md.
 - Normal archive uses state 1. Step archive uses CurrentStateNo.
 - Normal explicit-next-state insertion carries NextStateNo with display StateNo + 1,
   loop 0 and ProcessNextStep. Without explicit next state it uses StateNo + 1 and flag 1.

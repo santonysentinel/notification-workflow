@@ -111,6 +111,31 @@ public sealed class AutoCallEnqueueTests
         Assert.Equal(Capture(alarm).OptionsJson, request.OptionsJson);
     }
 
+    [Theory]
+    [InlineData(",\"WaitForCallCompletion\":true,\"CallTimeoutSeconds\":null", true, 300)]
+    [InlineData(",\"WaitForCallCompletion\":true", true, 300)]
+    [InlineData(",\"waitForCallCompletion\":true,\"callTimeoutSeconds\":45", true, 45)]
+    [InlineData(",\"WaitForCallCompletion\":null,\"CallTimeoutSeconds\":45", false, 45)]
+    [InlineData("", false, 300)]
+    public async Task WaitForCallCompletionIsParsedAndOnlyAddsQueueFlagWhenWaiting(string extra, bool wait, int timeout)
+    {
+        var alarm = Alarm();
+        var original = Capture(alarm);
+        alarm.OptionsJson = RoboCallOptions(extra: extra);
+        var parsed = ParticipantRoboCallOptions.Parse(alarm.OptionsJson);
+        Assert.Equal(wait, parsed.WaitForCallCompletion);
+        Assert.Equal(timeout, parsed.CallTimeoutSeconds);
+
+        var repository = new Repository();
+        await new AutoCallEnqueueService(repository, new ParticipantCurrentDetailsTests.Stub()).EnqueueAsync(alarm, "DEV1");
+        var request = Assert.IsType<AutoCallRequest>(repository.Request);
+        using var options = JsonDocument.Parse(request.OptionsJson);
+        Assert.Equal(wait ? 3 : 2, options.RootElement.EnumerateObject().Count());
+        Assert.Equal(wait, options.RootElement.TryGetProperty("waitForCompletion", out var flag) && flag.GetBoolean());
+        Assert.Equal(81, options.RootElement.GetProperty("historyId").GetInt32());
+        Assert.Equal(original.EnqueueIdempotencyKey, request.EnqueueIdempotencyKey);
+    }
+
     [Fact]
     public async Task FlowIdComesFromParticipantRoboCallOptionsCaseInsensitively()
     {
@@ -146,6 +171,13 @@ public sealed class AutoCallEnqueueTests
     [InlineData("{\"participantRoboCall\":{\"FlowId\":4},\"ParticipantRoboCall\":{\"FlowId\":4}}")]
     [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"ShowParticipantResponseTranscript\":\"false\"}}")]
     [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"ShowParticipantResponseTranscript\":0}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"WaitForCallCompletion\":\"true\"}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"WaitForCallCompletion\":1}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"CallTimeoutSeconds\":0}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"CallTimeoutSeconds\":-30}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"CallTimeoutSeconds\":12.5}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"CallTimeoutSeconds\":\"60\"}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"CallTimeoutSeconds\":3000000000}}")]
     public async Task InvalidProfilePolicyFailsBeforeDatabaseAccess(string? json)
     {
         var alarm = Alarm();

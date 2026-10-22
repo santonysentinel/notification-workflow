@@ -428,6 +428,39 @@ public class WorkflowRepositoryAdapterTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExpiredRoboCallWaitRowsPostTimeoutNoteBeforeProfileFilteringAndSwallowNoteFailuresAsync(bool failFirstNote)
+    {
+        var spy = RepositorySpy.Create();
+        string[] columns = ["HistoryID", "AgencyID", "ClientID", "OID", "OTZ", "AlarmSystemID", "AlarmID",
+            "DeviceID", "StateID", "ReceivedDateTime", "EventDateTime", "EventDescription", "SystemID",
+            "POGroupNum", "POGroup1", "POGroup2", "POGroup3", "ExpiryTime", "ParserStateNo", "CurrentStateNo", "CurrentLoopNo", "AutoCallQueueId"];
+        object[] Row(int historyID, string client, object queueId) => [historyID, 31, 41, client, "UTC", 901, "event",
+            "device", 5, 1_700_000_060L, 1_700_000_000L, "alarm", historyID + 1, "group", "", "", "",
+            "2026-10-01 12:34:56", 2, 1, 3, queueId];
+        spy.Rows = call => call.Name == "PrepareGetExpiredAlarms"
+            ? Table(columns, Row(1101, "missing", 77), Row(1201, "missing", DBNull.Value), Row(1301, "missing", 78))
+            : new DataTable();
+        if (failFirstNote)
+            spy.PreparationFailure = call => call.Name == "PrepareAddHistoryNote" && (int)call.Arguments[0]! == 1101
+                ? new InvalidOperationException("note failed") : null;
+        object parser = Parser(2, spy);
+
+        Assert.Equal(true, await CallAsync(parser, "getExpiredAlarms"));
+
+        var notes = spy.Calls.Where(call => call.Name == "PrepareAddHistoryNote").ToArray();
+        Assert.Equal(new object?[] { 1101, 1301 }, notes.Select(call => call.Arguments[0]));
+        Assert.All(notes, call => Assert.Equal(WorkFlowSteps.RoboCallWaitTimeoutNote, call.Arguments[1]));
+        Assert.Equal("Robo Call wait timed out; continuing workflow.", WorkFlowSteps.RoboCallWaitTimeoutNote);
+        Assert.All(notes.Where(call => call.Operation is not null),
+            call => Assert.Equal(new[] { "Open", "ExecuteNonQuery", "Dispose" }, call.Operation!.Events));
+        Assert.Equal(failFirstNote ? 1 : 2, notes.Count(call => call.Operation is not null));
+        // Profile filtering still drops alarms whose client has no profile.
+        Assert.Empty(Field<List<ActiveAlarm>>(parser, "activeAlarms"));
+    }
+
+    [Theory]
     [InlineData(0)]
     [InlineData(1)]
     public async Task VictimZoneSetsDeduplicateButClearingEventListsKeepDuplicatesAsync(int kind)
@@ -741,7 +774,7 @@ public class WorkflowRepositoryAdapterTests
             "readLastSuccessfulProcess" => [47],
             "updateParserActivty" => [parts.Length == 2 ? null : 101],
             "insertIntoAlarmNotification" => [101, 4, Expiry, "archive-action"],
-            "insertIntoCurrentAlarmNotification" => [101, 4, Expiry, 6, 8, 0],
+            "insertIntoCurrentAlarmNotification" => [101, 4, Expiry, 6, 8, 0, 77],
             _ => []
         };
         string prepare = "Prepare" + char.ToUpperInvariant(method[0]) + method[1..];

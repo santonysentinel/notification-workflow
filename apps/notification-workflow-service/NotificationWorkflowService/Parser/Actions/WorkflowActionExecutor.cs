@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using NotificationWorkflowService.Entity;
+using NotificationWorkflowService.Service.AutoCall;
 using System.Text;
 
 namespace NotificationWorkflowService.Parser.Actions;
@@ -253,8 +254,15 @@ internal static class WorkflowActionExecutor
             case 19:
                 sb.Append("Auto Call Participant");
                 WriteAction(a, context, "Auto Call Participant");
-                await operations.EnqueueAutoCallAsync(a, context.Platform, cancellationToken).ConfigureAwait(false);
+                a.RoboCallWaitQueueId = null;
+                int queueId = await operations.EnqueueAutoCallAsync(a, context.Platform, cancellationToken).ConfigureAwait(false);
                 await operations.AddHistoryNoteAsync(a.HistoryID, "Robo Call queued for participant.", cancellationToken).ConfigureAwait(false);
+                var roboCallOptions = ParticipantRoboCallOptions.Parse(a.OptionsJson);
+                if (roboCallOptions.WaitForCallCompletion && queueId > 0)
+                {
+                    a.RoboCallWaitQueueId = queueId;
+                    a.RoboCallWaitSeconds = roboCallOptions.CallTimeoutSeconds;
+                }
                 break;
             default:
                 sb.Append("Do Nothing");

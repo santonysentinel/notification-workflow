@@ -4,11 +4,13 @@ namespace NotificationWorkflowService.Service.AutoCall;
 
 /// <summary>
 /// Action-19 settings read from tenant <c>ProfileItems.OptionsJSON.participantRoboCall</c>.
-/// Property names match case-insensitively; settings not yet consumed (devices, timeout, etc.) are ignored.
+/// Property names match case-insensitively; settings not yet consumed (devices, etc.) are ignored.
 /// </summary>
-public sealed record ParticipantRoboCallOptions(int FlowId, bool ShowParticipantResponseTranscript)
+public sealed record ParticipantRoboCallOptions(int FlowId, bool ShowParticipantResponseTranscript,
+    bool WaitForCallCompletion = false, int CallTimeoutSeconds = ParticipantRoboCallOptions.DefaultCallTimeoutSeconds)
 {
     public const string SectionName = "participantRoboCall";
+    public const int DefaultCallTimeoutSeconds = 300;
 
     public static ParticipantRoboCallOptions Parse(string? optionsJson)
     {
@@ -35,7 +37,21 @@ public sealed record ParticipantRoboCallOptions(int FlowId, bool ShowParticipant
                 { ValueKind: JsonValueKind.False } => false,
                 _ => throw Invalid($"OptionsJSON.{SectionName}.ShowParticipantResponseTranscript must be a boolean."),
             };
-            return new ParticipantRoboCallOptions(flowId, showTranscript);
+            bool wait = Single(section, "WaitForCallCompletion") switch
+            {
+                null or { ValueKind: JsonValueKind.Null } or { ValueKind: JsonValueKind.False } => false,
+                { ValueKind: JsonValueKind.True } => true,
+                _ => throw Invalid($"OptionsJSON.{SectionName}.WaitForCallCompletion must be a boolean."),
+            };
+
+            int timeout = DefaultCallTimeoutSeconds;
+            var timeoutElement = Single(section, "CallTimeoutSeconds");
+            if (timeoutElement is { ValueKind: not JsonValueKind.Null })
+            {
+                if (timeoutElement.Value.ValueKind != JsonValueKind.Number || !timeoutElement.Value.TryGetInt32(out timeout) || timeout <= 0)
+                    throw Invalid($"OptionsJSON.{SectionName}.CallTimeoutSeconds must be a positive integer or null.");
+            }
+            return new ParticipantRoboCallOptions(flowId, showTranscript, wait, timeout);
         }
     }
 

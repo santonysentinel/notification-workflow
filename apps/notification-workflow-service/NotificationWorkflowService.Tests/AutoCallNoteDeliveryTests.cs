@@ -87,6 +87,23 @@ public sealed class AutoCallNoteDeliveryTests
         Assert.Equal(new[] { "claim", "post", failPost ? "failed" : "delivered" }, repository.Events);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task WaitReleaseRoutesOriginalOidWithoutPostingNotes(bool failRelease)
+    {
+        var release = Completion() with { Kind = "RELEASE", CallId = null, QueueId = 7, ActiveAlarmID = 42 };
+        var repository = new Repository { Item = release, FailPost = failRelease };
+        var routing = new Routing();
+        var service = new AutoCallNoteDeliveryService(repository, routing, NullLogger<AutoCallNoteDeliveryService>.Instance);
+        Assert.True(await service.DeliverNextAsync(default));
+        Assert.Equal("dna.client.ORIGINAL-OID", routing.Key);
+        Assert.Equal("DEV1", repository.Platform);
+        Assert.Same(release, repository.Released);
+        Assert.Null(repository.Posted);
+        Assert.Equal(new[] { "claim", "release", failRelease ? "failed" : "delivered" }, repository.Events);
+    }
+
     [Fact]
     public async Task MissingRoutingFailsWithoutTenantFallbackAndEmptyQueueDoesNoWork()
     {
@@ -147,6 +164,14 @@ public sealed class AutoCallNoteDeliveryTests
         {
             Events.Add("post"); Platform = platform; Posted = task;
             OnPost?.Invoke();
+            token.ThrowIfCancellationRequested();
+            if (FailPost) throw new InvalidOperationException("offline tenant failure");
+            return Task.CompletedTask;
+        }
+        public AutoCallNoteTask? Released { get; private set; }
+        public Task ReleaseWaitAsync(string platform, AutoCallNoteTask task, CancellationToken token)
+        {
+            Events.Add("release"); Platform = platform; Released = task;
             token.ThrowIfCancellationRequested();
             if (FailPost) throw new InvalidOperationException("offline tenant failure");
             return Task.CompletedTask;

@@ -59,7 +59,7 @@ namespace NotificationWorkflowService.Repository
         public IWorkflowOperation PrepareReadCurrentActiveAlarmPoint(bool reloadConnectionString = false) => Prepare(BuildReadCurrentActiveAlarmPoint, reloadConnectionString);
         public IWorkflowOperation PrepareUpdateParserActivty(int? systemID, string? parserId) => Prepare(() => BuildUpdateParserActivty(systemID, parserId));
         public IWorkflowOperation PrepareInsertIntoAlarmNotification(int alarmSystemID, int currentStateNo, DateTime expiryTime, string? action) => Prepare(() => BuildInsertIntoAlarmNotification(alarmSystemID, currentStateNo, expiryTime, action));
-        public IWorkflowOperation PrepareInsertIntoCurrentAlarmNotification(int alarmSystemID, int currentStateNo, DateTime expiryTime, int displayStateNo, int currentLoopNumber, int processNext) => Prepare(() => BuildInsertIntoCurrentAlarmNotification(alarmSystemID, currentStateNo, expiryTime, displayStateNo, currentLoopNumber, processNext));
+        public IWorkflowOperation PrepareInsertIntoCurrentAlarmNotification(int alarmSystemID, int currentStateNo, DateTime expiryTime, int displayStateNo, int currentLoopNumber, int processNext, int? autoCallQueueId = null) => Prepare(() => BuildInsertIntoCurrentAlarmNotification(alarmSystemID, currentStateNo, expiryTime, displayStateNo, currentLoopNumber, processNext, autoCallQueueId));
         public IWorkflowOperation PrepareGetExpiredAlarms(DateTime currentTime) => Prepare(() => BuildGetExpiredAlarms(currentTime));
 
         private IWorkflowOperation Prepare(Func<SqlCommand> build, bool reloadConnectionString = false,
@@ -250,7 +250,7 @@ namespace NotificationWorkflowService.Repository
             Add(cmd, "@ExpiryTime", SqlDbType.DateTime, expiryTime);
             Add(cmd, "@Action", SqlDbType.VarChar, action, 50);
         });
-        internal static SqlCommand BuildInsertIntoCurrentAlarmNotification(int alarmSystemID, int currentStateNo, DateTime expiryTime, int displayStateNo, int currentLoopNumber, int processNext) => Build("ActiveAlarms_InsertIntoCNotificationState", cmd =>
+        internal static SqlCommand BuildInsertIntoCurrentAlarmNotification(int alarmSystemID, int currentStateNo, DateTime expiryTime, int displayStateNo, int currentLoopNumber, int processNext, int? autoCallQueueId = null) => Build("ActiveAlarms_InsertIntoCNotificationState", cmd =>
         {
             Add(cmd, "@AlarmSystemID", SqlDbType.Int, alarmSystemID);
             // Deliberate legacy inversion: display number goes to CurrentStateNo.
@@ -259,6 +259,8 @@ namespace NotificationWorkflowService.Repository
             Add(cmd, "@ParserStateNo", SqlDbType.Int, currentStateNo);
             Add(cmd, "@ProcessNextStep", SqlDbType.Bit, processNext);
             Add(cmd, "@CurrentLoopNumber", SqlDbType.Int, currentLoopNumber);
+            // Only Robo Call waits send this, so tenants without 057.sql keep working for every other step.
+            if (autoCallQueueId is not null) Add(cmd, "@AutoCallQueueId", SqlDbType.Int, autoCallQueueId.Value);
         });
         internal static SqlCommand BuildGetExpiredAlarms(DateTime currentTime) => Build("ActiveAlarms_RemoveExpiredNotificationAlarms", cmd => Add(cmd, "@CurrentTime", SqlDbType.DateTime, currentTime));
 

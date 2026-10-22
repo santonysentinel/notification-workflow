@@ -735,13 +735,14 @@ namespace NotificationWorkflowService.Parser
                         await insertIntoAlarmNotificationAsync(a.SystemID, 1, ExpiryTimeApplied, PriorityMapping[a.Priority], cancellationToken).ConfigureAwait(false);
                         log.LogInformation(String.Format("ParserAfterCheck::AlarmSystemID::{0}::CurrentStateNo::{1}::NextStateNo::{2}::ProcessNextStep::{3}::StateTime::{4}::CurrentLoopNumber::{5}::insert::{6}", a.SystemID, a.CurrentStateNo, a.NextStateNo, a.ProcessNextStep, a.StateTime, a.CurrentStateNo, insert.ToString()));
 
+                        DateTime nextStateExpiry = a.NextStateExpiry(ExpiryTimeApplied, DateTime.UtcNow);
                         if (a.NextStateNo != -1 && insert)
                         {
-                            await insertIntoCurrentAlarmNotificationAsync(a.SystemID, a.NextStateNo, ExpiryTimeApplied, a.StateNo + 1, 0, a.ProcessNextStep, cancellationToken).ConfigureAwait(false);
+                            await insertIntoCurrentAlarmNotificationAsync(a.SystemID, a.NextStateNo, nextStateExpiry, a.StateNo + 1, 0, a.ProcessNextStep, a.RoboCallWaitQueueId, cancellationToken).ConfigureAwait(false);
                         }
                         else if (insert)
                         {
-                            await insertIntoCurrentAlarmNotificationAsync(a.SystemID, a.StateNo + 1, ExpiryTimeApplied, a.StateNo + 1, 0, 1, cancellationToken).ConfigureAwait(false);
+                            await insertIntoCurrentAlarmNotificationAsync(a.SystemID, a.StateNo + 1, nextStateExpiry, a.StateNo + 1, 0, 1, a.RoboCallWaitQueueId, cancellationToken).ConfigureAwait(false);
                         }
 
                         cancellationToken.ThrowIfCancellationRequested();
@@ -783,7 +784,7 @@ namespace NotificationWorkflowService.Parser
                 await operation.OpenAsync(cancellationToken).ConfigureAwait(false);
                 await operation.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
-            public Task EnqueueAutoCallAsync(ActiveAlarm alarm, string platform, CancellationToken cancellationToken = default) => parser.autoCallService.EnqueueAsync(alarm, platform, cancellationToken);
+            public Task<int> EnqueueAutoCallAsync(ActiveAlarm alarm, string platform, CancellationToken cancellationToken = default) => parser.autoCallService.EnqueueAsync(alarm, platform, cancellationToken);
             public Task AddNoteAsync(string template, string oid, int activeAlarmId, int historyId, CancellationToken cancellationToken = default) => parser.noteService.AddNoteAsync(template, oid, activeAlarmId, historyId, cancellationToken);
             public Task SendNotificationsToOfficersInSameGroupAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.SendNotificationsToOfficersInSameGroupAsync(a, cancellationToken);
             public Task<bool> PushAlertToMcAppAsync(ActiveAlarm a, CancellationToken cancellationToken = default) => parser.PushAlertToMcAppAsync(a, cancellationToken);
@@ -1822,12 +1823,12 @@ namespace NotificationWorkflowService.Parser
         /// <param name="currentLoopNumber">The currentLoopNumber<see cref="int"/>.</param>
         /// <param name="processNext">The processNext<see cref="int"/>.</param>
         /// <returns>The <see cref="bool"/>.</returns>
-        private async Task<bool> insertIntoCurrentAlarmNotificationAsync(int AlarmSystemID, int CurentStateNo, DateTime ExpiryTime, int DisplayStateNo, int currentLoopNumber, int processNext, CancellationToken cancellationToken = default)
+        private async Task<bool> insertIntoCurrentAlarmNotificationAsync(int AlarmSystemID, int CurentStateNo, DateTime ExpiryTime, int DisplayStateNo, int currentLoopNumber, int processNext, int? autoCallQueueId = null, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
             bool success = true;
             //Create a connection to the SQL Server;
-            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertIntoCurrentAlarmNotification(AlarmSystemID, CurentStateNo, ExpiryTime, DisplayStateNo, currentLoopNumber, processNext)))
+            await using (var MyConnection = new DeferredWorkflowOperation(() => repository.PrepareInsertIntoCurrentAlarmNotification(AlarmSystemID, CurentStateNo, ExpiryTime, DisplayStateNo, currentLoopNumber, processNext, autoCallQueueId)))
             {
                 try
                 {
