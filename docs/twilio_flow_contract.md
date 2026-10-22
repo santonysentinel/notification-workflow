@@ -70,6 +70,11 @@ question, and four terminal outcomes. IDs match the XML bundle below exactly.
 - If neither digits nor nonblank speech is supplied, select `noInput`. If input is
   supplied but does not match, select `fallback`. `Confidence` is recorded, not used
   to select a transition.
+- A `record` step requires `recorded` and `noRecording` targets. Twilio's `<Record>`
+  action callback (with a recording) selects `recorded`, including when the caller
+  hangs up while recording. Its fallthrough `<Redirect>` (nothing recorded) selects
+  `noRecording`. See the [record step handover](autocall/record-step-handover.md)
+  for the TwiML shape and attribute rules.
 - A `terminal` step has no transitions. Its response must end the call, normally
   with `<Hangup>`. `/next` does not synthesize a terminal response or automatically
   update completion status; `/status` handles terminal call reporting and guarded

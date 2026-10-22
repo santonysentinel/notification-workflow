@@ -1,5 +1,7 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 using NotificationWorkflowService.Service.AutoCall;
 using Xunit;
 
@@ -99,6 +101,50 @@ public sealed class AutoCallNoteDeliveryTests
     }
 
     [Theory]
+    [InlineData("CellPhone", "leave-message", "Robo Call message from participant (CellPhone, step leave-message)")]
+    [InlineData(null, "leave-message", "Robo Call message from participant (step leave-message)")]
+    [InlineData("CellPhone", null, "Robo Call message from participant (CellPhone)")]
+    [InlineData(null, null, "Robo Call message from participant")]
+    public void RecordStepMessageNamesTheDeviceAndStep(string? phoneType, string? stepId, string label)
+    {
+        var task = Completion() with { Kind = "TRANSCRIPT", RecordingId = 9, RecordingSource = "RecordVerb", PhoneType = phoneType, MessageStepId = stepId };
+        var notes = AutoCallNoteFormatter.Format(task with
+        {
+            MessagesJSON = JsonSerializer.Serialize(new[]
+            {
+                new { Sentence = 0, AudioChannel = 0, StartTimeMilliseconds = 1250, EndTimeMilliseconds = 6900, TranscriptText = "I'll be there in 10 minutes" }
+            })
+        });
+        Assert.Equal(label + " [00:00:01.250 - 00:00:06.900]: I'll be there in 10 minutes", Assert.Single(notes));
+        Assert.Equal(label + ": No speech detected.", Assert.Single(AutoCallNoteFormatter.Format(task with { MessagesJSON = "[]" })));
+    }
+
+    [Fact]
+    public void RecordStepMessageTruncatesLongStepIdsAndSplitsWithinTheLimit()
+    {
+        string text = new string('x', 600);
+        var notes = AutoCallNoteFormatter.Format(Completion() with
+        {
+            Kind = "TRANSCRIPT", RecordingId = 9, RecordingSource = "RecordVerb", PhoneType = "CellPhone", MessageStepId = new string('s', 200),
+            MessagesJSON = JsonSerializer.Serialize(new[] { new { Sentence = 0, AudioChannel = 0, StartTimeMilliseconds = 0, EndTimeMilliseconds = 1000, TranscriptText = text } })
+        });
+        string prefix = "Robo Call message from participant (CellPhone, step " + new string('s', 60) + "...) [00:00:00.000 - 00:00:01.000]: ";
+        Assert.All(notes, note => { Assert.StartsWith(prefix, note); Assert.InRange(note.Length, prefix.Length + 1, 250); });
+        Assert.Equal(text, string.Concat(notes.Select(note => note[prefix.Length..])));
+    }
+
+    [Fact]
+    public void WholeCallTranscriptKeepsItsFormatEvenWithDeviceAndStep()
+    {
+        var notes = AutoCallNoteFormatter.Format(Completion() with
+        {
+            Kind = "TRANSCRIPT", RecordingId = 9, RecordingSource = "OutboundAPI", PhoneType = "CellPhone",
+            MessagesJSON = JsonSerializer.Serialize(new[] { new { Sentence = 0, AudioChannel = 1, StartTimeMilliseconds = 0, EndTimeMilliseconds = 1000, TranscriptText = "Hi" } })
+        });
+        Assert.Equal("Robo Call transcript (call 42, recording 9) [00:00:00.000 - 00:00:01.000] channel 1: Hi", Assert.Single(notes));
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task DeliveryRoutesOriginalOidAndFinishesOnlyAfterTenantCommit(bool failPost)
@@ -168,6 +214,77 @@ public sealed class AutoCallNoteDeliveryTests
         Assert.Equal(new[] { "claim", "post" }, repository.Events);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task WorkerHeartbeatsWhileIdleOrBusyWithoutLoggingEveryPollAtInformation(bool busy)
+    {
+        var repository = new Repository { Item = busy ? Completion() : null };
+        var service = new AutoCallNoteDeliveryService(repository, new Routing(), NullLogger<AutoCallNoteDeliveryService>.Instance);
+        var logs = new AutoCallDiagnosticsTests.Logs<AutoCallNoteWorker>();
+        var clock = new FakeTimeProvider();
+        using var worker = new AutoCallNoteWorker(service, logs, clock);
+        Assert.Equal(busy, await worker.RunCycleAsync(default));
+        Assert.Single(logs.Entries.Where(entry => entry.Level == LogLevel.Information));
+        clock.Advance(TimeSpan.FromSeconds(59));
+        Assert.Equal(busy, await worker.RunCycleAsync(default));
+        Assert.Single(logs.Entries.Where(entry => entry.Level == LogLevel.Information));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        Assert.Equal(busy, await worker.RunCycleAsync(default));
+        var heartbeat = logs.Entries.Last(entry => entry.Level == LogLevel.Information);
+        Assert.Equal(2, logs.Entries.Count(entry => entry.Level == LogLevel.Information));
+        Assert.Equal(3L, heartbeat.Properties["SuccessfulPolls"]);
+        Assert.Equal(busy ? 3L : 0L, heartbeat.Properties["TaskAttempts"]);
+        Assert.Equal(0L, heartbeat.Properties["PollFailures"]);
+        Assert.Equal(clock.GetUtcNow(), heartbeat.Properties["LastSuccessfulPollUtc"]);
+        Assert.DoesNotContain("original-oid", heartbeat.Message);
+    }
+
+    [Fact]
+    public async Task WorkerHeartbeatDistinguishesFailedPollsAndRecovery()
+    {
+        var repository = new Repository { FailClaim = true };
+        var service = new AutoCallNoteDeliveryService(repository, new Routing(), NullLogger<AutoCallNoteDeliveryService>.Instance);
+        var logs = new AutoCallDiagnosticsTests.Logs<AutoCallNoteWorker>();
+        var clock = new FakeTimeProvider();
+        using var worker = new AutoCallNoteWorker(service, logs, clock);
+        Assert.False(await worker.RunCycleAsync(default));
+        var heartbeat = logs.Entries.Last();
+        Assert.Equal(0L, heartbeat.Properties["SuccessfulPolls"]);
+        Assert.Equal(1L, heartbeat.Properties["PollFailures"]);
+        Assert.Null(heartbeat.Properties["LastSuccessfulPollUtc"]);
+        Assert.Contains(logs.Entries, entry => entry.Level == LogLevel.Error);
+        Assert.All(logs.Entries, entry => Assert.DoesNotContain("private failure", entry.Message));
+
+        repository.FailClaim = false;
+        clock.Advance(TimeSpan.FromSeconds(60));
+        Assert.False(await worker.RunCycleAsync(default));
+        heartbeat = logs.Entries.Last();
+        Assert.Equal(1L, heartbeat.Properties["SuccessfulPolls"]);
+        Assert.Equal(1L, heartbeat.Properties["PollFailures"]);
+        Assert.Equal(clock.GetUtcNow(), heartbeat.Properties["LastSuccessfulPollUtc"]);
+    }
+
+    [Fact]
+    public async Task WorkerLogsStartupAndShutdownWithoutTreatingCancellationAsFailure()
+    {
+        var polled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var repository = new Repository { OnClaim = () => polled.TrySetResult() };
+        var service = new AutoCallNoteDeliveryService(repository, new Routing(), NullLogger<AutoCallNoteDeliveryService>.Instance);
+        var logs = new AutoCallDiagnosticsTests.Logs<AutoCallNoteWorker>();
+        using var worker = new AutoCallNoteWorker(service, logs, new FakeTimeProvider());
+        await worker.StartAsync(default);
+        await polled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await worker.StopAsync(default);
+        Assert.Contains(logs.Entries, entry => entry.Message.Contains("worker started"));
+        Assert.Contains(logs.Entries, entry => entry.Message.Contains("worker stopped"));
+        Assert.DoesNotContain(logs.Entries, entry => entry.Level == LogLevel.Error);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => worker.RunCycleAsync(cancellation.Token));
+        Assert.DoesNotContain(logs.Entries, entry => entry.Level == LogLevel.Error);
+    }
+
     private sealed class Routing : IAutoCallRoutingStore
     {
         public string? Key { get; private set; }
@@ -184,9 +301,17 @@ public sealed class AutoCallNoteDeliveryTests
         public List<string> Events { get; } = [];
         public bool FailPost { get; init; }
         public bool FailAck { get; set; }
+        public bool FailClaim { get; set; }
+        public Action? OnClaim { get; init; }
         public Action? OnPost { get; init; }
         public Task<AutoCallNoteTask?> ClaimAsync(CancellationToken token)
-        { Events.Add("claim"); token.ThrowIfCancellationRequested(); return Task.FromResult(Item); }
+        {
+            Events.Add("claim");
+            OnClaim?.Invoke();
+            token.ThrowIfCancellationRequested();
+            if (FailClaim) throw new InvalidOperationException("private failure");
+            return Task.FromResult(Item);
+        }
         public Task PostAsync(string platform, AutoCallNoteTask task, IReadOnlyList<string> notes, CancellationToken token)
         {
             Events.Add("post"); Platform = platform; Posted = task;

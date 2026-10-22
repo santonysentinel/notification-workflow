@@ -133,6 +133,74 @@ describe('Twilio transition selection', () => {
     ).to.equal(null);
   });
 
+  describe('record steps', () => {
+    const recordFlow = {
+      schemaVersion: 1,
+      initialStep: 'message',
+      steps: [
+        {
+          id: 'message',
+          type: 'record',
+          transitions: { recorded: 'thanks', noRecording: 'nothing' }
+        },
+        { id: 'reminder', type: 'redirect', transitions: { next: 'thanks' } },
+        { id: 'thanks', type: 'terminal' },
+        { id: 'nothing', type: 'terminal' }
+      ]
+    };
+    const recordBundle =
+      '<CallFlow initialStep="message">' +
+      recordFlow.steps
+        .map(
+          ({ id }) =>
+            `<Step id="${id}"><Response><Say>${id}</Say><Redirect>https://example.com/next?executionId={{executionId}}</Redirect></Response></Step>`
+        )
+        .join('') +
+      '</CallFlow>';
+    const recordJSON = JSON.stringify(recordFlow);
+    const sid = `RE${'a'.repeat(32)}`;
+
+    for (const [input, target, inputType] of [
+      [{ recordingSid: sid, recordingDurationSeconds: 4 }, 'thanks', 'recording'],
+      [{ digits: 'hangup', recordingSid: sid }, 'thanks', 'recording'],
+      [{}, 'nothing', 'no-recording'],
+      [{ digits: '' }, 'nothing', 'no-recording']
+    ]) {
+      it(`selects ${target} for ${JSON.stringify(input)}`, () => {
+        const candidate = prepareNextStep(recordBundle, recordJSON, 'message', input);
+        expect(candidate.stepId).to.equal(target);
+        expect(candidate.inputType).to.equal(inputType);
+        expect(candidate.responseTwiML).to.include(`<Say>${target}</Say>`);
+      });
+    }
+
+    it('rejects recordings and hang-ups posted for other step types', () => {
+      expect(prepareNextStep(recordBundle, recordJSON, 'reminder', { recordingSid: sid })).to.equal(
+        null
+      );
+      expect(prepareNextStep(recordBundle, recordJSON, 'reminder', { digits: 'hangup' })).to.equal(
+        null
+      );
+      expect(prepareNextStep(bundle, templateJSON, 'question', { digits: 'hangup' })).to.equal(
+        null
+      );
+    });
+
+    for (const [label, transitions] of [
+      ['missing noRecording', { recorded: 'thanks' }],
+      ['missing recorded', { noRecording: 'nothing' }],
+      ['extra keys', { recorded: 'thanks', noRecording: 'nothing', next: 'thanks' }],
+      ['missing targets', { recorded: 'missing', noRecording: 'nothing' }],
+      ['non-string targets', { recorded: { 1: 'thanks' }, noRecording: 'nothing' }]
+    ]) {
+      it(`rejects a record step with ${label}`, () => {
+        const copy = structuredClone(recordFlow);
+        copy.steps[0].transitions = transitions;
+        expect(prepareNextStep(recordBundle, JSON.stringify(copy), 'message', {})).to.equal(null);
+      });
+    }
+  });
+
   it('executes every branch in the documented complete TemplateJSON/XML example', () => {
     const document = readFileSync(
       new URL('../../../docs/twilio_flow_contract.md', import.meta.url),

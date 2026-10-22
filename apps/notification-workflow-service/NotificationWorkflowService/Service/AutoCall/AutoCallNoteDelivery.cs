@@ -23,6 +23,9 @@ public sealed record AutoCallNoteTask
     public string? MessagesJSON { get; init; }
     public int? QueueId { get; init; }
     public int? ActiveAlarmID { get; init; }
+    public string? RecordingSource { get; init; }
+    public string? PhoneType { get; init; }
+    public string? MessageStepId { get; init; }
 }
 
 public interface IAutoCallNoteRepository
@@ -94,13 +97,16 @@ internal static class AutoCallNoteFormatter
         var messages = JsonSerializer.Deserialize<List<Message>>(task.MessagesJSON)
             ?? throw new InvalidOperationException("Transcript messages must be an array.");
         var notes = new List<string>();
+        string? messageLabel = task.RecordingSource == "RecordVerb" ? MessageLabel(task) : null;
         foreach (var message in messages)
         {
             if (message.StartTimeMilliseconds < 0 || message.EndTimeMilliseconds < message.StartTimeMilliseconds || message.AudioChannel < 0)
                 throw new InvalidOperationException("Invalid transcript message timestamps or channel.");
             if (string.IsNullOrWhiteSpace(message.TranscriptText)) continue;
-            string prefix = FormattableString.Invariant(
-                $"Robo Call transcript (call {task.CallId}, recording {task.RecordingId}) [{Offset(message.StartTimeMilliseconds)} - {Offset(message.EndTimeMilliseconds)}] channel {message.AudioChannel}: ");
+            string range = $"[{Offset(message.StartTimeMilliseconds)} - {Offset(message.EndTimeMilliseconds)}]";
+            string prefix = messageLabel is not null
+                ? $"{messageLabel} {range}: "
+                : FormattableString.Invariant($"Robo Call transcript (call {task.CallId}, recording {task.RecordingId}) {range} channel {message.AudioChannel}: ");
             string text = message.TranscriptText;
             for (int start = 0; start < text.Length;)
             {
@@ -113,8 +119,23 @@ internal static class AutoCallNoteFormatter
             }
         }
         if (notes.Count == 0)
-            notes.Add(FormattableString.Invariant($"Robo Call recording transcript (call {task.CallId}, recording {task.RecordingId}): No speech detected."));
+            notes.Add(messageLabel is not null
+                ? messageLabel + ": No speech detected."
+                : FormattableString.Invariant($"Robo Call recording transcript (call {task.CallId}, recording {task.RecordingId}): No speech detected."));
         return notes;
+    }
+
+    /// <summary>Labels a record-step message, e.g. "Robo Call message from participant (CellPhone, step leave-message)".</summary>
+    private static string MessageLabel(AutoCallNoteTask task)
+    {
+        var parts = new List<string>(2);
+        if (!string.IsNullOrWhiteSpace(task.PhoneType)) parts.Add(task.PhoneType.Trim());
+        if (!string.IsNullOrWhiteSpace(task.MessageStepId))
+        {
+            string step = task.MessageStepId.Trim();
+            parts.Add("step " + (step.Length > 60 ? step[..60] + "..." : step));
+        }
+        return parts.Count == 0 ? "Robo Call message from participant" : $"Robo Call message from participant ({string.Join(", ", parts)})";
     }
 
     private static string? ReadPhoneType(string? messagesJson)
@@ -186,24 +207,63 @@ public sealed class AutoCallNoteDeliveryService(IAutoCallNoteRepository reposito
     }
 }
 
-public sealed class AutoCallNoteWorker(AutoCallNoteDeliveryService delivery, ILogger<AutoCallNoteWorker> logger) : BackgroundService
+public sealed class AutoCallNoteWorker(AutoCallNoteDeliveryService delivery, ILogger<AutoCallNoteWorker> logger,
+    TimeProvider? timeProvider = null) : BackgroundService
 {
+    private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
+    private long? lastHeartbeat;
+    private long successfulPolls;
+    private long taskAttempts;
+    private long pollFailures;
+    private DateTimeOffset? lastSuccessfulPoll;
+
+    internal async Task<bool> RunCycleAsync(CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        bool hadTask = false;
+        try
+        {
+            hadTask = await delivery.DeliverNextAsync(token).ConfigureAwait(false);
+            successfulPolls++;
+            if (hadTask) taskAttempts++;
+            lastSuccessfulPoll = clock.GetUtcNow();
+            logger.LogDebug("Auto-call tenant note worker poll completed; task attempted {HadTask}", hadTask);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch (Exception exception)
+        {
+            pollFailures++;
+            logger.LogError("Auto-call tenant note worker cycle failed ({FailureType}, SQL {SqlErrorNumber}); retrying",
+                exception.GetType().Name, (exception as SqlException)?.Number);
+        }
+        long now = clock.GetTimestamp();
+        if (lastHeartbeat is null || clock.GetElapsedTime(lastHeartbeat.Value, now) >= TimeSpan.FromSeconds(60))
+        {
+            logger.LogInformation(
+                "Auto-call tenant note worker heartbeat; successful polls {SuccessfulPolls}, task attempts {TaskAttempts}, poll failures {PollFailures}, last successful poll {LastSuccessfulPollUtc}",
+                successfulPolls, taskAttempts, pollFailures, lastSuccessfulPoll);
+            lastHeartbeat = now;
+        }
+        return hadTask;
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.LogInformation("Auto-call tenant note worker started");
-        while (!stoppingToken.IsCancellationRequested)
+        logger.LogInformation("Auto-call tenant note worker started; idle poll 5 seconds, heartbeat 60 seconds");
+        try
         {
-            try
+            while (!stoppingToken.IsCancellationRequested)
             {
-                if (await delivery.DeliverNextAsync(stoppingToken).ConfigureAwait(false)) continue;
+                if (await RunCycleAsync(stoppingToken).ConfigureAwait(false)) continue;
+                await Task.Delay(TimeSpan.FromSeconds(5), clock, stoppingToken).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-            catch (Exception exception)
-            {
-                logger.LogError("Auto-call tenant note worker cycle failed ({FailureType}); retrying", exception.GetType().Name);
-            }
-            try { await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken).ConfigureAwait(false); }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+        finally
+        {
+            logger.LogInformation(
+                "Auto-call tenant note worker stopped; successful polls {SuccessfulPolls}, task attempts {TaskAttempts}, poll failures {PollFailures}",
+                successfulPolls, taskAttempts, pollFailures);
         }
     }
 }

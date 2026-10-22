@@ -49,6 +49,8 @@ internal static class AutoCallBundlePreparer
         var document = XDocument.Load(reader);
         var root = document.Root;
         if (root?.Name != "CallFlow") throw new AutoCallValidationException("An unnamespaced CallFlow bundle is required.");
+        if (root.Descendants("Record").Attributes().Any(attribute => attribute.Value.Contains("{{", StringComparison.Ordinal)))
+            throw new AutoCallValidationException("Record attributes cannot contain variables.");
         foreach (var node in document.DescendantNodes().OfType<XText>()) node.Value = Resolve(node.Value, parameters);
         foreach (var attribute in root.DescendantsAndSelf().Attributes()) attribute.Value = Resolve(attribute.Value, parameters);
         ValidateGraph(attempt.TemplateJson, root);
@@ -67,10 +69,13 @@ internal static class AutoCallBundlePreparer
         }
         foreach (var recording in root.Descendants("Record"))
         {
+            foreach (var (name, value) in RecordDefaults)
+                if (recording.Attribute(name) is null) recording.SetAttributeValue(name, value);
             recording.SetAttributeValue("action", next);
             recording.SetAttributeValue("method", "POST");
             recording.SetAttributeValue("recordingStatusCallback", baseUrl + "/webhooks/twilio/recordings/status" + suffix);
             recording.SetAttributeValue("recordingStatusCallbackMethod", "POST");
+            recording.SetAttributeValue("recordingStatusCallbackEvent", "completed");
         }
         return new AutoCallPreparedBundle(document.ToString(SaveOptions.DisableFormatting), JsonSerializer.Serialize(parameters));
     }
@@ -108,7 +113,66 @@ internal static class AutoCallBundlePreparer
             bundleSteps.Any(step => step.Name != "Step" || !ids.Remove((string?)step.Attribute("id") ?? "") || step.Elements().Count() != 1 || step.Element("Response") is null) || ids.Count != 0)
             throw new AutoCallValidationException("Flow graph and XML bundle step identities must match exactly.");
         ValidateMachineStep(definition, steps, initial.GetString()!, root);
+        ValidateRecordSteps(steps, root);
     }
+
+    private static readonly (string Name, string Value)[] RecordDefaults =
+        [("maxLength", "120"), ("timeout", "5"), ("finishOnKey", "#"), ("playBeep", "true"), ("trim", "trim-silence")];
+
+    private static readonly HashSet<string> RuntimeRecordAttributes = new(StringComparer.Ordinal)
+        { "action", "method", "recordingStatusCallback", "recordingStatusCallbackMethod", "recordingStatusCallbackEvent" };
+
+    /// <summary>A record step prompts (Say/Pause), records once, and falls through to a Redirect when nothing was recorded.</summary>
+    private static void ValidateRecordSteps(JsonElement steps, XElement root)
+    {
+        var types = new Dictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var step in steps.EnumerateArray())
+            types[step.GetProperty("id").GetString()!] = step.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String ? type.GetString() : null;
+        foreach (var step in steps.EnumerateArray())
+        {
+            string id = step.GetProperty("id").GetString()!;
+            var response = root.Elements("Step").Single(element => (string?)element.Attribute("id") == id).Element("Response")!;
+            if (types[id] != "record")
+            {
+                if (response.Descendants("Record").Any())
+                    throw new AutoCallValidationException("Record may only be used in a record step.");
+                continue;
+            }
+            if (!step.TryGetProperty("transitions", out var transitions) || transitions.ValueKind != JsonValueKind.Object ||
+                transitions.EnumerateObject().Select(property => property.Name).OrderBy(name => name, StringComparer.Ordinal)
+                    .SequenceEqual(["noRecording", "recorded"], StringComparer.Ordinal) is false ||
+                transitions.EnumerateObject().Any(property => property.Value.ValueKind != JsonValueKind.String || !types.ContainsKey(property.Value.GetString()!)))
+                throw new AutoCallValidationException("A record step requires recorded and noRecording transitions to existing steps.");
+            var verbs = response.Elements().ToList();
+            if (verbs.Count < 2 || verbs[^1].Name != "Redirect" || verbs[^2].Name != "Record" ||
+                verbs.Take(verbs.Count - 2).Any(verb => verb.Name != "Say" && verb.Name != "Pause") || response.Nodes().OfType<XText>().Any(text => !string.IsNullOrWhiteSpace(text.Value)))
+                throw new AutoCallValidationException("A record step may only Say or Pause, then Record once, then Redirect.");
+            ValidateRecordAttributes(verbs[^2]);
+        }
+    }
+
+    private static void ValidateRecordAttributes(XElement record)
+    {
+        if (record.Nodes().Any()) throw new AutoCallValidationException("Record must be empty.");
+        foreach (var attribute in record.Attributes())
+        {
+            string name = attribute.Name.ToString(), value = attribute.Value;
+            bool valid = name switch
+            {
+                "maxLength" => IsInteger(value, 1, 300),
+                "timeout" => IsInteger(value, 1, 30),
+                "finishOnKey" => value.Length is > 0 and <= 12 && value.All(key => char.IsAsciiDigit(key) || key is '*' or '#'),
+                "playBeep" => value is "true" or "false",
+                "trim" => value is "trim-silence" or "do-not-trim",
+                _ => RuntimeRecordAttributes.Contains(name)
+            };
+            if (!valid) throw new AutoCallValidationException($"Record attribute '{name}' is not allowed or has an invalid value.");
+        }
+    }
+
+    private static bool IsInteger(string value, int minimum, int maximum) =>
+        value.Length is > 0 and <= 3 && value.All(char.IsAsciiDigit) &&
+        int.Parse(value, CultureInfo.InvariantCulture) is var number && number >= minimum && number <= maximum;
 
     /// <summary>The optional voicemail step: runtime-entered only, terminal, and limited to Say then a final Hangup.</summary>
     private static void ValidateMachineStep(JsonElement definition, JsonElement steps, string initialStep, XElement root)

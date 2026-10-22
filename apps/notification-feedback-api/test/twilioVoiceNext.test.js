@@ -195,10 +195,60 @@ describe('POST /webhooks/twilio/voice/next', () => {
     });
   }
 
+  it('accepts a Record action, including a hang-up, and keeps the recording reference', async () => {
+    const recordJSON = JSON.stringify({
+      schemaVersion: 1,
+      initialStep: 'message',
+      steps: [
+        {
+          id: 'message',
+          type: 'record',
+          transitions: { recorded: 'thanks', noRecording: 'thanks' }
+        },
+        { id: 'thanks', type: 'terminal' }
+      ]
+    });
+    getAutomatedCallNextContext.resolves({
+      TwiML: `<CallFlow initialStep="message"><Step id="message"><Response><Record/><Redirect/></Response></Step><Step id="thanks">${xml}</Step></CallFlow>`,
+      TemplateJSON: recordJSON,
+      SourceEventJSON: JSON.stringify({ stepId: 'message', executionId })
+    });
+    const RecordingSid = `RE${'d'.repeat(32)}`;
+    const response = await signedRequest(path, {
+      ...body,
+      Digits: 'hangup',
+      RecordingSid,
+      RecordingDuration: '7',
+      RecordingUrl: 'https://api.twilio.com/recording'
+    });
+    expect(response.status).to.equal(200);
+    const args = advanceAutomatedCall.firstCall.args[0];
+    expect(args.nextStep).to.include({ stepId: 'thanks', inputType: 'recording' });
+    expect(args.input).to.deep.equal({
+      digits: 'hangup',
+      speechResult: '',
+      confidence: null,
+      recordingSid: RecordingSid,
+      recordingDurationSeconds: 7
+    });
+
+    advanceAutomatedCall.resetHistory();
+    expect((await signedRequest(path, body)).status).to.equal(200);
+    expect(advanceAutomatedCall.firstCall.args[0].nextStep).to.include({
+      inputType: 'no-recording'
+    });
+    expect(advanceAutomatedCall.firstCall.args[0].input).not.to.have.property('recordingSid');
+  });
+
   for (const [field, value] of [
     ['CallSid', 'bad'],
     ['To', '5551234567'],
     ['Digits', 'yes'],
+    ['Digits', 'hangup1'],
+    ['RecordingSid', `CA${'a'.repeat(32)}`],
+    ['RecordingSid', `RE${'a'.repeat(31)}`],
+    ['RecordingDuration', '-1'],
+    ['RecordingDuration', '1.5'],
     ['Confidence', '1.1'],
     ['Confidence', 'NaN']
   ]) {

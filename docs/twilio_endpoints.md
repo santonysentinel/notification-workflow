@@ -170,13 +170,23 @@ Gather callbacks may additionally contain:
 
 | Field | Meaning |
 | --- | --- |
-| `Digits` | Exact DTMF string containing digits, `*`, or `#`; empty or omitted means no digit input. |
+| `Digits` | Exact DTMF string containing digits, `*`, or `#`; empty or omitted means no digit input. `hangup` is accepted only from a Record action. |
 | `SpeechResult` | Recognized speech, preserved in the input event. |
 | `Confidence` | Optional nonblank finite numeric value from 0 to 1; stored as a number, not used for matching. |
 
+Record actions additionally contain `RecordingSid` (optional `RE` SID) and
+`RecordingDuration` (optional non-negative integer seconds), stored in the input
+event as `recordingSid` and `recordingDurationSeconds`. `RecordingUrl` is ignored;
+the recording itself arrives on the recording status callback.
+
 Redirect callbacks require no gather input. For a gather, digits take precedence over
 speech. Speech matches the whole phrase after trimming, lowercasing, and collapsing
-whitespace. Silence selects `noInput`; unmatched input selects `fallback`. A terminal
+whitespace. Silence selects `noInput`; unmatched input selects `fallback`. A `record`
+step selects `recorded` (input type `recording`) when a RecordingSid is present and
+`noRecording` (input type `no-recording`, from its fallthrough `<Redirect>`)
+otherwise; a recording or `hangup` posted for any other step type is rejected. A
+Record action that arrives after the call has ended (the caller hung up while
+recording) is still saved so the recording stays linked to its step. A terminal
 step has no outgoing transition. Unsupported/invalid graphs or missing destination
 responses produce HTTP 500 without committing events.
 

@@ -21,7 +21,7 @@ function parseFlow(templateJSON) {
       !isObject(step) ||
       !validId(step.id) ||
       steps.has(step.id) ||
-      !['redirect', 'gather', 'terminal'].includes(step.type) ||
+      !['redirect', 'gather', 'record', 'terminal'].includes(step.type) ||
       Object.hasOwn(step, 'actions')
     )
       return null;
@@ -36,12 +36,17 @@ function parseFlow(templateJSON) {
       continue;
     }
     if (!isObject(transitions)) return null;
-    const allowed =
-      step.type === 'redirect' ? ['next'] : ['digits', 'speech', 'noInput', 'fallback'];
+    const allowed = {
+      redirect: ['next'],
+      record: ['recorded', 'noRecording'],
+      gather: ['digits', 'speech', 'noInput', 'fallback']
+    }[step.type];
     if (Object.keys(transitions).some((key) => !allowed.includes(key))) return null;
     const targets = [];
     if (step.type === 'redirect') {
       targets.push(transitions.next);
+    } else if (step.type === 'record') {
+      targets.push(transitions.recorded, transitions.noRecording);
     } else {
       targets.push(transitions.noInput, transitions.fallback);
       for (const kind of ['digits', 'speech']) {
@@ -70,7 +75,14 @@ export function prepareNextStep(twiML, templateJSON, sourceStepId, input) {
     if (!step || step.type === 'terminal') return null;
     let target;
     let inputType;
-    if (step.type === 'redirect') {
+    if (step.type === 'record') {
+      // Twilio requests the <Record> action only when audio was captured (including a hang-up while
+      // recording); otherwise it continues to the step's <Redirect>, which carries no RecordingSid.
+      inputType = input.recordingSid ? 'recording' : 'no-recording';
+      target = input.recordingSid ? step.transitions.recorded : step.transitions.noRecording;
+    } else if (input.recordingSid || input.digits === 'hangup') {
+      return null;
+    } else if (step.type === 'redirect') {
       target = step.transitions.next;
       inputType = 'redirect';
     } else if (input.digits) {

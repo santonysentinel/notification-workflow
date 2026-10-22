@@ -20,8 +20,10 @@ public sealed class AutoCallPreparationTests
     {
         CallId = 42, QueueId = 1, QueueLeaseToken = Token, OID = "oid", PhoneE164 = "+15551234567", FlowId = 12,
         VariablesJson = variables ?? "{\"OffenderName\":\"Alex & <Co>\"}",
-        TemplateJson = graph ?? "{\"schemaVersion\":1,\"initialStep\":\"hello\",\"steps\":[{\"id\":\"hello\",\"type\":\"gather\",\"transitions\":{\"noInput\":\"end\",\"fallback\":\"end\"}},{\"id\":\"end\",\"type\":\"terminal\"}]}",
-        TemplateTwiML = xml ?? "<CallFlow initialStep=\"hello\"><Step id=\"hello\"><Response><Say>{{OffenderName}} {{recipient}} {{callId}}</Say><Gather action=\"{{feedbackBaseUrl}}/old\"/><Redirect>old</Redirect><Record/></Response></Step><Step id=\"end\"><Response><Hangup/></Response></Step></CallFlow>",
+        TemplateJson = graph ?? "{\"schemaVersion\":1,\"initialStep\":\"hello\",\"steps\":[{\"id\":\"hello\",\"type\":\"gather\",\"transitions\":{\"noInput\":\"message\",\"fallback\":\"end\"}}," +
+            "{\"id\":\"message\",\"type\":\"record\",\"transitions\":{\"recorded\":\"end\",\"noRecording\":\"end\"}},{\"id\":\"end\",\"type\":\"terminal\"}]}",
+        TemplateTwiML = xml ?? "<CallFlow initialStep=\"hello\"><Step id=\"hello\"><Response><Say>{{OffenderName}} {{recipient}} {{callId}}</Say><Gather action=\"{{feedbackBaseUrl}}/old\"/><Redirect>old</Redirect></Response></Step>" +
+            "<Step id=\"message\"><Response><Pause length=\"1\"/><Record action=\"old\"/><Redirect>old</Redirect></Response></Step><Step id=\"end\"><Response><Hangup/></Response></Step></CallFlow>",
         TwiML = prepared ? "original-xml" : null, Parameters = prepared ? "original-parameters" : null
     };
     private static AutoCallWorkerOptions Options(int capacity = 2) => new() { MaxConcurrency = capacity, WorkerId = "worker", FeedbackBaseUrl = "https://feedback.example/prefix/" };
@@ -85,8 +87,13 @@ public sealed class AutoCallPreparationTests
         Assert.Equal("Alex & <Co> +15551234567 42", xml.Descendants("Say").Single().Value);
         string next = "https://feedback.example/prefix/webhooks/twilio/voice/next?callId=42&executionId={{executionId}}";
         Assert.Equal(next, (string?)xml.Descendants("Gather").Single().Attribute("action"));
-        Assert.Equal(next, xml.Descendants("Redirect").Single().Value);
-        Assert.Equal("https://feedback.example/prefix/webhooks/twilio/recordings/status?callId=42", (string?)xml.Descendants("Record").Single().Attribute("recordingStatusCallback"));
+        Assert.All(xml.Descendants("Redirect"), redirect => Assert.Equal(next, redirect.Value));
+        var record = xml.Descendants("Record").Single();
+        Assert.Equal(next, (string?)record.Attribute("action"));
+        Assert.Equal("https://feedback.example/prefix/webhooks/twilio/recordings/status?callId=42", (string?)record.Attribute("recordingStatusCallback"));
+        Assert.Equal("completed", (string?)record.Attribute("recordingStatusCallbackEvent"));
+        Assert.Equal(("120", "5", "#", "true", "trim-silence"), ((string?)record.Attribute("maxLength"), (string?)record.Attribute("timeout"),
+            (string?)record.Attribute("finishOnKey"), (string?)record.Attribute("playBeep"), (string?)record.Attribute("trim")));
         using var parameters = JsonDocument.Parse(result.Parameters!);
         Assert.Equal(42, parameters.RootElement.GetProperty("callId").GetInt32());
         Assert.Equal("Alex & <Co>", parameters.RootElement.GetProperty("OffenderName").GetString());
@@ -183,12 +190,12 @@ public sealed class AutoCallPreparationTests
         var details = ParticipantCurrentDetailsTests.Values();
         details["last_location_time"] = JsonSerializer.SerializeToElement<object?>(null);
         var alarm = new NotificationWorkflowService.Entity.ActiveAlarm { SystemID = 42, HistoryID = 81, ClientID = "oid", POGroupNum = "group", OptionsJson = AutoCallEnqueueTests.RoboCallOptions() };
-        var template = Attempt(xml:
+        var template = Attempt(graph: "{\"schemaVersion\":1,\"initialStep\":\"hello\",\"steps\":[{\"id\":\"hello\",\"type\":\"gather\",\"transitions\":{\"noInput\":\"end\",\"fallback\":\"end\"}},{\"id\":\"end\",\"type\":\"terminal\"}]}", xml:
             "<CallFlow initialStep=\"hello\"><Step id=\"hello\"><Response><Say>Hello, {{OffenderName}}. {{alarmname}} at {{LAT}},{{lon}}</Say></Response></Step><Step id=\"end\"><Response><Hangup/></Response></Step></CallFlow>");
         var request = AutoCallEnqueueService.CaptureRequest(alarm, "DEV1",
             new AutoCallFlow(12, template.TemplateJson, template.TemplateTwiML), details);
         using var command = AutoCallQueueRepository.BuildEnqueueCommand(request);
-        var attempt = Attempt(variables: (string)command.Parameters["@VariablesJSON"].Value, xml: template.TemplateTwiML);
+        var attempt = Attempt(variables: (string)command.Parameters["@VariablesJSON"].Value, xml: template.TemplateTwiML, graph: template.TemplateJson);
 
         var bundle = AutoCallBundlePreparer.Prepare(attempt, Options().FeedbackBaseUrl);
 
@@ -465,6 +472,66 @@ public sealed class AutoCallPreparationTests
     public void InvalidMachineStepIsRejected(string? graphMachine, string? xmlMachine, string vmType, string vmResponse, string endTarget)
         => Assert.Throws<AutoCallValidationException>(() => AutoCallBundlePreparer.Prepare(
             MachineAttempt(graphMachine, xmlMachine, vmType, vmResponse, endTarget), Options().FeedbackBaseUrl));
+
+    private static AutoCallAttempt RecordAttempt(string transitions = "{\"recorded\":\"end\",\"noRecording\":\"end\"}", string response = "<Say>Leave a message.</Say><Record/><Redirect/>",
+        string helloResponse = "<Say>Hi</Say><Redirect/>", string? machine = null)
+        => Attempt(
+            graph: "{\"schemaVersion\":1,\"initialStep\":\"hello\"" + (machine is null ? "" : $",\"machineStep\":\"{machine}\"") +
+                ",\"steps\":[{\"id\":\"hello\",\"type\":\"redirect\",\"transitions\":{\"next\":\"message\"}}," +
+                "{\"id\":\"message\",\"type\":\"record\",\"transitions\":" + transitions + "},{\"id\":\"end\",\"type\":\"terminal\"},{\"id\":\"vm\",\"type\":\"terminal\"}]}",
+            xml: "<CallFlow initialStep=\"hello\"" + (machine is null ? "" : $" machineStep=\"{machine}\"") + "><Step id=\"hello\"><Response>" + helloResponse + "</Response></Step>" +
+                "<Step id=\"message\"><Response>" + response + "</Response></Step><Step id=\"end\"><Response><Hangup/></Response></Step>" +
+                "<Step id=\"vm\"><Response><Say>Call back.</Say><Hangup/></Response></Step></CallFlow>");
+
+    [Fact]
+    public void RecordStepKeepsBuilderAttributesAndFillsDefaults()
+    {
+        var bundle = AutoCallBundlePreparer.Prepare(RecordAttempt(response:
+            "<Say>Leave a message.</Say><Pause length=\"2\"/><Record maxLength=\"300\" timeout=\"30\" finishOnKey=\"*1\" playBeep=\"false\" trim=\"do-not-trim\" recordingStatusCallback=\"old\"/><Redirect/>"),
+            Options().FeedbackBaseUrl);
+        var record = XDocument.Parse(bundle.TwiML).Descendants("Record").Single();
+        Assert.Equal(("300", "30", "*1", "false", "do-not-trim"), ((string?)record.Attribute("maxLength"), (string?)record.Attribute("timeout"),
+            (string?)record.Attribute("finishOnKey"), (string?)record.Attribute("playBeep"), (string?)record.Attribute("trim")));
+        Assert.Equal("https://feedback.example/prefix/webhooks/twilio/recordings/status?callId=42", (string?)record.Attribute("recordingStatusCallback"));
+        Assert.Equal("completed", (string?)record.Attribute("recordingStatusCallbackEvent"));
+    }
+
+    [Theory]
+    [InlineData("{\"recorded\":\"end\"}", null, null)]
+    [InlineData("{\"recorded\":\"end\",\"noRecording\":\"end\",\"next\":\"end\"}", null, null)]
+    [InlineData("{\"recorded\":\"end\",\"noRecording\":\"missing\"}", null, null)]
+    [InlineData("{\"recorded\":\"end\",\"noRecording\":{\"x\":\"end\"}}", null, null)]
+    [InlineData("{\"recorded\":\"vm\",\"noRecording\":\"end\"}", null, "vm")]
+    [InlineData(null, "<Say>Hi</Say><Record/>", null)]
+    [InlineData(null, "<Record/><Say>Hi</Say><Redirect/>", null)]
+    [InlineData(null, "<Say>Hi</Say><Redirect/>", null)]
+    [InlineData(null, "<Say>Hi</Say><Record/><Record/><Redirect/>", null)]
+    [InlineData(null, "<Gather/><Record/><Redirect/>", null)]
+    [InlineData(null, "<Play>x</Play><Record/><Redirect/>", null)]
+    [InlineData(null, "<Record><Say>x</Say></Record><Redirect/>", null)]
+    [InlineData(null, "<Record>text</Record><Redirect/>", null)]
+    [InlineData(null, "<Record maxLength=\"0\"/><Redirect/>", null)]
+    [InlineData(null, "<Record maxLength=\"301\"/><Redirect/>", null)]
+    [InlineData(null, "<Record maxLength=\"1.5\"/><Redirect/>", null)]
+    [InlineData(null, "<Record timeout=\"31\"/><Redirect/>", null)]
+    [InlineData(null, "<Record timeout=\"0\"/><Redirect/>", null)]
+    [InlineData(null, "<Record finishOnKey=\"\"/><Redirect/>", null)]
+    [InlineData(null, "<Record finishOnKey=\"a\"/><Redirect/>", null)]
+    [InlineData(null, "<Record playBeep=\"yes\"/><Redirect/>", null)]
+    [InlineData(null, "<Record trim=\"none\"/><Redirect/>", null)]
+    [InlineData(null, "<Record transcribe=\"true\"/><Redirect/>", null)]
+    [InlineData(null, "<Record transcribeCallback=\"x\"/><Redirect/>", null)]
+    [InlineData(null, "<Record unknown=\"1\"/><Redirect/>", null)]
+    [InlineData(null, "<Record maxLength=\"{{OffenderName}}\"/><Redirect/>", null)]
+    public void InvalidRecordStepIsRejected(string? transitions, string? response, string? machine)
+        => Assert.Throws<AutoCallValidationException>(() => AutoCallBundlePreparer.Prepare(
+            RecordAttempt(transitions ?? "{\"recorded\":\"end\",\"noRecording\":\"end\"}", response ?? "<Say>Leave a message.</Say><Record/><Redirect/>", machine: machine),
+            Options().FeedbackBaseUrl));
+
+    [Fact]
+    public void RecordOutsideARecordStepIsRejected()
+        => Assert.Throws<AutoCallValidationException>(() => AutoCallBundlePreparer.Prepare(
+            RecordAttempt(helloResponse: "<Say>Hi</Say><Record/><Redirect/>"), Options().FeedbackBaseUrl));
 
     [Theory]
     [InlineData("Normal", false)]

@@ -20,7 +20,10 @@ export function createVoiceStartController(repo = repository) {
     if (typeof To !== 'string' || !/^\+[1-9]\d{1,14}$/.test(To)) {
       return sendError(res, 400, 'A valid E.164 To number is required', errorContext);
     }
-    if (AnsweredBy !== undefined && (typeof AnsweredBy !== 'string' || !/^[a-z_]{1,30}$/.test(AnsweredBy))) {
+    if (
+      AnsweredBy !== undefined &&
+      (typeof AnsweredBy !== 'string' || !/^[a-z_]{1,30}$/.test(AnsweredBy))
+    ) {
       return sendError(res, 400, 'Invalid AnsweredBy', errorContext);
     }
 
@@ -75,7 +78,15 @@ export function createVoiceNextController(repo = repository) {
     const callId =
       typeof rawCallId === 'string' && /^[1-9]\d*$/.test(rawCallId) ? Number(rawCallId) : NaN;
     const executionId = req.query.executionId;
-    const { CallSid, To, Digits = '', SpeechResult = '', Confidence } = req.body;
+    const {
+      CallSid,
+      To,
+      Digits = '',
+      SpeechResult = '',
+      Confidence,
+      RecordingSid,
+      RecordingDuration
+    } = req.body;
     if (!Number.isInteger(callId) || callId > 2147483647) {
       return sendError(res, 400, 'callId must be a positive SQL integer', errorContext);
     }
@@ -92,7 +103,7 @@ export function createVoiceNextController(repo = repository) {
       return sendError(res, 400, 'A valid E.164 To number is required', errorContext);
     }
     if (
-      !/^[0-9*#]*$/.test(Digits) ||
+      (Digits !== 'hangup' && !/^[0-9*#]*$/.test(Digits)) ||
       (Confidence !== undefined &&
         (!Confidence.trim() ||
           !Number.isFinite(Number(Confidence)) ||
@@ -101,10 +112,26 @@ export function createVoiceNextController(repo = repository) {
     ) {
       return sendError(res, 400, 'Invalid gather input', errorContext);
     }
+    if (
+      (RecordingSid !== undefined &&
+        (typeof RecordingSid !== 'string' || !/^RE[0-9a-fA-F]{32}$/.test(RecordingSid))) ||
+      (RecordingDuration !== undefined &&
+        (typeof RecordingDuration !== 'string' || !/^\d{1,9}$/.test(RecordingDuration)))
+    ) {
+      return sendError(res, 400, 'Invalid recording input', errorContext);
+    }
+    // The recording URL is not stored; the recording itself arrives on the recording-status callback.
     const input = {
       digits: Digits,
       speechResult: SpeechResult,
-      confidence: Confidence === undefined ? null : Number(Confidence)
+      confidence: Confidence === undefined ? null : Number(Confidence),
+      ...(RecordingSid === undefined
+        ? {}
+        : {
+            recordingSid: RecordingSid,
+            recordingDurationSeconds:
+              RecordingDuration === undefined ? null : Number(RecordingDuration)
+          })
     };
     try {
       const options = { platform: req.twilioVoiceConfig.database, timeoutMs: 5000 };

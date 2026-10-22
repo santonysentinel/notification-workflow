@@ -48,7 +48,8 @@ BEGIN TRY
     (
         SystemID bigint, DeliveryId uniqueidentifier, LeaseToken uniqueidentifier, CallId int,
         Kind varchar(20), OID varchar(20), HistoryID int, OccurredAt datetime2(3),
-        RecordingId int, MessagesJSON nvarchar(max), QueueId int, ActiveAlarmID int
+        RecordingId int, MessagesJSON nvarchar(max), QueueId int, ActiveAlarmID int,
+        RecordingSource varchar(100), PhoneType varchar(20), MessageStepId nvarchar(200)
     );
     INSERT @Claim EXEC dbo.automatedcalls_ClaimNote;
     IF EXISTS (SELECT 1 FROM @Claim)
@@ -155,6 +156,37 @@ BEGIN TRY
     IF (SELECT COUNT(*) FROM dbo.AutomatedCallNoteOutbox WHERE CallId = @DisabledCall) <> 1
         OR EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE CallId = @DisabledCall AND Kind <> 'COMPLETED')
         THROW 51000, 'Disabling transcripts must retain only the completion note.', 1;
+
+    -- A record-step message replaces the whole-call transcript note; the whole-call recording is untouched.
+    UPDATE dbo.AutomatedCallNoteOutbox SET Status = 'SKIPPED' WHERE Status IN ('READY', 'PROCESSING');
+    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, Provider, OID, PhoneE164, FlowId, CallStatus, EndedDateTime, PhoneType)
+    VALUES (@QueueId, 'Twilio', 'original-oid', '+15555550100', @FlowId, 'completed', @End, 'CellPhone');
+    DECLARE @MessageCall int = SCOPE_IDENTITY();
+    INSERT dbo.AutomatedCallRecordings (CallId, Provider, AccountSid, RecordingSid, RecordingStatus, RecordingSource)
+    VALUES (@MessageCall, 'Twilio', 'ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'REcccccccccccccccccccccccccccccccc', 'completed', 'OutboundAPI');
+    DECLARE @WholeRecording int = SCOPE_IDENTITY();
+    INSERT dbo.AutomatedCallRecordings (CallId, Provider, AccountSid, RecordingSid, RecordingStatus, RecordingSource)
+    VALUES (@MessageCall, 'Twilio', 'ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'REdddddddddddddddddddddddddddddddd', 'completed', 'RecordVerb');
+    DECLARE @MessageRecording int = SCOPE_IDENTITY();
+    INSERT dbo.AutomatedCallEvents (CallId, CallEventDateTime, EventType, EventJSON, IdempotencyKey)
+    VALUES (@MessageCall, SYSUTCDATETIME(), 'InputReceived',
+        N'{"stepId":"leave-message","inputType":"recording","input":{"digits":"#","recordingSid":"REdddddddddddddddddddddddddddddddd"}}',
+        'test:record:' + CONVERT(varchar(36), NEWID()));
+    INSERT dbo.AutomatedCallNoteOutbox (CallId, Kind, SourceId, OID, HistoryID, OccurredAt, Status)
+    VALUES (@MessageCall, 'COMPLETED', @MessageCall, 'original-oid', 81, @End, 'DELIVERED');
+    INSERT dbo.AutomatedCallNoteOutbox (CallId, Kind, SourceId, OID, HistoryID, OccurredAt, RecordingId, MessagesJSON)
+    VALUES (@MessageCall, 'TRANSCRIPT', @WholeRecording, 'original-oid', 81, @End, @WholeRecording, N'[]'),
+           (@MessageCall, 'TRANSCRIPT', @MessageRecording, 'original-oid', 81, @End, @MessageRecording, N'[]');
+    DELETE @Claim;
+    INSERT @Claim EXEC dbo.automatedcalls_ClaimNote;
+    IF NOT EXISTS (SELECT 1 FROM @Claim WHERE RecordingId = @MessageRecording AND RecordingSource = 'RecordVerb'
+                   AND PhoneType = 'CellPhone' AND MessageStepId = 'leave-message')
+        OR NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE RecordingId = @WholeRecording
+                       AND Status = 'SKIPPED' AND LastErrorCode = 'RECORD_STEP_MESSAGE')
+        OR NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallRecordings WHERE SystemID = @WholeRecording)
+        THROW 51000, 'A record-step message must post with its device and step and skip only the whole-call note.', 1;
+    SELECT @Id = SystemID, @Token = LeaseToken FROM @Claim;
+    EXEC dbo.automatedcalls_FinishNote @Id, @Token, 1;
     IF EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'RELEASE')
         THROW 51000, 'Jobs enqueued without waitForCompletion must never release a workflow wait.', 1;
 
