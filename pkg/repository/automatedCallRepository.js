@@ -140,7 +140,7 @@ export async function getAutomatedCallTwiML(
 }
 
 export async function startAutomatedCall(
-  { callId, providerCallId, phoneE164, openingStep = null },
+  { callId, providerCallId, phoneE164, openingStep = null, answeredBy = null },
   { platform = "AutoCallDB", timeoutMs, transaction } = {},
 ) {
   if (!Number.isInteger(callId) || callId <= 0 || callId > 2147483647) {
@@ -157,6 +157,12 @@ export async function startAutomatedCall(
   }
   if (typeof platform !== "string" || !platform.trim()) {
     throw new TypeError("platform is required");
+  }
+  if (
+    answeredBy !== null &&
+    (typeof answeredBy !== "string" || !answeredBy.trim() || answeredBy.length > 30)
+  ) {
+    throw new TypeError("answeredBy must be a short string when supplied");
   }
 
   const result = await executeProcedure("dbo.automatedcalls_Start", {
@@ -177,6 +183,7 @@ export async function startAutomatedCall(
         type: sql.NVarChar(sql.MAX),
         val: openingStep?.responseTwiML ?? null,
       },
+      AnsweredBy: { type: sql.VarChar(30), val: answeredBy },
     },
     platform,
     timeoutMs,

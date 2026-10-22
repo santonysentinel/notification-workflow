@@ -109,6 +109,11 @@ public sealed class AutoCallWorker(IAutoCallRepository repository, IAutoCallProc
             logger.LogInformation("Auto-call attempt {CallId} prepared for queue {QueueId}", attempt.CallId, job.SystemID);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
+        catch (AutoCallDeviceSkippedException skipped)
+        {
+            logger.LogInformation("Auto-call queue {QueueId} skipped call device {PhoneType}: no phone number on file", job.SystemID, skipped.PhoneType);
+            return;
+        }
         catch (Exception exception)
         {
             AutoCallDiagnostics.Failure(logger, "Preparation", exception, job.SystemID,

@@ -107,5 +107,44 @@ internal static class AutoCallBundlePreparer
         if (!ids.Contains(initial.GetString()!) || (string?)root.Attribute("initialStep") != initial.GetString() || bundleSteps.Count != ids.Count ||
             bundleSteps.Any(step => step.Name != "Step" || !ids.Remove((string?)step.Attribute("id") ?? "") || step.Elements().Count() != 1 || step.Element("Response") is null) || ids.Count != 0)
             throw new AutoCallValidationException("Flow graph and XML bundle step identities must match exactly.");
+        ValidateMachineStep(definition, steps, initial.GetString()!, root);
     }
+
+    /// <summary>The optional voicemail step: runtime-entered only, terminal, and limited to Say then a final Hangup.</summary>
+    private static void ValidateMachineStep(JsonElement definition, JsonElement steps, string initialStep, XElement root)
+    {
+        string? graphValue = null;
+        if (definition.TryGetProperty("machineStep", out var machine))
+        {
+            if (machine.ValueKind != JsonValueKind.String) throw new AutoCallValidationException("machineStep must be a step identity.");
+            graphValue = machine.GetString();
+        }
+        string? xmlValue = (string?)root.Attribute("machineStep");
+        if (graphValue is null && xmlValue is null) return;
+        if (graphValue is null || xmlValue is null || graphValue != xmlValue || string.IsNullOrWhiteSpace(graphValue) || graphValue.Length > 200)
+            throw new AutoCallValidationException("machineStep must be present in both the flow graph and the XML bundle with the same value.");
+        if (graphValue == initialStep) throw new AutoCallValidationException("machineStep must differ from initialStep.");
+        JsonElement? target = null;
+        foreach (var step in steps.EnumerateArray())
+        {
+            if (step.GetProperty("id").GetString() == graphValue) target = step;
+            else if (step.TryGetProperty("transitions", out var transitions) && TargetsStep(transitions, graphValue))
+                throw new AutoCallValidationException("No step may transition to machineStep.");
+        }
+        if (target is not { } found || !found.TryGetProperty("type", out var type) || type.ValueKind != JsonValueKind.String || type.GetString() != "terminal" ||
+            found.TryGetProperty("transitions", out var own) && own.ValueKind != JsonValueKind.Null && !(own.ValueKind == JsonValueKind.Object && !own.EnumerateObject().Any()))
+            throw new AutoCallValidationException("machineStep must name a terminal step without transitions.");
+        var response = root.Elements("Step").Single(step => (string?)step.Attribute("id") == graphValue).Element("Response")!;
+        var verbs = response.Elements().ToList();
+        if (verbs.Count < 2 || verbs[^1].Name != "Hangup" || verbs[..^1].Any(verb => verb.Name != "Say"))
+            throw new AutoCallValidationException("machineStep may only Say a message and then Hang up.");
+    }
+
+    private static bool TargetsStep(JsonElement value, string stepId) => value.ValueKind switch
+    {
+        JsonValueKind.String => value.GetString() == stepId,
+        JsonValueKind.Object => value.EnumerateObject().Any(property => TargetsStep(property.Value, stepId)),
+        JsonValueKind.Array => value.EnumerateArray().Any(item => TargetsStep(item, stepId)),
+        _ => false
+    };
 }

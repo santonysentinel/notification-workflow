@@ -37,6 +37,32 @@ export function prepareOpeningStep(twiML) {
   return prepareStep(twiML);
 }
 
+const HANGUP_STEP_ID = '$hangup';
+
+export function getMachineStep(twiML) {
+  const document = parseDocument(twiML);
+  if (!document || !isElement(document.documentElement, 'CallFlow')) return null;
+  const machineStep = document.documentElement.getAttribute('machineStep');
+  return machineStep && machineStep.trim() && machineStep.length <= 200 ? machineStep : null;
+}
+
+// Twilio AnsweredBy (answering-machine detection) decides the first step: a person gets the
+// opening step, a finished voicemail greeting gets the flow's machineStep, anything else hangs up.
+export function prepareStartStep(twiML, answeredBy) {
+  if (typeof answeredBy !== 'string' || !/^(machine_|fax$)/.test(answeredBy)) {
+    return prepareOpeningStep(twiML);
+  }
+  if (!parseDocument(twiML)) return null;
+  const machineStep = answeredBy.startsWith('machine_end_') ? getMachineStep(twiML) : null;
+  if (machineStep) return prepareStep(twiML, machineStep);
+  return {
+    stepId: HANGUP_STEP_ID,
+    executionId: randomUUID(),
+    responseTwiML: '<Response><Hangup/></Response>',
+    expectedTwiML: twiML
+  };
+}
+
 export function prepareStep(twiML, selectedStepId, expectedInitialStep) {
   const document = parseDocument(twiML);
   if (!document || !isElement(document.documentElement, 'CallFlow')) return null;

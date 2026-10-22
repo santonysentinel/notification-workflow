@@ -24,6 +24,10 @@ public sealed class AutoCallRecoveryService(IAutoCallRecoveryRepository recovery
         {
             await ProcessOwnedAsync(job, ownership.Token).ConfigureAwait(false);
         }
+        catch (AutoCallDeviceSkippedException skipped)
+        {
+            logger.LogInformation("Auto-call queue {QueueId} skipped call device {PhoneType}: no phone number on file", job.SystemID, skipped.PhoneType);
+        }
         catch (OperationCanceledException) when (ownership.IsCancellationRequested)
         {
             logger.LogInformation("Auto-call processing canceled for queue {QueueId}; reason {CancellationReason}",

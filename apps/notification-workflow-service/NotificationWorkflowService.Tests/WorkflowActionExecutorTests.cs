@@ -102,10 +102,10 @@ public class WorkflowActionExecutorTests
     }
 
     [Theory]
-    [InlineData(false, """{"participantRoboCall":{"FlowId":4,"WaitForCallCompletion":false,"CallTimeoutSeconds":90}}""", 909, null, 0)]
-    [InlineData(false, """{"participantRoboCall":{"FlowId":4,"WaitForCallCompletion":true,"CallTimeoutSeconds":90}}""", 909, 909, 90)]
-    [InlineData(true, """{"participantRoboCall":{"FlowId":4,"WaitForCallCompletion":true,"CallTimeoutSeconds":null}}""", 909, 909, 300)]
-    [InlineData(true, """{"participantRoboCall":{"FlowId":4,"WaitForCallCompletion":true}}""", 0, null, 0)]
+    [InlineData(false, """{"participantRoboCall":{"FlowId":4,"PrimaryCallDevice":{"Type":"CellPhone","PhoneNumber":null},"WaitForCallCompletion":false,"CallTimeoutSeconds":90}}""", 909, null, 0)]
+    [InlineData(false, """{"participantRoboCall":{"FlowId":4,"PrimaryCallDevice":{"Type":"CellPhone","PhoneNumber":null},"WaitForCallCompletion":true,"CallTimeoutSeconds":90}}""", 909, 909, 90)]
+    [InlineData(true, """{"participantRoboCall":{"FlowId":4,"PrimaryCallDevice":{"Type":"CellPhone","PhoneNumber":null},"WaitForCallCompletion":true,"CallTimeoutSeconds":null}}""", 909, 909, 300)]
+    [InlineData(true, """{"participantRoboCall":{"FlowId":4,"PrimaryCallDevice":{"Type":"CellPhone","PhoneNumber":null},"WaitForCallCompletion":true}}""", 0, null, 0)]
     public async Task RoboCallWait_IsRecordedOnlyWhenOptionsAskAndAQueueJobExistsAsync(
         bool step, string optionsJson, int queueId, int? expectedQueueId, int expectedSeconds)
     {
@@ -407,7 +407,7 @@ public class WorkflowActionExecutorTests
     {
         "note" => new Call("note", Text: a.Instruction, Oid: a.ClientID, HistoryID: a.HistoryID),
         "autocall" => Operation("autocall", a),
-        "callHistory" => new Call("historyNote", Text: "Robo Call queued for participant.", HistoryID: a.HistoryID),
+        "callHistory" => new Call("historyNote", Text: "Robo Call queued for participant (CellPhone).", HistoryID: a.HistoryID),
         "officers" => Operation("officers", a),
         "mcapp" => Operation("mcapp", a),
         "queue3" => Queue(a, 3),
@@ -454,7 +454,7 @@ public class WorkflowActionExecutorTests
                 StateNo = 31, CurrentStateNo = 47, NextStateNo = 53, ProcessNextStep = InitialProcessNext,
                 Priority = priority, RoleAction = role, RoleID = 61, Instruction = "Call officers",
                 EmailAddresses = OfficerMail, EmailJoin = 1,
-                OptionsJson = """{"participantRoboCall":{"FlowId":4}}"""
+                OptionsJson = """{"participantRoboCall":{"FlowId":4,"PrimaryCallDevice":{"Type":"CellPhone","PhoneNumber":null}}}"""
             };
             Operations = new RecordingOperations(Alarm);
             Victims = new()

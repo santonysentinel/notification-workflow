@@ -89,6 +89,7 @@ public sealed class AutoCallSubmissionTests
             foreach (string name in new[] { "Method", "StatusCallbackMethod", "RecordingStatusCallbackMethod" }) Assert.Contains(new(name, "POST"), pairs);
             Assert.Equal(new[] { "initiated", "ringing", "answered", "completed" }, pairs.Where(pair => pair.Key == "StatusCallbackEvent").Select(pair => pair.Value));
             Assert.Contains(new("Record", record ? "true" : "false"), pairs);
+            Assert.Contains(new("MachineDetection", "DetectMessageEnd"), pairs);
             return Response();
         });
         Assert.Equal(Sid, await new TwilioCallClient(new Factory(handler), Options(record: record)).CreateAsync(Request(record), default));
@@ -200,7 +201,7 @@ public sealed class AutoCallSubmissionTests
     {
         public List<string> Calls { get; } = [];
         public bool ShouldSubmit { get; set; } = true;
-        public bool PersistOpening { get; set; } = true;
+        public bool StaleOpening { get; set; }
         public string? State { get; private set; }
         public string? SavedSid { get; private set; }
         public AutoCallSubmissionRequest? Request { get; private set; }
@@ -213,7 +214,7 @@ public sealed class AutoCallSubmissionTests
             bool authorize = ShouldSubmit && DurableState == "READY";
             if (authorize) { Request = request; Marker = token; DurableState = "SUBMITTING"; }
             return Task.FromResult(new AutoCallSubmissionResult { ShouldSubmit = authorize, SubmissionToken = Marker,
-                OpeningExecutionId = PersistOpening ? Request?.OpeningStep?.ExecutionId : null, SubmissionState = ShouldSubmit ? DurableState : "ACCEPTED" });
+                OpeningExecutionId = StaleOpening ? Guid.NewGuid() : Request?.OpeningStep?.ExecutionId, SubmissionState = ShouldSubmit ? DurableState : "ACCEPTED" });
         }
         public Task<AutoCallSubmissionResult> SaveSubmissionAsync(AutoCallAttempt attempt, Guid token, string state, string? sid, string? errorCode, CancellationToken cancellationToken)
         {
@@ -238,16 +239,14 @@ public sealed class AutoCallSubmissionTests
         Assert.Equal(new[] { "marker", "http", "save" }, repository.Calls);
         Assert.Equal("ACCEPTED", result.SubmissionState);
         Assert.Equal(Sid, repository.SavedSid);
-        Assert.Equal(Request(), repository.Request! with { OpeningStep = null });
-        Assert.Equal("hello", repository.Request!.OpeningStep!.StepId);
-        Assert.NotEqual(Guid.Empty, repository.Request.OpeningStep.ExecutionId);
-        Assert.Contains(repository.Request.OpeningStep.ExecutionId.ToString("D"), repository.Request.OpeningStep.ResponseTwiML);
+        Assert.Equal(Request(), repository.Request);
+        Assert.Null(repository.Request!.OpeningStep);
     }
 
     [Fact]
-    public async Task MissingPersistedOpeningIdentityPreventsPostWithAnOldDatabaseProcedure()
+    public async Task InlineOpeningIdentityFromTheMarkerPreventsPost()
     {
-        var repository = new Repository { PersistOpening = false };
+        var repository = new Repository { StaleOpening = true };
         var service = new AutoCallSubmissionService(repository, new Client(repository), Options(), Worker());
         await Assert.ThrowsAsync<InvalidOperationException>(() => service.SubmitAsync(Attempt(), "worker", default));
         Assert.Equal(new[] { "marker" }, repository.Calls);
@@ -330,6 +329,7 @@ public sealed class AutoCallSubmissionTests
         public Task<int> SavePreparationAsync(AutoCallAttempt attempt, string workerId, AutoCallPreparedBundle bundle, CancellationToken token) => throw new NotSupportedException();
         public Task FailPreparationAsync(AutoCallJob job, string workerId, CancellationToken token)
         { FailedDisposition = true; return Task.CompletedTask; }
+        public Task SkipDeviceAsync(AutoCallJob job, string workerId, CancellationToken token) => throw new NotSupportedException();
     }
 
     [Theory]

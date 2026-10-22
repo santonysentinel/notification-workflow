@@ -1,16 +1,30 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace NotificationWorkflowService.Service.AutoCall;
 
+/// <summary>A phone device to dial: a participant phone type, or <c>Custom</c> with an explicit E.164 number.</summary>
+public sealed record RoboCallDevice(string Type, string? PhoneNumber = null)
+{
+    public const string Custom = "Custom";
+    public static readonly IReadOnlyList<string> Types = ["CellPhone", "HomePhone", "WorkPhone", Custom];
+}
+
 /// <summary>
 /// Action-19 settings read from tenant <c>ProfileItems.OptionsJSON.participantRoboCall</c>.
-/// Property names match case-insensitively; settings not yet consumed (devices, etc.) are ignored.
+/// Property names match case-insensitively; unknown settings are ignored.
 /// </summary>
 public sealed record ParticipantRoboCallOptions(int FlowId, bool ShowParticipantResponseTranscript,
-    bool WaitForCallCompletion = false, int CallTimeoutSeconds = ParticipantRoboCallOptions.DefaultCallTimeoutSeconds)
+    bool WaitForCallCompletion = false, int CallTimeoutSeconds = ParticipantRoboCallOptions.DefaultCallTimeoutSeconds,
+    RoboCallDevice? PrimaryCallDevice = null, RoboCallDevice? SecondaryCallDevice = null)
 {
     public const string SectionName = "participantRoboCall";
     public const int DefaultCallTimeoutSeconds = 300;
+    private static readonly Regex E164 = new(@"\A\+[1-9][0-9]{1,14}\z", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+
+    /// <summary>Devices in dialling order: primary, then the optional secondary.</summary>
+    public IReadOnlyList<RoboCallDevice> CallDevices =>
+        new[] { PrimaryCallDevice, SecondaryCallDevice }.OfType<RoboCallDevice>().ToArray();
 
     public static ParticipantRoboCallOptions Parse(string? optionsJson)
     {
@@ -51,8 +65,39 @@ public sealed record ParticipantRoboCallOptions(int FlowId, bool ShowParticipant
                 if (timeoutElement.Value.ValueKind != JsonValueKind.Number || !timeoutElement.Value.TryGetInt32(out timeout) || timeout <= 0)
                     throw Invalid($"OptionsJSON.{SectionName}.CallTimeoutSeconds must be a positive integer or null.");
             }
-            return new ParticipantRoboCallOptions(flowId, showTranscript, wait, timeout);
+            var primary = Device(section, "PrimaryCallDevice")
+                ?? throw Invalid($"OptionsJSON.{SectionName}.PrimaryCallDevice is required.");
+            var secondary = Device(section, "SecondaryCallDevice");
+            return new ParticipantRoboCallOptions(flowId, showTranscript, wait, timeout, primary, secondary);
         }
+    }
+
+    private static RoboCallDevice? Device(JsonElement section, string name)
+    {
+        var element = Single(section, name);
+        if (element is null or { ValueKind: JsonValueKind.Null }) return null;
+        string path = $"OptionsJSON.{SectionName}.{name}";
+        if (element.Value.ValueKind != JsonValueKind.Object) throw Invalid($"{path} must be a JSON object or null.");
+        var typeElement = Single(element.Value, "Type");
+        string? type = typeElement is { ValueKind: JsonValueKind.String } ? typeElement.Value.GetString() : null;
+        type = RoboCallDevice.Types.FirstOrDefault(known => string.Equals(known, type, StringComparison.OrdinalIgnoreCase))
+            ?? throw Invalid($"{path}.Type must be one of {string.Join(", ", RoboCallDevice.Types)}.");
+        var numberElement = Single(element.Value, "PhoneNumber");
+        string? number = numberElement switch
+        {
+            null or { ValueKind: JsonValueKind.Null } => null,
+            { ValueKind: JsonValueKind.String } => numberElement.Value.GetString(),
+            _ => throw Invalid($"{path}.PhoneNumber must be a string or null."),
+        };
+        if (type == RoboCallDevice.Custom)
+        {
+            if (number is null || !E164.IsMatch(number))
+                throw Invalid($"{path}.PhoneNumber must be an E.164 number when Type is Custom.");
+        }
+        else if (!string.IsNullOrWhiteSpace(number))
+            throw Invalid($"{path}.PhoneNumber is only allowed when Type is Custom.");
+        else number = null;
+        return new RoboCallDevice(type, number);
     }
 
     private static JsonElement? Single(JsonElement parent, string name)

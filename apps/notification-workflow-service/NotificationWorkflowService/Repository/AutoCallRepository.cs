@@ -127,6 +127,9 @@ public sealed class AutoCallRepository(IConfiguration configuration, ILogger<Aut
     public Task FailPreparationAsync(AutoCallJob job, string workerId, CancellationToken cancellationToken)
         => ExecuteRecoveryAsync("dbo.automatedcalls_FailPreparation", ClaimParameters(job.SystemID, job.LeaseToken, workerId), cancellationToken);
 
+    public Task SkipDeviceAsync(AutoCallJob job, string workerId, CancellationToken cancellationToken)
+        => ExecuteRecoveryAsync("dbo.automatedcalls_SkipDevice", ClaimParameters(job.SystemID, job.LeaseToken, workerId), cancellationToken);
+
     private SqlConnection Connection()
     {
         string? value = configuration.GetConnectionString("AutoCallDB");

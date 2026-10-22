@@ -126,9 +126,19 @@ BEGIN TRY
         UpdatedDateTime datetime2(3), CallDurationSeconds int,
         RecordingsJSON nvarchar(max), TranscriptionsJSON nvarchar(max),
         QueueCreatedDateTime datetime2(3), QueueUpdatedAt datetime2(3), QueueAvailableAt datetime2(3),
-        QueueAttemptCount int, QueueMaxAttempts int, QueueLastErrorCode varchar(100)
+        QueueAttemptCount int, QueueMaxAttempts int, QueueLastErrorCode varchar(100),
+        PhoneType varchar(20), AnsweredBy varchar(30), CallDeviceIndex int, RootQueueId int
     );
+    UPDATE dbo.AutomatedCalls SET PhoneType = 'CellPhone', DeviceIndex = 0, AnsweredBy = 'human' WHERE SystemID = @CallId;
+    UPDATE dbo.AutomatedCallQueue SET CallDeviceIndex = 1, RootQueueId = @QueueId,
+        OptionsJSON = N'{"historyId":1,"postRecordingTranscript":false,"callDevices":[{"type":"CellPhone","phoneNumber":null},{"type":"HomePhone","phoneNumber":null}]}'
+    WHERE SystemID = @ReadyQueueId;
     INSERT @Result EXEC dbo.automatedcalls_GetAllCallForPOGroup 'report-test', @Start, @End;
+    IF NOT EXISTS (SELECT 1 FROM @Result WHERE CallId = @CallId AND PhoneType = 'CellPhone' AND AnsweredBy = 'human'
+            AND CallDeviceIndex = 0 AND RootQueueId IS NULL)
+        OR NOT EXISTS (SELECT 1 FROM @Result WHERE AutomatedCallQueueId = @ReadyQueueId AND CallId IS NULL
+            AND PhoneType = 'HomePhone' AND AnsweredBy IS NULL AND CallDeviceIndex = 1 AND RootQueueId = @QueueId)
+        THROW 51000, 'Report must show the dialled device, who answered, and the fallback chain.', 1;
 
     IF (SELECT COUNT(*) FROM @Result) <> 7
         OR NOT EXISTS

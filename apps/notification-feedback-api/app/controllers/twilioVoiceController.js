@@ -1,6 +1,6 @@
 import * as repository from '../../../../pkg/repository/automatedCallRepository.js';
 import { sendError } from '../../configure/errors.js';
-import { isVoiceResponse, prepareOpeningStep } from '../utils/twilioTwiML.js';
+import { isVoiceResponse, prepareStartStep } from '../utils/twilioTwiML.js';
 import { prepareNextStep } from '../utils/twilioTransitions.js';
 import { parseStatusCallback } from '../utils/twilioStatuses.js';
 
@@ -10,7 +10,7 @@ export function createVoiceStartController(repo = repository) {
     const rawCallId = req.query.callId;
     const callId =
       typeof rawCallId === 'string' && /^[1-9]\d*$/.test(rawCallId) ? Number(rawCallId) : NaN;
-    const { CallSid, To } = req.body;
+    const { CallSid, To, AnsweredBy } = req.body;
     if (!Number.isInteger(callId) || callId > 2147483647) {
       return sendError(res, 400, 'callId must be a positive SQL integer', errorContext);
     }
@@ -20,18 +20,22 @@ export function createVoiceStartController(repo = repository) {
     if (typeof To !== 'string' || !/^\+[1-9]\d{1,14}$/.test(To)) {
       return sendError(res, 400, 'A valid E.164 To number is required', errorContext);
     }
+    if (AnsweredBy !== undefined && (typeof AnsweredBy !== 'string' || !/^[a-z_]{1,30}$/.test(AnsweredBy))) {
+      return sendError(res, 400, 'Invalid AnsweredBy', errorContext);
+    }
 
     try {
       const config = req.twilioVoiceConfig;
       const options = { platform: config.database, timeoutMs: 5000 };
       const twiML = await repo.getAutomatedCallTwiML({ callId }, options);
-      const openingStep = prepareOpeningStep(twiML);
+      const openingStep = prepareStartStep(twiML, AnsweredBy);
       const result = await repo.startAutomatedCall(
         {
           callId,
           providerCallId: CallSid,
           phoneE164: To,
-          openingStep
+          openingStep,
+          answeredBy: AnsweredBy ?? null
         },
         options
       );

@@ -54,6 +54,8 @@ public sealed class TwilioCallClient(IHttpClientFactory factory, AutoCallTwilioO
         {
             fields.Add(new("Url", request.Url));
             fields.Add(new("Method", "POST"));
+            // Synchronous detection: Twilio posts AnsweredBy to the start webhook once the greeting ends.
+            fields.Add(new("MachineDetection", "DetectMessageEnd"));
         }
         foreach (string progress in new[] { "initiated", "ringing", "answered", "completed" }) fields.Add(new("StatusCallbackEvent", progress));
         message.Content = new FormUrlEncodedContent(fields);

@@ -42,13 +42,13 @@ public sealed class AutoCallContactsTests
         public string? Oid { get; private set; }
         public CancellationToken Token { get; private set; }
         public IReadOnlyList<string> Values { get; set; } = ["+15551234567", "+15557654321"];
-        public Task<IReadOnlyList<string>> ReadAsync(string connectionString, string oid, CancellationToken cancellationToken = default)
+        public Task<IReadOnlyList<AutoCallPhone>> ReadAsync(string connectionString, string oid, CancellationToken cancellationToken = default)
         {
             Calls++;
             Connection = connectionString;
             Oid = oid;
             Token = cancellationToken;
-            return Task.FromResult(Values);
+            return Task.FromResult<IReadOnlyList<AutoCallPhone>>(Values.Select(value => new AutoCallPhone("CellPhone", value)).ToArray());
         }
     }
 
@@ -175,7 +175,7 @@ public sealed class AutoCallContactsTests
     public void PhoneProcedureUsesTypedOidWithoutRewriting()
     {
         using var command = AutoCallPhoneRepository.BuildCommand("oid-7");
-        Assert.Equal("dbo.active_alarms_GetAllParticipantPhonenumbers", command.CommandText);
+        Assert.Equal("dbo.activealarms_GetAllParticipantPhonenumbers", command.CommandText);
         Assert.Equal(CommandType.StoredProcedure, command.CommandType);
         Assert.Equal(30, command.CommandTimeout);
         Assert.Null(command.Connection);
@@ -187,21 +187,29 @@ public sealed class AutoCallContactsTests
     }
 
     [Fact]
-    public async Task ReadsEveryNonblankPhoneValueInOriginalOrder()
+    public async Task ReadsEveryTypedNonblankPhoneInOriginalOrder()
     {
         using var table = new DataTable();
-        table.Columns.Add("phone_numbers", typeof(string));
-        foreach (object value in new object[] { "+15551234567", DBNull.Value, " ", "+15557654321", "+15551234567" }) table.Rows.Add(value);
+        table.Columns.Add("phone_type", typeof(string));
+        table.Columns.Add("phone_number", typeof(string));
+        table.Rows.Add("CellPhone", "+15551234567");
+        table.Rows.Add("HomePhone", DBNull.Value);
+        table.Rows.Add(DBNull.Value, "+15550000000");
+        table.Rows.Add("WorkPhone", " ");
+        table.Rows.Add(" HomePhone ", "+15557654321");
+        table.Rows.Add("WorkPhone", "+15551234567");
         using var reader = table.CreateDataReader();
         var result = await AutoCallPhoneRepository.ReadPhonesAsync(reader, CancellationToken.None);
-        Assert.Equal(new[] { "+15551234567", "+15557654321", "+15551234567" }, result);
+        Assert.Equal(new AutoCallPhone[] { new("CellPhone", "+15551234567"), new("HomePhone", "+15557654321"), new("WorkPhone", "+15551234567") }, result);
     }
 
-    [Fact]
-    public async Task MissingPhoneColumnFailsRatherThanPretendingThereAreNoNumbers()
+    [Theory]
+    [InlineData("phone_number")]
+    [InlineData("phone_type")]
+    public async Task MissingPhoneColumnFailsRatherThanPretendingThereAreNoNumbers(string present)
     {
         using var table = new DataTable();
-        table.Columns.Add("other", typeof(string));
+        table.Columns.Add(present, typeof(string));
         using var reader = table.CreateDataReader();
         await Assert.ThrowsAsync<InvalidOperationException>(() => AutoCallPhoneRepository.ReadPhonesAsync(reader, CancellationToken.None));
     }
@@ -216,7 +224,8 @@ public sealed class AutoCallContactsTests
     public async Task RejectsUnexpectedPhoneColumnType()
     {
         using var table = new DataTable();
-        table.Columns.Add("phone_numbers", typeof(int));
+        table.Columns.Add("phone_type", typeof(string));
+        table.Columns.Add("phone_number", typeof(int));
         using var reader = table.CreateDataReader();
         await Assert.ThrowsAsync<InvalidOperationException>(() => AutoCallPhoneRepository.ReadPhonesAsync(reader, CancellationToken.None));
     }

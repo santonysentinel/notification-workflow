@@ -115,7 +115,7 @@ public sealed class AutoCallDiagnosticsTests
 
     private sealed class UnusedPhones : IAutoCallPhoneRepository
     {
-        public Task<IReadOnlyList<string>> ReadAsync(string connectionString, string oid, CancellationToken cancellationToken = default)
+        public Task<IReadOnlyList<AutoCallPhone>> ReadAsync(string connectionString, string oid, CancellationToken cancellationToken = default)
             => throw new NotSupportedException();
     }
 

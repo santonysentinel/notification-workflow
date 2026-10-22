@@ -22,6 +22,33 @@ public sealed class AutoCallNoteDeliveryTests
     }
 
     [Fact]
+    public void CompletionNamesTheDialledDevice()
+    {
+        Assert.Equal("Robo Call to HomePhone completed. Call connected and ended. Call ended at 2026-10-20 23:50:04.123 UTC.",
+            Assert.Single(AutoCallNoteFormatter.Format(Completion() with { MessagesJSON = "{\"phoneType\":\"HomePhone\"}" })));
+    }
+
+    [Theory]
+    [InlineData("{\"phoneType\":\"CellPhone\",\"status\":\"no-answer\",\"answeredBy\":null,\"messageLeft\":false,\"nextPhoneType\":\"HomePhone\"}",
+        "Robo Call to CellPhone failed (no-answer); trying HomePhone.")]
+    [InlineData("{\"phoneType\":\"HomePhone\",\"status\":\"busy\",\"answeredBy\":null,\"messageLeft\":false,\"nextPhoneType\":null}",
+        "Robo Call to HomePhone failed (busy); no more devices.")]
+    [InlineData("{\"phoneType\":\"CellPhone\",\"status\":\"completed\",\"answeredBy\":\"machine_end_beep\",\"messageLeft\":true,\"nextPhoneType\":\"Custom\"}",
+        "Robo Call to CellPhone reached voicemail; message left; trying Custom.")]
+    [InlineData("{\"phoneType\":\"CellPhone\",\"status\":\"completed\",\"answeredBy\":\"machine_start\",\"messageLeft\":false,\"nextPhoneType\":null}",
+        "Robo Call to CellPhone reached an answering machine; no message left; no more devices.")]
+    [InlineData("{\"phoneType\":\"WorkPhone\",\"status\":\"completed\",\"answeredBy\":\"fax\",\"messageLeft\":false,\"nextPhoneType\":null}",
+        "Robo Call to WorkPhone reached a fax machine; no more devices.")]
+    [InlineData("{\"phoneType\":\"WorkPhone\",\"status\":\"no-phone-number\",\"answeredBy\":null,\"messageLeft\":false,\"nextPhoneType\":\"CellPhone\"}",
+        "Robo Call to WorkPhone skipped (no phone number on file); trying CellPhone.")]
+    public void DeviceOutcomeNamesTheDeviceAndWhatHappensNext(string messages, string expected)
+        => Assert.Equal(expected, Assert.Single(AutoCallNoteFormatter.Format(Completion() with { Kind = "DEVICE", CallId = null, MessagesJSON = messages })));
+
+    [Fact]
+    public void DeviceOutcomeWithoutAPayloadIsRejected()
+        => Assert.Throws<InvalidOperationException>(() => AutoCallNoteFormatter.Format(Completion() with { Kind = "DEVICE" }));
+
+    [Fact]
     public void TranscriptPreservesEveryCharacterAndRepeatsTimestampOnBoundedUnicodeParts()
     {
         string text = "hello " + string.Concat(Enumerable.Repeat("\U0001F600", 400)) + new string('x', 700);

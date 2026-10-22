@@ -14,11 +14,11 @@ BEGIN TRY
     DECLARE @Queue TABLE (SystemID int);
     INSERT @Queue EXEC dbo.activealarms_call_InsertJob @ActiveAlarmID = 42, @OID = 'original-oid',
         @FlowId = @FlowId, @VariablesJSON = N'{}', @EnqueueIdempotencyKey = @Key,
-        @POGroupNum = 'note-group', @OptionsJSON = N'{"historyId":81,"postRecordingTranscript":true}';
+        @POGroupNum = 'note-group', @OptionsJSON = N'{"historyId":81,"postRecordingTranscript":true,"callDevices":[{"type":"CellPhone","phoneNumber":null}]}';
     DECLARE @QueueId int = (SELECT SystemID FROM @Queue);
     INSERT @Queue EXEC dbo.activealarms_call_InsertJob @ActiveAlarmID = 42, @OID = 'original-oid',
         @FlowId = @FlowId, @VariablesJSON = N'{}', @EnqueueIdempotencyKey = @Key,
-        @POGroupNum = 'note-group', @OptionsJSON = N'{"postRecordingTranscript":true,"historyId":81}';
+        @POGroupNum = 'note-group', @OptionsJSON = N'{"postRecordingTranscript":true,"historyId":81,"callDevices":[{"type":"CellPhone","phoneNumber":null}]}';
     IF (SELECT COUNT(DISTINCT SystemID) FROM @Queue) <> 1
         THROW 51000, 'Equivalent immutable options must replay the same queue identity.', 1;
     DECLARE @Lease uniqueidentifier = NEWID();
@@ -133,7 +133,7 @@ BEGIN TRY
     DELETE @Queue;
     INSERT @Queue EXEC dbo.activealarms_call_InsertJob @ActiveAlarmID = 43, @OID = 'original-oid',
         @FlowId = @FlowId, @VariablesJSON = N'{}', @EnqueueIdempotencyKey = @DisabledKey,
-        @POGroupNum = 'note-group', @OptionsJSON = N'{"historyId":81,"postRecordingTranscript":false}';
+        @POGroupNum = 'note-group', @OptionsJSON = N'{"historyId":81,"postRecordingTranscript":false,"callDevices":[{"type":"CellPhone","phoneNumber":null}]}';
     DECLARE @DisabledQueue int = (SELECT SystemID FROM @Queue);
     INSERT dbo.AutomatedCalls (AutomatedCallQueueId, Provider, OID, PhoneE164, FlowId, CallStatus, EndedDateTime)
     VALUES (@DisabledQueue, 'Twilio', 'original-oid', '+15555550100', @FlowId, 'completed', @End);
@@ -160,7 +160,7 @@ BEGIN TRY
 
     -- Robo Call waits: every terminal path queues exactly one RELEASE for its queue job.
     UPDATE dbo.AutomatedCallNoteOutbox SET Status = 'SKIPPED' WHERE Status IN ('READY', 'PROCESSING');
-    DECLARE @WaitOptions nvarchar(max) = N'{"historyId":82,"postRecordingTranscript":false,"waitForCompletion":true}';
+    DECLARE @WaitOptions nvarchar(max) = N'{"historyId":82,"postRecordingTranscript":false,"waitForCompletion":true,"callDevices":[{"type":"CellPhone","phoneNumber":null}]}';
     DECLARE @WaitKey uniqueidentifier = NEWID(), @Worker varchar(100) = 'wait-test';
     DECLARE @FirstWaitKey uniqueidentifier = @WaitKey;
     DELETE @Queue;
@@ -169,7 +169,7 @@ BEGIN TRY
         @POGroupNum = 'note-group', @OptionsJSON = @WaitOptions;
     INSERT @Queue EXEC dbo.activealarms_call_InsertJob @ActiveAlarmID = 44, @OID = 'original-oid',
         @FlowId = @FlowId, @VariablesJSON = N'{}', @EnqueueIdempotencyKey = @WaitKey, @POGroupNum = 'note-group',
-        @OptionsJSON = N'{"waitForCompletion":true,"historyId":82,"postRecordingTranscript":false}';
+        @OptionsJSON = N'{"waitForCompletion":true,"historyId":82,"postRecordingTranscript":false,"callDevices":[{"type":"CellPhone","phoneNumber":null}]}';
     IF (SELECT COUNT(DISTINCT SystemID) FROM @Queue) <> 1
         THROW 51000, 'Equivalent wait options must replay the same queue identity.', 1;
     DECLARE @WaitQueue int = (SELECT TOP (1) SystemID FROM @Queue);
@@ -197,11 +197,25 @@ BEGIN TRY
         THROW 51000, 'Any final call outcome must queue one release with the original routing.', 1;
     DELETE @Claim;
     INSERT @Claim EXEC dbo.automatedcalls_ClaimNote;
-    IF NOT EXISTS (SELECT 1 FROM @Claim WHERE Kind = 'RELEASE' AND QueueId = @WaitQueue AND ActiveAlarmID = 44
-        AND HistoryID = 82 AND OID = 'original-oid')
-        THROW 51000, 'Release tasks must be claimable immediately with queue and alarm identity.', 1;
-    SELECT @Id = SystemID, @Token = LeaseToken FROM @Claim;
-    EXEC dbo.automatedcalls_FinishNote @Id, @Token, 1;
+    INSERT @Claim EXEC dbo.automatedcalls_ClaimNote;
+    IF NOT EXISTS (SELECT 1 FROM @Claim WHERE Kind = 'DEVICE' AND QueueId = @WaitQueue AND CallId = @WaitCall
+            AND JSON_VALUE(MessagesJSON, '$.phoneType') = 'CellPhone' AND JSON_VALUE(MessagesJSON, '$.status') = 'no-answer'
+            AND JSON_VALUE(MessagesJSON, '$.nextPhoneType') IS NULL)
+        OR NOT EXISTS (SELECT 1 FROM @Claim WHERE Kind = 'RELEASE' AND QueueId = @WaitQueue AND ActiveAlarmID = 44
+            AND HistoryID = 82 AND OID = 'original-oid')
+        THROW 51000, 'The last device reports its outcome, then the release is claimable with queue and alarm identity.', 1;
+    IF EXISTS (SELECT 1 FROM dbo.AutomatedCallQueue WHERE RootQueueId = @WaitQueue)
+        THROW 51000, 'A job without another device must not create a follow-on queue row.', 1;
+    DECLARE @Finish CURSOR;
+    SET @Finish = CURSOR LOCAL FAST_FORWARD FOR SELECT SystemID, LeaseToken FROM @Claim;
+    OPEN @Finish;
+    FETCH NEXT FROM @Finish INTO @Id, @Token;
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        EXEC dbo.automatedcalls_FinishNote @Id, @Token, 1;
+        FETCH NEXT FROM @Finish INTO @Id, @Token;
+    END;
+    CLOSE @Finish;
 
     -- Preparation failure releases without a provider call attempt.
     SET @WaitKey = NEWID();
@@ -261,12 +275,126 @@ BEGIN TRY
     IF NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'RELEASE' AND QueueId = @ObservedQueue
         AND CallId = @ObservedCall AND ActiveAlarmID = 47)
         THROW 51000, 'Terminal reconciliation must release the workflow wait.', 1;
+
+    -- Call devices: an unsuccessful primary queues the secondary immediately; the root is released after the last device.
+    DECLARE @TwoDevices nvarchar(max) = N'{"historyId":83,"postRecordingTranscript":true,"waitForCompletion":true,"callDevices":[{"type":"CellPhone","phoneNumber":null},{"type":"Custom","phoneNumber":"+15555550199"}]}';
+    SET @WaitKey = NEWID();
+    DELETE @Queue;
+    INSERT @Queue EXEC dbo.activealarms_call_InsertJob @ActiveAlarmID = 49, @OID = 'original-oid',
+        @FlowId = @FlowId, @VariablesJSON = N'{}', @EnqueueIdempotencyKey = @WaitKey,
+        @POGroupNum = 'note-group', @OptionsJSON = @TwoDevices;
+    DECLARE @RootQueue int = (SELECT SystemID FROM @Queue);
+    SET @Lease = NEWID();
+    UPDATE dbo.AutomatedCallQueue SET Status = 'PROCESSING', LeaseToken = @Lease, LockedBy = @Worker,
+        LockedUntil = DATEADD(minute, 5, SYSUTCDATETIME()) WHERE SystemID = @RootQueue;
+    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, QueueLeaseToken, Provider, OID, PhoneE164, FlowId, CallStatus, PhoneType, DeviceIndex)
+    VALUES (@RootQueue, @Lease, 'Twilio', 'original-oid', '+15555550103', @FlowId, 'ringing', 'CellPhone', 0);
+    DECLARE @PrimaryCall int = SCOPE_IDENTITY();
+    UPDATE dbo.AutomatedCallQueue SET CurrentAttemptId = @PrimaryCall WHERE SystemID = @RootQueue;
+    EXEC dbo.automatedcalls_Status @PrimaryCall, 'CAeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', '+15555550103',
+        'no-answer', 1, @End, 0;
+    DECLARE @SecondQueue int = (SELECT SystemID FROM dbo.AutomatedCallQueue WHERE RootQueueId = @RootQueue);
+    IF @SecondQueue IS NULL OR NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallQueue WHERE SystemID = @SecondQueue
+            AND CallDeviceIndex = 1 AND Status = 'READY' AND ActiveAlarmID = 49 AND FlowId = @FlowId
+            AND OptionsJSON = @TwoDevices AND AvailableAt <= SYSUTCDATETIME())
+        OR (SELECT Status FROM dbo.AutomatedCallQueue WHERE SystemID = @RootQueue) <> 'FAILED'
+        THROW 51000, 'A no-answer primary must end its row and queue the secondary immediately.', 1;
+    IF EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'RELEASE' AND QueueId = @RootQueue)
+        THROW 51000, 'The wait must not be released while another device remains.', 1;
+    IF NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'DEVICE' AND QueueId = @RootQueue AND CallId = @PrimaryCall
+            AND HistoryID = 83 AND ActiveAlarmID = 49 AND JSON_VALUE(MessagesJSON, '$.phoneType') = 'CellPhone'
+            AND JSON_VALUE(MessagesJSON, '$.status') = 'no-answer' AND JSON_VALUE(MessagesJSON, '$.nextPhoneType') = 'Custom'
+            AND JSON_VALUE(MessagesJSON, '$.messageLeft') = 'false')
+        THROW 51000, 'An unsuccessful device must queue a DEVICE note naming the next device.', 1;
+    EXEC dbo.automatedcalls_Status @PrimaryCall, 'CAeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', '+15555550103',
+        'no-answer', 2, @End, 0;
+    IF (SELECT COUNT(*) FROM dbo.AutomatedCallQueue WHERE RootQueueId = @RootQueue) <> 1
+        OR (SELECT COUNT(*) FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'DEVICE' AND QueueId = @RootQueue) <> 1
+        THROW 51000, 'Replayed terminal callbacks must not queue another device.', 1;
+
+    -- The secondary reaches voicemail: detection marks the machine, the flow left a message, and the root wait is released.
+    SET @Lease = NEWID();
+    UPDATE dbo.AutomatedCallQueue SET Status = 'PROCESSING', LeaseToken = @Lease, LockedBy = @Worker,
+        LockedUntil = DATEADD(minute, 5, SYSUTCDATETIME()) WHERE SystemID = @SecondQueue;
+    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, QueueLeaseToken, Provider, OID, PhoneE164, FlowId, CallStatus, PhoneType, DeviceIndex)
+    VALUES (@SecondQueue, @Lease, 'Twilio', 'original-oid', '+15555550199', @FlowId, 'in-progress', 'Custom', 1);
+    DECLARE @SecondCall int = SCOPE_IDENTITY();
+    UPDATE dbo.AutomatedCallQueue SET CurrentAttemptId = @SecondCall WHERE SystemID = @SecondQueue;
+    INSERT dbo.AutomatedCallEvents (CallId, CallEventDateTime, EventType, EventJSON, IdempotencyKey)
+    VALUES (@SecondCall, @End, 'CallStarted', N'{"stepId":"voicemail"}', 'voice:start');
+    INSERT dbo.AutomatedCallRecordings (CallId, Provider, AccountSid, RecordingSid, RecordingStatus)
+    VALUES (@SecondCall, 'Twilio', 'ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'REffffffffffffffffffffffffffffffff', 'completed');
+    DECLARE @MachineRecording int = SCOPE_IDENTITY();
+    INSERT dbo.AutomatedCallNoteOutbox (CallId, Kind, SourceId, OID, HistoryID, OccurredAt, RecordingId, MessagesJSON)
+    VALUES (@SecondCall, 'TRANSCRIPT', 99, 'original-oid', 83, @End, @MachineRecording, N'[]');
+    EXEC dbo.automatedcalls_Status @SecondCall, 'CAffffffffffffffffffffffffffffffff', '+15555550199',
+        'completed', 1, @End, 20, NULL, N'{"AnsweredBy":"machine_end_beep"}';
+    IF NOT EXISTS (SELECT 1 FROM dbo.AutomatedCalls WHERE SystemID = @SecondCall AND AnsweredBy = 'machine_end_beep')
+        THROW 51000, 'Status callbacks must record who answered.', 1;
+    IF EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE CallId = @SecondCall AND Kind = 'COMPLETED')
+        THROW 51000, 'A machine-answered call must not post the completion note.', 1;
+    IF NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'DEVICE' AND QueueId = @SecondQueue AND CallId = @SecondCall
+            AND JSON_VALUE(MessagesJSON, '$.phoneType') = 'Custom' AND JSON_VALUE(MessagesJSON, '$.status') = 'completed'
+            AND JSON_VALUE(MessagesJSON, '$.answeredBy') = 'machine_end_beep' AND JSON_VALUE(MessagesJSON, '$.messageLeft') = 'true'
+            AND JSON_VALUE(MessagesJSON, '$.nextPhoneType') IS NULL)
+        THROW 51000, 'A machine answer must report the device, the machine and the left message.', 1;
+    IF (SELECT COUNT(*) FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'RELEASE' AND QueueId IN (@RootQueue, @SecondQueue)) <> 1
+        OR NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'RELEASE' AND QueueId = @RootQueue
+            AND SourceId = @RootQueue AND ActiveAlarmID = 49 AND HistoryID = 83)
+        THROW 51000, 'The last device must release the wait on the root queue row.', 1;
+    IF EXISTS (SELECT 1 FROM dbo.AutomatedCallQueue WHERE RootQueueId = @RootQueue AND CallDeviceIndex > 1)
+        THROW 51000, 'There is no device after the secondary.', 1;
+    IF (SELECT Status FROM dbo.AutomatedCallQueue WHERE SystemID = @SecondQueue) <> 'COMPLETED'
+        THROW 51000, 'A machine-answered call still completes its queue row.', 1;
+    UPDATE dbo.AutomatedCallNoteOutbox SET Status = 'SKIPPED' WHERE Status = 'READY' AND Kind IN ('DEVICE', 'RELEASE');
+    DELETE @Claim;
+    INSERT @Claim EXEC dbo.automatedcalls_ClaimNote;
+    IF EXISTS (SELECT 1 FROM @Claim) OR NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox
+            WHERE CallId = @SecondCall AND Kind = 'TRANSCRIPT' AND Status = 'SKIPPED' AND LastErrorCode = 'CALL_NOT_COMPLETED')
+        THROW 51000, 'Machine-answered calls must skip their transcripts.', 1;
+
+    -- A device without a phone number is skipped without dialling and moves on to the next device.
+    SET @WaitKey = NEWID();
+    DELETE @Queue;
+    INSERT @Queue EXEC dbo.activealarms_call_InsertJob @ActiveAlarmID = 50, @OID = 'original-oid',
+        @FlowId = @FlowId, @VariablesJSON = N'{}', @EnqueueIdempotencyKey = @WaitKey, @POGroupNum = 'note-group',
+        @OptionsJSON = N'{"historyId":84,"postRecordingTranscript":false,"waitForCompletion":true,"callDevices":[{"type":"WorkPhone","phoneNumber":null},{"type":"HomePhone","phoneNumber":null}]}';
+    DECLARE @SkipQueue int = (SELECT SystemID FROM @Queue);
+    SET @Lease = NEWID();
+    UPDATE dbo.AutomatedCallQueue SET Status = 'PROCESSING', LeaseToken = @Lease, LockedBy = @Worker,
+        LockedUntil = DATEADD(minute, 5, SYSUTCDATETIME()) WHERE SystemID = @SkipQueue;
+    EXEC dbo.automatedcalls_SkipDevice @SkipQueue, @Lease, @Worker;
+    IF NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallQueue WHERE SystemID = @SkipQueue AND Status = 'FAILED'
+            AND LastErrorCode = 'NO_PHONE_NUMBER' AND LeaseToken IS NULL)
+        OR NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallQueue WHERE RootQueueId = @SkipQueue AND CallDeviceIndex = 1 AND Status = 'READY')
+        OR NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'DEVICE' AND QueueId = @SkipQueue AND CallId IS NULL
+            AND JSON_VALUE(MessagesJSON, '$.phoneType') = 'WorkPhone' AND JSON_VALUE(MessagesJSON, '$.status') = 'no-phone-number'
+            AND JSON_VALUE(MessagesJSON, '$.nextPhoneType') = 'HomePhone')
+        OR EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'RELEASE' AND QueueId = @SkipQueue)
+        THROW 51000, 'A skipped device must end its row, queue the next device and report the skip.', 1;
+    DECLARE @LastSkip int = (SELECT SystemID FROM dbo.AutomatedCallQueue WHERE RootQueueId = @SkipQueue);
+    SET @Lease = NEWID();
+    UPDATE dbo.AutomatedCallQueue SET Status = 'PROCESSING', LeaseToken = @Lease, LockedBy = @Worker,
+        LockedUntil = DATEADD(minute, 5, SYSUTCDATETIME()) WHERE SystemID = @LastSkip;
+    EXEC dbo.automatedcalls_SkipDevice @LastSkip, @Lease, @Worker;
+    IF NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'RELEASE' AND QueueId = @SkipQueue AND ActiveAlarmID = 50)
+        OR (SELECT COUNT(*) FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'DEVICE' AND QueueId IN (@SkipQueue, @LastSkip)) <> 2
+        THROW 51000, 'Skipping the last device must release the root wait.', 1;
     COMMIT;
+
+    BEGIN TRY
+        DECLARE @WrongLease uniqueidentifier = NEWID();
+        EXEC dbo.automatedcalls_SkipDevice @LastSkip, @WrongLease, @Worker;
+        THROW 51003, 'Skipping requires the current lease.', 1;
+    END TRY
+    BEGIN CATCH
+        IF ERROR_NUMBER() <> 51002 THROW;
+    END CATCH;
 
     BEGIN TRY
         EXEC dbo.activealarms_call_InsertJob @ActiveAlarmID = 44, @OID = 'original-oid', @FlowId = @FlowId,
             @VariablesJSON = N'{}', @EnqueueIdempotencyKey = @FirstWaitKey, @POGroupNum = 'note-group',
-            @OptionsJSON = N'{"historyId":82,"postRecordingTranscript":false}';
+            @OptionsJSON = N'{"historyId":82,"postRecordingTranscript":false,"callDevices":[{"type":"CellPhone","phoneNumber":null}]}';
         THROW 51002, 'Enqueue replay must not change wait policy.', 1;
     END TRY
     BEGIN CATCH
@@ -276,7 +404,7 @@ BEGIN TRY
         DECLARE @BadWaitKey uniqueidentifier = NEWID();
         EXEC dbo.activealarms_call_InsertJob @ActiveAlarmID = 48, @OID = 'original-oid', @FlowId = @FlowId,
             @VariablesJSON = N'{}', @EnqueueIdempotencyKey = @BadWaitKey, @POGroupNum = 'note-group',
-            @OptionsJSON = N'{"historyId":82,"postRecordingTranscript":false,"waitForCompletion":"yes"}';
+            @OptionsJSON = N'{"historyId":82,"postRecordingTranscript":false,"waitForCompletion":"yes","callDevices":[{"type":"CellPhone","phoneNumber":null}]}';
         THROW 51002, 'Wait policy must be a JSON boolean.', 1;
     END TRY
     BEGIN CATCH
@@ -286,7 +414,7 @@ BEGIN TRY
     BEGIN TRY
         EXEC dbo.activealarms_call_InsertJob @ActiveAlarmID = 42, @OID = 'original-oid', @FlowId = @FlowId,
             @VariablesJSON = N'{}', @EnqueueIdempotencyKey = @Key, @POGroupNum = 'note-group',
-            @OptionsJSON = N'{"historyId":81,"postRecordingTranscript":false}';
+            @OptionsJSON = N'{"historyId":81,"postRecordingTranscript":false,"callDevices":[{"type":"CellPhone","phoneNumber":null}]}';
         THROW 51002, 'Enqueue replay must not change transcript policy.', 1;
     END TRY
     BEGIN CATCH
@@ -295,7 +423,7 @@ BEGIN TRY
     BEGIN TRY
         EXEC dbo.activealarms_call_InsertJob @ActiveAlarmID = 42, @OID = 'original-oid', @FlowId = @FlowId,
             @VariablesJSON = N'{}', @EnqueueIdempotencyKey = @Key, @POGroupNum = 'note-group',
-            @OptionsJSON = N'{"historyId":0,"postRecordingTranscript":true}';
+            @OptionsJSON = N'{"historyId":0,"postRecordingTranscript":true,"callDevices":[{"type":"CellPhone","phoneNumber":null}]}';
         THROW 51002, 'Invalid original history must be rejected.', 1;
     END TRY
     BEGIN CATCH
@@ -304,7 +432,7 @@ BEGIN TRY
     BEGIN TRY
         EXEC dbo.activealarms_call_InsertJob @ActiveAlarmID = 42, @OID = 'original-oid', @FlowId = @FlowId,
             @VariablesJSON = N'{}', @EnqueueIdempotencyKey = @Key, @POGroupNum = 'note-group',
-            @OptionsJSON = N'{"HistoryId":81,"PostRecordingTranscript":true}';
+            @OptionsJSON = N'{"HistoryId":81,"PostRecordingTranscript":true,"callDevices":[{"type":"CellPhone","phoneNumber":null}]}';
         THROW 51002, 'Options must use the exact property names used by callback extraction.', 1;
     END TRY
     BEGIN CATCH

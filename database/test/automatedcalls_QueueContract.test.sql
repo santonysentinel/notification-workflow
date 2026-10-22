@@ -27,7 +27,7 @@ BEGIN TRY
     DECLARE @PriorityJob int=(SELECT SystemID FROM @Result),@Later datetime2(3)=DATEADD(day,1,SYSUTCDATETIME());
     DELETE @Result;
     INSERT @Result EXEC dbo.activealarms_call_InsertJob 45,'oid-45',@Flow,@AvailableAt=@Later,@VariablesJSON=N'{}',@EnqueueIdempotencyKey=@Future;
-    DECLARE @Claims TABLE(SystemID int,ActiveAlarmID int,OID varchar(20),FlowId int,VariablesJSON nvarchar(max),EnqueueIdempotencyKey uniqueidentifier,AttemptCount int,MaxAttempts int,LeaseToken uniqueidentifier,LockedUntil datetime2(3));
+    DECLARE @Claims TABLE(SystemID int,ActiveAlarmID int,OID varchar(20),FlowId int,VariablesJSON nvarchar(max),EnqueueIdempotencyKey uniqueidentifier,AttemptCount int,MaxAttempts int,LeaseToken uniqueidentifier,LockedUntil datetime2(3),CallDeviceIndex int,OptionsJSON nvarchar(max));
     INSERT @Claims EXEC dbo.activealarms_call_GetNextSetOfJobs 1,'queue-test',5;
     IF NOT EXISTS(SELECT 1 FROM @Claims WHERE SystemID=@PriorityJob AND ActiveAlarmID=44 AND FlowId=@Flow AND VariablesJSON=N'{}' AND EnqueueIdempotencyKey=@Second AND AttemptCount=1 AND LeaseToken IS NOT NULL)
         THROW 51000,'Claim must return priority job and full request/lease snapshot.',1;

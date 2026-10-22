@@ -98,7 +98,7 @@ public sealed class DatabaseDiagnosticsTests
         await Assert.ThrowsAsync<ArgumentException>(() =>
             repository.ReadAsync("unsupported-key=private-value", "oid"));
         var entry = Assert.Single(logger.Entries);
-        Assert.Equal("dbo.active_alarms_GetAllParticipantPhonenumbers", entry.Properties["Operation"]);
+        Assert.Equal("dbo.activealarms_GetAllParticipantPhonenumbers", entry.Properties["Operation"]);
         Assert.DoesNotContain("private-value", entry.Message);
     }
 

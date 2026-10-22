@@ -58,16 +58,19 @@ public sealed class AutoCallPreparationTests
         { Calls.Add("save"); Saved = bundle; return Task.FromResult(attempt.CallId); }
         public Task FailPreparationAsync(AutoCallJob job, string workerId, CancellationToken token)
         { Calls.Add("fail"); return Task.CompletedTask; }
+        public Task SkipDeviceAsync(AutoCallJob job, string workerId, CancellationToken token)
+        { Calls.Add("skip"); return Task.CompletedTask; }
     }
     private sealed class Routing : IAutoCallRoutingStore
     {
         public Task<string?> GetAsync(string key, CancellationToken token) => Task.FromResult<string?>("TENANT");
     }
-    private sealed class Phones(params string[] numbers) : IAutoCallPhoneRepository
+    private sealed class Phones(IReadOnlyList<AutoCallPhone> phones) : IAutoCallPhoneRepository
     {
-        public Task<IReadOnlyList<string>> ReadAsync(string connection, string oid, CancellationToken token) => Task.FromResult<IReadOnlyList<string>>(numbers);
+        public Task<IReadOnlyList<AutoCallPhone>> ReadAsync(string connection, string oid, CancellationToken token) => Task.FromResult(phones);
     }
-    private static AutoCallContactService Contacts(params string[] numbers) => new(new Routing(), new Phones(numbers),
+    private static AutoCallContactService Contacts(params string[] numbers) => TypedContacts(numbers.Select(number => new AutoCallPhone("CellPhone", number)).ToArray());
+    private static AutoCallContactService TypedContacts(params AutoCallPhone[] phones) => new(new Routing(), new Phones(phones),
         new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["ConnectionStrings:TENANT"] = "unused" }).Build());
 
     [Fact]
@@ -113,6 +116,54 @@ public sealed class AutoCallPreparationTests
             new AutoCallProcessingService(repository, Contacts("5551234", "5551234567x123"), Options())
                 .PrepareAsync(Job(), "worker", default));
         Assert.Equal("No E.164 recipient is available for this OID.", failure.Message);
+        Assert.Empty(repository.Calls);
+    }
+
+    private static AutoCallJob DeviceJob(int index, string devices) => new()
+    {
+        SystemID = 1, OID = "oid", FlowId = 12, LeaseToken = Token, CallDeviceIndex = index,
+        OptionsJSON = "{\"historyId\":7,\"postRecordingTranscript\":true,\"callDevices\":" + devices + "}"
+    };
+
+    [Theory]
+    [InlineData(0, "+15551234567")]
+    [InlineData(1, "+15557654321")]
+    public async Task DialsTheNumberOfTheClaimedCallDevice(int index, string expected)
+    {
+        var repository = new Repository();
+        var contacts = TypedContacts(new("HomePhone", "+15557654321"), new("CellPhone", "5551234567"), new("WorkPhone", "+15550000000"));
+        await new AutoCallProcessingService(repository, contacts, Options())
+            .PrepareAsync(DeviceJob(index, "[{\"type\":\"CellPhone\",\"phoneNumber\":null},{\"type\":\"homephone\",\"phoneNumber\":null}]"), "worker", default);
+        Assert.Equal(expected, repository.Recipient);
+    }
+
+    [Fact]
+    public async Task CustomDeviceDialsItsOwnNumber()
+    {
+        var repository = new Repository();
+        await new AutoCallProcessingService(repository, Contacts("+15551234567"), Options())
+            .PrepareAsync(DeviceJob(1, "[{\"type\":\"CellPhone\",\"phoneNumber\":null},{\"type\":\"Custom\",\"phoneNumber\":\"+19499299458\"}]"), "worker", default);
+        Assert.Equal("+19499299458", repository.Recipient);
+    }
+
+    [Fact]
+    public async Task DeviceWithoutANumberIsSkippedWithoutCreatingAnAttempt()
+    {
+        var repository = new Repository();
+        var skipped = await Assert.ThrowsAsync<AutoCallDeviceSkippedException>(() =>
+            new AutoCallProcessingService(repository, TypedContacts(new AutoCallPhone("HomePhone", "+15557654321")), Options())
+                .PrepareAsync(DeviceJob(0, "[{\"type\":\"WorkPhone\",\"phoneNumber\":null}]"), "worker", default));
+        Assert.Equal("WorkPhone", skipped.PhoneType);
+        Assert.Equal(new[] { "skip" }, repository.Calls);
+    }
+
+    [Fact]
+    public async Task ClaimedDeviceOutsideTheQueuedOptionsFailsValidation()
+    {
+        var repository = new Repository();
+        await Assert.ThrowsAsync<AutoCallValidationException>(() =>
+            new AutoCallProcessingService(repository, Contacts("+15551234567"), Options())
+                .PrepareAsync(DeviceJob(2, "[{\"type\":\"CellPhone\",\"phoneNumber\":null}]"), "worker", default));
         Assert.Empty(repository.Calls);
     }
 
@@ -383,6 +434,37 @@ public sealed class AutoCallPreparationTests
         Assert.Throws<AutoCallValidationException>(() => AutoCallBundlePreparer.Prepare(Attempt(graph: "{\"schemaVersion\":1,\"initialStep\":\"other\",\"steps\":[{\"id\":\"other\"}]}"), Options().FeedbackBaseUrl));
         Assert.Throws<System.Xml.XmlException>(() => AutoCallBundlePreparer.Prepare(Attempt(xml: "<!DOCTYPE CallFlow [<!ENTITY value 'text'>]><CallFlow>&value;</CallFlow>"), Options().FeedbackBaseUrl));
     }
+
+    private static AutoCallAttempt MachineAttempt(string? graphMachine, string? xmlMachine, string vmType = "terminal", string vmResponse = "<Say>Call back.</Say><Hangup/>", string endTarget = "end")
+        => Attempt(
+            graph: "{\"schemaVersion\":1,\"initialStep\":\"hello\"" + (graphMachine is null ? "" : $",\"machineStep\":\"{graphMachine}\"") +
+                ",\"steps\":[{\"id\":\"hello\",\"type\":\"gather\",\"transitions\":{\"digits\":{\"1\":\"" + endTarget + "\"},\"noInput\":\"end\",\"fallback\":\"end\"}}," +
+                "{\"id\":\"end\",\"type\":\"terminal\"},{\"id\":\"vm\",\"type\":\"" + vmType + "\"}]}",
+            xml: "<CallFlow initialStep=\"hello\"" + (xmlMachine is null ? "" : $" machineStep=\"{xmlMachine}\"") +
+                "><Step id=\"hello\"><Response><Say>{{OffenderName}}</Say><Gather/></Response></Step><Step id=\"end\"><Response><Hangup/></Response></Step>" +
+                "<Step id=\"vm\"><Response>" + vmResponse + "</Response></Step></CallFlow>");
+
+    [Fact]
+    public void MachineStepPresentInBothColumnsPrepares()
+    {
+        var bundle = AutoCallBundlePreparer.Prepare(MachineAttempt("vm", "vm"), Options().FeedbackBaseUrl);
+        Assert.Equal("vm", (string?)XDocument.Parse(bundle.TwiML).Root!.Attribute("machineStep"));
+        AutoCallBundlePreparer.Prepare(MachineAttempt(null, null), Options().FeedbackBaseUrl);
+    }
+
+    [Theory]
+    [InlineData("vm", null, "terminal", "<Say>Call back.</Say><Hangup/>", "end")]
+    [InlineData(null, "vm", "terminal", "<Say>Call back.</Say><Hangup/>", "end")]
+    [InlineData("vm", "end", "terminal", "<Say>Call back.</Say><Hangup/>", "end")]
+    [InlineData("missing", "missing", "terminal", "<Say>Call back.</Say><Hangup/>", "end")]
+    [InlineData("hello", "hello", "terminal", "<Say>Call back.</Say><Hangup/>", "end")]
+    [InlineData("vm", "vm", "gather", "<Say>Call back.</Say><Hangup/>", "end")]
+    [InlineData("vm", "vm", "terminal", "<Say>Call back.</Say><Hangup/>", "vm")]
+    [InlineData("vm", "vm", "terminal", "<Say>Call back.</Say>", "end")]
+    [InlineData("vm", "vm", "terminal", "<Gather/><Hangup/>", "end")]
+    public void InvalidMachineStepIsRejected(string? graphMachine, string? xmlMachine, string vmType, string vmResponse, string endTarget)
+        => Assert.Throws<AutoCallValidationException>(() => AutoCallBundlePreparer.Prepare(
+            MachineAttempt(graphMachine, xmlMachine, vmType, vmResponse, endTarget), Options().FeedbackBaseUrl));
 
     [Theory]
     [InlineData("Normal", false)]

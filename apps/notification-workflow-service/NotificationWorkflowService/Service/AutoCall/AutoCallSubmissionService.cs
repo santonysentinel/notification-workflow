@@ -87,15 +87,15 @@ public sealed class AutoCallSubmissionService(IAutoCallSubmissionRepository repo
             AutoCallWorkerOptions.ValidateBaseUrl(parameters.RootElement.GetProperty("feedbackBaseUrl").GetString() ?? "") != baseUrl)
             throw new InvalidOperationException("Submission callbacks and recipient must match the prepared bundle.");
         string suffix = "?callId=" + attempt.CallId.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        var opening = AutoCallBundlePreparer.PrepareOpening(attempt.TwiML!);
+        // No inline opening: answering-machine detection must finish before the start webhook picks the first step.
         var request = new AutoCallSubmissionRequest(attempt.CallId, options.AccountSid, attempt.PhoneE164, options.FromNumber,
             baseUrl + "/webhooks/twilio/voice/start" + suffix,
             baseUrl + "/webhooks/twilio/voice/status" + suffix,
-            baseUrl + "/webhooks/twilio/recordings/status" + suffix, options.RecordCalls, opening);
+            baseUrl + "/webhooks/twilio/recordings/status" + suffix, options.RecordCalls);
         Guid token = Guid.NewGuid();
         var marker = await repository.BeginSubmissionAsync(attempt, workerId, token, request, cancellationToken).ConfigureAwait(false);
         if (!marker.ShouldSubmit) return marker;
-        if (marker.SubmissionToken != token || marker.SubmissionState != "SUBMITTING" || marker.OpeningExecutionId != opening.ExecutionId)
+        if (marker.SubmissionToken != token || marker.SubmissionState != "SUBMITTING" || marker.OpeningExecutionId is not null)
             throw new InvalidOperationException("Submission marker identity is invalid.");
         string state = "ACCEPTED";
         string? sid = null, error = null;

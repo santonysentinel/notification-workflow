@@ -179,6 +179,18 @@ public sealed class AutoCallRecoveryTests
     }
 
     [Fact]
+    public async Task SkippedDeviceIsNotDispositionedOrDialled()
+    {
+        var logger = new AutoCallDiagnosticsTests.Logs<AutoCallRecoveryService>();
+        var harness = new Harness { PreparationFailure = new AutoCallDeviceSkippedException("WorkPhone") };
+        await harness.Service(logger: logger).ProcessAsync(Job(), default);
+        Assert.Null(harness.Disposition);
+        Assert.Equal(0, harness.Posts);
+        Assert.DoesNotContain(logger.Entries, entry => entry.Level >= LogLevel.Warning);
+        Assert.Contains(logger.Entries, entry => entry.Level == LogLevel.Information && entry.Message.Contains("WorkPhone"));
+    }
+
+    [Fact]
     public async Task RenewalCancellationLogsDeadlineAndPreventsProcessing()
     {
         var logger = new AutoCallDiagnosticsTests.Logs<AutoCallRecoveryService>();
@@ -409,6 +421,7 @@ public sealed class AutoCallRecoveryTests
             => Task.FromResult<IReadOnlyList<AutoCallJob>>([Job()]);
         public Task<int> SavePreparationAsync(AutoCallAttempt attempt, string workerId, AutoCallPreparedBundle bundle, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task FailPreparationAsync(AutoCallJob job, string workerId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task SkipDeviceAsync(AutoCallJob job, string workerId, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
     private sealed class Factory(Handler handler) : IHttpClientFactory

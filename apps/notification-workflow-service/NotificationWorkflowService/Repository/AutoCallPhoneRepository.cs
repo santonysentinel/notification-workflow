@@ -11,7 +11,7 @@ public sealed class AutoCallPhoneRepository(ILogger<AutoCallPhoneRepository>? lo
 {
     private readonly ILogger logger = logger ?? NullLogger<AutoCallPhoneRepository>.Instance;
 
-    public async Task<IReadOnlyList<string>> ReadAsync(string connectionString, string oid, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<AutoCallPhone>> ReadAsync(string connectionString, string oid, CancellationToken cancellationToken = default)
         => await DatabaseDiagnostics.ExecuteAsync(logger, "TenantDatabase", "dbo.activealarms_GetAllParticipantPhonenumbers", cancellationToken, async () =>
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -37,25 +37,33 @@ public sealed class AutoCallPhoneRepository(ILogger<AutoCallPhoneRepository>? lo
         return command;
     }
 
-    internal static async Task<IReadOnlyList<string>> ReadPhonesAsync(DbDataReader reader, CancellationToken cancellationToken)
+    internal static async Task<IReadOnlyList<AutoCallPhone>> ReadPhonesAsync(DbDataReader reader, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        int ordinal;
-        try { ordinal = reader.GetOrdinal("phone_numbers"); }
-        catch (Exception exception) when (exception is IndexOutOfRangeException or ArgumentException)
-        {
-            throw new InvalidOperationException("The phone lookup must return a phone_numbers column.");
-        }
-        if (reader.GetFieldType(ordinal) != typeof(string))
-            throw new InvalidOperationException("The phone_numbers column must contain string values.");
-        var phones = new List<string>();
+        int typeOrdinal = StringOrdinal(reader, "phone_type");
+        int numberOrdinal = StringOrdinal(reader, "phone_number");
+        var phones = new List<AutoCallPhone>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (reader.IsDBNull(ordinal)) continue;
-            string value = reader.GetString(ordinal);
-            if (!string.IsNullOrWhiteSpace(value)) phones.Add(value);
+            if (reader.IsDBNull(typeOrdinal) || reader.IsDBNull(numberOrdinal)) continue;
+            string type = reader.GetString(typeOrdinal).Trim();
+            string value = reader.GetString(numberOrdinal);
+            if (type.Length != 0 && !string.IsNullOrWhiteSpace(value)) phones.Add(new AutoCallPhone(type, value));
         }
         return phones.AsReadOnly();
+    }
+
+    private static int StringOrdinal(DbDataReader reader, string column)
+    {
+        int ordinal;
+        try { ordinal = reader.GetOrdinal(column); }
+        catch (Exception exception) when (exception is IndexOutOfRangeException or ArgumentException)
+        {
+            throw new InvalidOperationException($"The phone lookup must return a {column} column.");
+        }
+        if (reader.GetFieldType(ordinal) != typeof(string))
+            throw new InvalidOperationException($"The {column} column must contain string values.");
+        return ordinal;
     }
 }

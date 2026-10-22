@@ -10,8 +10,9 @@ namespace NotificationWorkflowService.Tests;
 
 public sealed class AutoCallEnqueueTests
 {
-    internal static string RoboCallOptions(int flowId = 12, string? showTranscript = "true", string extra = "")
-        => "{\"participantRoboCall\":{\"FlowId\":" + flowId + ",\"FlowName\":\"DEV Flow 1\"" +
+    internal static string RoboCallOptions(int flowId = 12, string? showTranscript = "true", string extra = "",
+        string primary = "{\"Type\":\"CellPhone\",\"PhoneNumber\":null}")
+        => "{\"participantRoboCall\":{\"FlowId\":" + flowId + ",\"FlowName\":\"DEV Flow 1\",\"PrimaryCallDevice\":" + primary +
            (showTranscript is null ? "" : ",\"ShowParticipantResponseTranscript\":" + showTranscript) + extra + "}}";
     private static ActiveAlarm Alarm() => new()
     { SystemID = 42, HistoryID = 81, ClientID = "oid-42", POGroupNum = "group-42", ProfileID = 7, StateNo = 3, CurrentLoopNumber = 1, OptionsJson = RoboCallOptions() };
@@ -99,14 +100,17 @@ public sealed class AutoCallEnqueueTests
         var alarm = Alarm();
         var original = Capture(alarm);
         alarm.OptionsJson = RoboCallOptions(showTranscript: showTranscript,
-            extra: ",\"WaitForCallCompletion\":false,\"CallTimeoutSeconds\":null,\"PrimaryCallDevice\":{\"Type\":\"Custom\",\"PhoneNumber\":\"+19499299458\"}");
+            extra: ",\"WaitForCallCompletion\":false,\"CallTimeoutSeconds\":null", primary: "{\"Type\":\"Custom\",\"PhoneNumber\":\"+19499299458\"}");
         var repository = new Repository();
         await new AutoCallEnqueueService(repository, new ParticipantCurrentDetailsTests.Stub()).EnqueueAsync(alarm, "DEV1");
         var request = Assert.IsType<AutoCallRequest>(repository.Request);
         using var options = JsonDocument.Parse(request.OptionsJson);
         Assert.Equal(81, options.RootElement.GetProperty("historyId").GetInt32());
         Assert.Equal(expected, options.RootElement.GetProperty("postRecordingTranscript").GetBoolean());
-        Assert.Equal(2, options.RootElement.EnumerateObject().Count());
+        Assert.Equal(3, options.RootElement.EnumerateObject().Count());
+        var device = Assert.Single(options.RootElement.GetProperty("callDevices").EnumerateArray());
+        Assert.Equal("Custom", device.GetProperty("type").GetString());
+        Assert.Equal("+19499299458", device.GetProperty("phoneNumber").GetString());
         Assert.Equal(original.EnqueueIdempotencyKey, request.EnqueueIdempotencyKey);
         Assert.Equal(Capture(alarm).OptionsJson, request.OptionsJson);
     }
@@ -130,17 +134,33 @@ public sealed class AutoCallEnqueueTests
         await new AutoCallEnqueueService(repository, new ParticipantCurrentDetailsTests.Stub()).EnqueueAsync(alarm, "DEV1");
         var request = Assert.IsType<AutoCallRequest>(repository.Request);
         using var options = JsonDocument.Parse(request.OptionsJson);
-        Assert.Equal(wait ? 3 : 2, options.RootElement.EnumerateObject().Count());
+        Assert.Equal(wait ? 4 : 3, options.RootElement.EnumerateObject().Count());
         Assert.Equal(wait, options.RootElement.TryGetProperty("waitForCompletion", out var flag) && flag.GetBoolean());
         Assert.Equal(81, options.RootElement.GetProperty("historyId").GetInt32());
         Assert.Equal(original.EnqueueIdempotencyKey, request.EnqueueIdempotencyKey);
     }
 
     [Fact]
+    public async Task CallDevicesAreQueuedInPrimaryThenSecondaryOrder()
+    {
+        var alarm = Alarm();
+        alarm.OptionsJson = RoboCallOptions(extra: ",\"SecondaryCallDevice\":{\"Type\":\"Custom\",\"PhoneNumber\":\"+19499299458\"}", primary: "{\"Type\":\"WorkPhone\",\"PhoneNumber\":null}");
+        var repository = new Repository();
+        await new AutoCallEnqueueService(repository, new ParticipantCurrentDetailsTests.Stub()).EnqueueAsync(alarm, "DEV1");
+        using var options = JsonDocument.Parse(Assert.IsType<AutoCallRequest>(repository.Request).OptionsJson);
+        var devices = options.RootElement.GetProperty("callDevices").EnumerateArray().ToArray();
+        Assert.Equal(2, devices.Length);
+        Assert.Equal("WorkPhone", devices[0].GetProperty("type").GetString());
+        Assert.Equal(JsonValueKind.Null, devices[0].GetProperty("phoneNumber").ValueKind);
+        Assert.Equal("Custom", devices[1].GetProperty("type").GetString());
+        Assert.Equal("+19499299458", devices[1].GetProperty("phoneNumber").GetString());
+    }
+
+    [Fact]
     public async Task FlowIdComesFromParticipantRoboCallOptionsCaseInsensitively()
     {
         var alarm = Alarm();
-        alarm.OptionsJson = "{\"futureRoboCall\":{\"FlowId\":99},\"ParticipantRoboCall\":{\"flowId\":12,\"showParticipantResponseTranscript\":false}}";
+        alarm.OptionsJson = "{\"futureRoboCall\":{\"FlowId\":99},\"ParticipantRoboCall\":{\"flowId\":12,\"showParticipantResponseTranscript\":false,\"primaryCallDevice\":{\"type\":\"CellPhone\"}}}";
         var repository = new Repository();
         await new AutoCallEnqueueService(repository, new ParticipantCurrentDetailsTests.Stub()).EnqueueAsync(alarm, "DEV1");
         var request = Assert.IsType<AutoCallRequest>(repository.Request);
@@ -169,15 +189,20 @@ public sealed class AutoCallEnqueueTests
     [InlineData("{\"participantRoboCall\":{\"FlowId\":\"4\"}}")]
     [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"flowid\":5}}")]
     [InlineData("{\"participantRoboCall\":{\"FlowId\":4},\"ParticipantRoboCall\":{\"FlowId\":4}}")]
-    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"ShowParticipantResponseTranscript\":\"false\"}}")]
-    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"ShowParticipantResponseTranscript\":0}}")]
-    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"WaitForCallCompletion\":\"true\"}}")]
-    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"WaitForCallCompletion\":1}}")]
-    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"CallTimeoutSeconds\":0}}")]
-    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"CallTimeoutSeconds\":-30}}")]
-    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"CallTimeoutSeconds\":12.5}}")]
-    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"CallTimeoutSeconds\":\"60\"}}")]
-    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"CallTimeoutSeconds\":3000000000}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"PrimaryCallDevice\":{\"Type\":\"CellPhone\",\"PhoneNumber\":null},\"ShowParticipantResponseTranscript\":\"false\"}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"PrimaryCallDevice\":{\"Type\":\"CellPhone\",\"PhoneNumber\":null},\"ShowParticipantResponseTranscript\":0}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"PrimaryCallDevice\":{\"Type\":\"CellPhone\",\"PhoneNumber\":null},\"WaitForCallCompletion\":\"true\"}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"PrimaryCallDevice\":{\"Type\":\"CellPhone\",\"PhoneNumber\":null},\"WaitForCallCompletion\":1}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"PrimaryCallDevice\":{\"Type\":\"CellPhone\",\"PhoneNumber\":null},\"CallTimeoutSeconds\":0}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"PrimaryCallDevice\":{\"Type\":\"CellPhone\",\"PhoneNumber\":null},\"CallTimeoutSeconds\":-30}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"PrimaryCallDevice\":{\"Type\":\"CellPhone\",\"PhoneNumber\":null},\"CallTimeoutSeconds\":12.5}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"PrimaryCallDevice\":{\"Type\":\"CellPhone\",\"PhoneNumber\":null},\"CallTimeoutSeconds\":\"60\"}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"PrimaryCallDevice\":{\"Type\":\"CellPhone\",\"PhoneNumber\":null},\"CallTimeoutSeconds\":3000000000}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"PrimaryCallDevice\":null}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"PrimaryCallDevice\":{\"Type\":\"Pager\",\"PhoneNumber\":null}}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"PrimaryCallDevice\":{\"Type\":\"Custom\",\"PhoneNumber\":null}}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"PrimaryCallDevice\":{\"Type\":\"Custom\",\"PhoneNumber\":\"9499299458\"}}}")]
+    [InlineData("{\"participantRoboCall\":{\"FlowId\":4,\"PrimaryCallDevice\":{\"Type\":\"CellPhone\",\"PhoneNumber\":null},\"SecondaryCallDevice\":{\"Type\":\"\"}}}")]
     public async Task InvalidProfilePolicyFailsBeforeDatabaseAccess(string? json)
     {
         var alarm = Alarm();

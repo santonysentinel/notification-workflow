@@ -207,6 +207,55 @@ describe('POST /webhooks/twilio/voice/start', () => {
     });
   }
 
+  it('passes AnsweredBy and serves the opening step for a person', async () => {
+    expect((await signedRequest(path, { ...body, AnsweredBy: 'human' })).status).to.equal(200);
+    expect(startAutomatedCall.firstCall.args[0].answeredBy).to.equal('human');
+    expect(startAutomatedCall.firstCall.args[0].openingStep.stepId).to.equal('battery-reminder');
+  });
+
+  it('serves the machine step after a voicemail greeting ends', async () => {
+    const voicemail = '<Response><Say>Please call back.</Say><Hangup/></Response>';
+    const machineBundle = `<CallFlow initialStep="battery-reminder" machineStep="voicemail"><Step id="battery-reminder">${xml}</Step><Step id="voicemail">${voicemail}</Step></CallFlow>`;
+    getAutomatedCallTwiML.resolves(machineBundle);
+    startAutomatedCall.resolves({ Outcome: 'started', ResponseTwiML: voicemail, Replayed: false });
+    const response = await signedRequest(path, { ...body, AnsweredBy: 'machine_end_beep' });
+    expect(response.status).to.equal(200);
+    expect(response.text).to.equal(voicemail);
+    expect(startAutomatedCall.firstCall.args[0]).to.include({ answeredBy: 'machine_end_beep' });
+    expect(startAutomatedCall.firstCall.args[0].openingStep).to.include({
+      stepId: 'voicemail',
+      responseTwiML: voicemail,
+      expectedTwiML: machineBundle
+    });
+  });
+
+  for (const answeredBy of ['machine_end_silence', 'machine_start', 'fax']) {
+    it(`hangs up for ${answeredBy} without a machine step`, async () => {
+      const hangup = '<Response><Hangup/></Response>';
+      startAutomatedCall.resolves({ Outcome: 'started', ResponseTwiML: hangup, Replayed: false });
+      expect((await signedRequest(path, { ...body, AnsweredBy: answeredBy })).text).to.equal(hangup);
+      expect(startAutomatedCall.firstCall.args[0].openingStep).to.include({
+        stepId: '$hangup',
+        responseTwiML: hangup,
+        expectedTwiML: bundle
+      });
+    });
+  }
+
+  it('hangs up instead of leaving a message when the greeting has not ended', async () => {
+    getAutomatedCallTwiML.resolves(
+      `<CallFlow initialStep="battery-reminder" machineStep="later"><Step id="battery-reminder">${xml}</Step><Step id="later"><Response><Say>Later.</Say><Hangup/></Response></Step></CallFlow>`
+    );
+    startAutomatedCall.resolves({ Outcome: 'started', ResponseTwiML: '<Response><Hangup/></Response>' });
+    await signedRequest(path, { ...body, AnsweredBy: 'machine_start' });
+    expect(startAutomatedCall.firstCall.args[0].openingStep.stepId).to.equal('$hangup');
+  });
+
+  it('rejects a malformed AnsweredBy', async () => {
+    expect((await signedRequest(path, { ...body, AnsweredBy: 'x'.repeat(31) })).status).to.equal(400);
+    expect(startAutomatedCall.notCalled).to.be.true;
+  });
+
   it('does not expose database error details', async () => {
     startAutomatedCall.rejects(new Error('Secret database connection details'));
     const response = await signedRequest();

@@ -16,6 +16,14 @@ public sealed class AutoCallJob
     public int RecoveryCount { get; set; }
     public Guid LeaseToken { get; init; }
     public DateTime LockedUntil { get; init; }
+    public int CallDeviceIndex { get; init; }
+    public string? OptionsJSON { get; init; }
+}
+
+/// <summary>The claimed job's call device has no usable number; the row was ended and the next device queued.</summary>
+public sealed class AutoCallDeviceSkippedException(string phoneType) : Exception($"No phone number on file for call device {phoneType}.")
+{
+    public string PhoneType { get; } = phoneType;
 }
 
 public sealed class AutoCallAttempt
@@ -61,6 +69,7 @@ public interface IAutoCallRepository
     Task<AutoCallAttempt> BeginAttemptAsync(AutoCallJob job, string workerId, string recipient, CancellationToken cancellationToken);
     Task<int> SavePreparationAsync(AutoCallAttempt attempt, string workerId, AutoCallPreparedBundle bundle, CancellationToken cancellationToken);
     Task FailPreparationAsync(AutoCallJob job, string workerId, CancellationToken cancellationToken);
+    Task SkipDeviceAsync(AutoCallJob job, string workerId, CancellationToken cancellationToken);
 }
 
 public interface IAutoCallProcessingService

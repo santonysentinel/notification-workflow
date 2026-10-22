@@ -12,10 +12,16 @@ public interface IAutoCallRoutingStore
 
 public interface IAutoCallPhoneRepository
 {
-    Task<IReadOnlyList<string>> ReadAsync(string connectionString, string oid, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<AutoCallPhone>> ReadAsync(string connectionString, string oid, CancellationToken cancellationToken = default);
 }
 
-public sealed record AutoCallContacts(string Oid, string Platform, IReadOnlyList<string> PhoneNumbers);
+/// <summary>A participant phone from the tenant lookup: device type (HomePhone, CellPhone, WorkPhone) and number.</summary>
+public sealed record AutoCallPhone(string Type, string Number);
+
+public sealed record AutoCallContacts(string Oid, string Platform, IReadOnlyList<AutoCallPhone> Phones)
+{
+    public IReadOnlyList<string> PhoneNumbers => Phones.Select(phone => phone.Number).ToArray();
+}
 
 public enum AutoCallRoutingFailure
 {
@@ -76,10 +82,10 @@ public sealed class AutoCallContactService
             throw new AutoCallRoutingException(AutoCallRoutingFailure.DatabaseNotConfigured);
         var phones = await phoneRepository.ReadAsync(connectionString, oid, cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
-        return new AutoCallContacts(oid, platform, phones.Select(NormalizePhoneNumber).ToArray());
+        return new AutoCallContacts(oid, platform, phones.Select(phone => phone with { Number = NormalizePhoneNumber(phone.Number) }).ToArray());
     }
 
-    private static string NormalizePhoneNumber(string phone)
+    internal static string NormalizePhoneNumber(string phone)
     {
         string number = string.Concat(phone.Where(character =>
             !char.IsWhiteSpace(character) && character is not ('(' or ')' or '-' or '.')));

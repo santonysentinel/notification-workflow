@@ -31,7 +31,7 @@ BEGIN TRY
     IF EXISTS(SELECT 1 FROM @Renewed WHERE Renewed=1) THROW 51999,'Expired ownership cannot be revived.',1;
     UPDATE dbo.AutomatedCallQueue SET Status='READY',LeaseToken=NULL,LockedBy=NULL,LockedUntil=NULL,MaxAttempts=1,RecoveryCount=1,
         AvailableAt=SYSUTCDATETIME(),Priority=1000000000 WHERE SystemID=@Queue;
-    DECLARE @NoAttemptClaims TABLE(SystemID int,ActiveAlarmID int,OID varchar(20),FlowId int,VariablesJSON nvarchar(max),EnqueueIdempotencyKey uniqueidentifier,AttemptCount int,MaxAttempts int,LeaseToken uniqueidentifier,LockedUntil datetime2(3));
+    DECLARE @NoAttemptClaims TABLE(SystemID int,ActiveAlarmID int,OID varchar(20),FlowId int,VariablesJSON nvarchar(max),EnqueueIdempotencyKey uniqueidentifier,AttemptCount int,MaxAttempts int,LeaseToken uniqueidentifier,LockedUntil datetime2(3),CallDeviceIndex int,OptionsJSON nvarchar(max));
     INSERT @NoAttemptClaims EXEC dbo.activealarms_call_GetNextSetOfJobs 1,'preparation-retry',5;
     IF NOT EXISTS(SELECT 1 FROM @NoAttemptClaims WHERE SystemID=@Queue AND AttemptCount=1 AND MaxAttempts=1)
         THROW 51999,'A bounded pre-submission retry without an attempt must not be stranded by claim history.',1;
@@ -55,7 +55,7 @@ BEGIN TRY
     VALUES(@ResumeQueue,@Original,'Twilio','recovery-resume','+15551234567',@ResumeFlow,'queued',N'<CallFlow/>',N'{}');
     DECLARE @ResumeCall int=SCOPE_IDENTITY();
     UPDATE dbo.AutomatedCallQueue SET CurrentAttemptId=@ResumeCall WHERE SystemID=@ResumeQueue;
-    DECLARE @Claims TABLE(SystemID int,ActiveAlarmID int,OID varchar(20),FlowId int,VariablesJSON nvarchar(max),EnqueueIdempotencyKey uniqueidentifier,AttemptCount int,MaxAttempts int,LeaseToken uniqueidentifier,LockedUntil datetime2(3));
+    DECLARE @Claims TABLE(SystemID int,ActiveAlarmID int,OID varchar(20),FlowId int,VariablesJSON nvarchar(max),EnqueueIdempotencyKey uniqueidentifier,AttemptCount int,MaxAttempts int,LeaseToken uniqueidentifier,LockedUntil datetime2(3),CallDeviceIndex int,OptionsJSON nvarchar(max));
     INSERT @Claims EXEC dbo.activealarms_call_GetNextSetOfJobs 1,'replacement-worker',5;
     DECLARE @Replacement uniqueidentifier=(SELECT LeaseToken FROM @Claims WHERE SystemID=@ResumeQueue);
     IF @Replacement IS NULL OR @Replacement=@Original OR NOT EXISTS(SELECT 1 FROM @Claims WHERE AttemptCount=1)
@@ -110,7 +110,7 @@ BEGIN TRY
     IF NOT EXISTS(SELECT 1 FROM dbo.AutomatedCallQueue WHERE SystemID=@RetryQueue AND Status='READY' AND RecoveryCount=1 AND PreparationFailureCount=0 AND AvailableAt>DATEADD(second,20,SYSUTCDATETIME()))
         THROW 51999,'Proven rejection must schedule durable bounded backoff with a separate retry counter.',1;
     UPDATE dbo.AutomatedCallQueue SET AvailableAt=SYSUTCDATETIME() WHERE SystemID=@RetryQueue;
-    DECLARE @RetryClaims TABLE(SystemID int,ActiveAlarmID int,OID varchar(20),FlowId int,VariablesJSON nvarchar(max),EnqueueIdempotencyKey uniqueidentifier,AttemptCount int,MaxAttempts int,LeaseToken uniqueidentifier,LockedUntil datetime2(3));
+    DECLARE @RetryClaims TABLE(SystemID int,ActiveAlarmID int,OID varchar(20),FlowId int,VariablesJSON nvarchar(max),EnqueueIdempotencyKey uniqueidentifier,AttemptCount int,MaxAttempts int,LeaseToken uniqueidentifier,LockedUntil datetime2(3),CallDeviceIndex int,OptionsJSON nvarchar(max));
     INSERT @RetryClaims EXEC dbo.activealarms_call_GetNextSetOfJobs 1,'next-worker',5;
     DECLARE @RetryLease uniqueidentifier=(SELECT LeaseToken FROM @RetryClaims WHERE SystemID=@RetryQueue);
     EXEC dbo.automatedcalls_BeginAttempt @RetryQueue,@RetryLease,'next-worker','+15551234567';

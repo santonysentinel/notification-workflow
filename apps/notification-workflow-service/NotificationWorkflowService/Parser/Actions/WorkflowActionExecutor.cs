@@ -256,8 +256,9 @@ internal static class WorkflowActionExecutor
                 WriteAction(a, context, "Auto Call Participant");
                 a.RoboCallWaitQueueId = null;
                 int queueId = await operations.EnqueueAutoCallAsync(a, context.Platform, cancellationToken).ConfigureAwait(false);
-                await operations.AddHistoryNoteAsync(a.HistoryID, "Robo Call queued for participant.", cancellationToken).ConfigureAwait(false);
                 var roboCallOptions = ParticipantRoboCallOptions.Parse(a.OptionsJson);
+                await operations.AddHistoryNoteAsync(a.HistoryID,
+                    $"Robo Call queued for participant ({roboCallOptions.PrimaryCallDevice!.Type}).", cancellationToken).ConfigureAwait(false);
                 if (roboCallOptions.WaitForCallCompletion && queueId > 0)
                 {
                     a.RoboCallWaitQueueId = queueId;

@@ -78,10 +78,17 @@ internal static class AutoCallNoteFormatter
 {
     private sealed record Message(int Sentence, int AudioChannel, int StartTimeMilliseconds, int EndTimeMilliseconds, string? TranscriptText);
 
+    private sealed record DeviceOutcome(string? PhoneType, string? Status, string? AnsweredBy, bool MessageLeft, string? NextPhoneType);
+
     internal static IReadOnlyList<string> Format(AutoCallNoteTask task)
     {
         if (task.Kind == "COMPLETED")
-            return [$"Robo Call completed. Call connected and ended. Call ended at {task.OccurredAt.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture)} UTC."];
+        {
+            string? phoneType = ReadPhoneType(task.MessagesJSON);
+            string target = phoneType is null ? "" : " to " + phoneType;
+            return [$"Robo Call{target} completed. Call connected and ended. Call ended at {task.OccurredAt.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture)} UTC."];
+        }
+        if (task.Kind == "DEVICE") return [FormatDevice(task)];
         if (task.Kind != "TRANSCRIPT" || task.RecordingId is null || task.MessagesJSON is null)
             throw new InvalidOperationException("Invalid transcript delivery payload.");
         var messages = JsonSerializer.Deserialize<List<Message>>(task.MessagesJSON)
@@ -108,6 +115,32 @@ internal static class AutoCallNoteFormatter
         if (notes.Count == 0)
             notes.Add(FormattableString.Invariant($"Robo Call recording transcript (call {task.CallId}, recording {task.RecordingId}): No speech detected."));
         return notes;
+    }
+
+    private static string? ReadPhoneType(string? messagesJson)
+    {
+        if (string.IsNullOrWhiteSpace(messagesJson)) return null;
+        using var document = JsonDocument.Parse(messagesJson);
+        return document.RootElement.ValueKind == JsonValueKind.Object && document.RootElement.TryGetProperty("phoneType", out var type) &&
+            type.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(type.GetString()) ? type.GetString() : null;
+    }
+
+    private static string FormatDevice(AutoCallNoteTask task)
+    {
+        var outcome = task.MessagesJSON is null ? null : JsonSerializer.Deserialize<DeviceOutcome>(task.MessagesJSON,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        if (outcome is null || string.IsNullOrWhiteSpace(outcome.PhoneType) || string.IsNullOrWhiteSpace(outcome.Status))
+            throw new InvalidOperationException("Invalid call device delivery payload.");
+        string result = outcome switch
+        {
+            { Status: "no-phone-number" } => "skipped (no phone number on file)",
+            { AnsweredBy: "fax" } => "reached a fax machine",
+            { AnsweredBy: { } machine } when machine.StartsWith("machine_", StringComparison.Ordinal) =>
+                outcome.MessageLeft ? "reached voicemail; message left" : "reached an answering machine; no message left",
+            _ => $"failed ({outcome.Status})"
+        };
+        string next = string.IsNullOrWhiteSpace(outcome.NextPhoneType) ? "no more devices" : "trying " + outcome.NextPhoneType;
+        return $"Robo Call to {outcome.PhoneType} {result}; {next}.";
     }
 
     private static string Offset(int milliseconds)
