@@ -328,7 +328,7 @@ BEGIN TRY
     DECLARE @SecondQueue int = (SELECT SystemID FROM dbo.AutomatedCallQueue WHERE RootQueueId = @RootQueue);
     IF @SecondQueue IS NULL OR NOT EXISTS (SELECT 1 FROM dbo.AutomatedCallQueue WHERE SystemID = @SecondQueue
             AND CallDeviceIndex = 1 AND Status = 'READY' AND ActiveAlarmID = 49 AND FlowId = @FlowId
-            AND OptionsJSON = @TwoDevices AND AvailableAt <= SYSUTCDATETIME())
+            AND OptionsJSON = @TwoDevices AND AvailableAt <= DATEADD(millisecond, 1, SYSUTCDATETIME()))
         OR (SELECT Status FROM dbo.AutomatedCallQueue WHERE SystemID = @RootQueue) <> 'FAILED'
         THROW 51000, 'A no-answer primary must end its row and queue the secondary immediately.', 1;
     IF EXISTS (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE Kind = 'RELEASE' AND QueueId = @RootQueue)

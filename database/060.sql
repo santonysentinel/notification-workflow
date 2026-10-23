@@ -107,8 +107,11 @@ BEGIN
         EXEC dbo.automatedcalls_QueueWaitRelease @QueueId;
         RETURN;
     END;
-    SET @Type=JSON_VALUE(@Options,'$.callDevices['+CONVERT(varchar(11),@Index)+'].type');
-    SET @NextType=JSON_VALUE(@Options,'$.callDevices['+CONVERT(varchar(11),@Index+1)+'].type');
+    -- OPENJSON by index: a computed JSON_VALUE path needs compatibility level 140.
+    SELECT @Type=JSON_VALUE(d.value,'$.type') FROM OPENJSON(JSON_QUERY(@Options,'$.callDevices')) d
+    WHERE d.type=5 AND d.[key]=CONVERT(nvarchar(11),@Index);
+    SELECT @NextType=JSON_VALUE(d.value,'$.type') FROM OPENJSON(JSON_QUERY(@Options,'$.callDevices')) d
+    WHERE d.type=5 AND d.[key]=CONVERT(nvarchar(11),@Index+1);
     SET @HistoryId=TRY_CONVERT(int,JSON_VALUE(@Options,'$.historyId'));
     IF @HistoryId>0 AND NOT EXISTS(SELECT 1 FROM dbo.AutomatedCallNoteOutbox WITH(UPDLOCK,HOLDLOCK) WHERE Kind='DEVICE' AND QueueId=@QueueId)
         INSERT dbo.AutomatedCallNoteOutbox(CallId,Kind,SourceId,OID,HistoryID,OccurredAt,MessagesJSON,QueueId,ActiveAlarmID)
@@ -350,7 +353,8 @@ BEGIN
         IF @CallId IS NOT NULL AND (@Sid IS NOT NULL OR @State IS NULL OR @State NOT IN('READY','REJECTED') OR (@State='REJECTED' AND (@Error IS NULL OR @Error<>'TWILIO_20429')))
             THROW 51001,'Existing submission requires reconciliation, not a new attempt.',1;
         IF @Options IS NOT NULL AND ISJSON(@Options)=1
-            SET @PhoneType=JSON_VALUE(@Options,'$.callDevices['+CONVERT(varchar(11),@DeviceIndex)+'].type');
+            SELECT @PhoneType=JSON_VALUE(d.value,'$.type') FROM OPENJSON(JSON_QUERY(@Options,'$.callDevices')) d
+            WHERE d.type=5 AND d.[key]=CONVERT(nvarchar(11),@DeviceIndex);
         IF @State='REJECTED' SET @CallId=NULL;
         IF @CallId IS NULL
         BEGIN
@@ -793,7 +797,9 @@ BEGIN
         q.MaxAttempts AS QueueMaxAttempts,
         q.LastErrorCode AS QueueLastErrorCode,
         -- A fallback device gets its own queue row; RootQueueId points at the row the workflow enqueued.
-        COALESCE(c.PhoneType, JSON_VALUE(q.OptionsJSON, '$.callDevices[' + CONVERT(varchar(11), q.CallDeviceIndex) + '].type')) AS PhoneType,
+        COALESCE(c.PhoneType, (SELECT JSON_VALUE(d.value, '$.type')
+            FROM OPENJSON(JSON_QUERY(CASE WHEN ISJSON(q.OptionsJSON) = 1 THEN q.OptionsJSON END, '$.callDevices')) AS d
+            WHERE d.type = 5 AND d.[key] = CONVERT(nvarchar(11), q.CallDeviceIndex))) AS PhoneType,
         c.AnsweredBy,
         q.CallDeviceIndex,
         q.RootQueueId

@@ -22,7 +22,7 @@ BEGIN
 				POGroupNum, OID, EventID, EventDescription, EventDateTime,
 				Comment, NotifiedDateTime, EquipmentID
 			)
-			SELECT POGroupNum, OID, '888', 'System Entered Note', EventDateTime,
+			SELECT POGroupNum, OID, 'NOTE', 'NOTE', EventDateTime,
 				@note, dbo.fDTUnix(GETUTCDATE()), EquipmentID
 			FROM dbo.History
 			WHERE SystemID = @HistoryID AND OID = @oid;
@@ -52,8 +52,8 @@ BEGIN
 		VALUES (
 			@pogroupnum
 			,@oid
-			,'888'
-			,'System Entered Note'
+			,'NOTE'
+			,'NOTE'
 			,dbo.fDTUnix(getutcdate())
 			,@note
 			,dbo.fDTUnix(getutcdate())
