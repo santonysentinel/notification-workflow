@@ -286,6 +286,27 @@ public sealed class AutoCallEnqueueTests
         Assert.Equal(SqlDbType.NVarChar, command.Parameters["@OptionsJSON"].SqlDbType);
         Assert.Equal(-1, command.Parameters["@OptionsJSON"].Size);
         Assert.Equal(request.OptionsJson, command.Parameters["@OptionsJSON"].Value);
+        Assert.Equal(SqlDbType.Int, command.Parameters["@FlowVersionId"].SqlDbType);
+        Assert.Equal(DBNull.Value, command.Parameters["@FlowVersionId"].Value);
+    }
+
+    [Fact]
+    public void CapturedRequestPinsTheFlowVersionThatWasValidated()
+    {
+        var flow = Flow() with { VersionId = 345 };
+        var request = Capture(flow: flow);
+        Assert.Equal(345, request.FlowVersionId);
+        Assert.Equal(12, request.FlowId);
+        Assert.Equal(Capture().EnqueueIdempotencyKey, request.EnqueueIdempotencyKey);
+        using var command = AutoCallQueueRepository.BuildEnqueueCommand(request);
+        Assert.Equal(345, command.Parameters["@FlowVersionId"].Value);
+    }
+
+    [Fact]
+    public void FlowReadSelectsTheActiveVersionOfTheTemplate()
+    {
+        Assert.Contains("JOIN dbo.CallFlowTemplateVersions v ON v.CallFlowTemplateID=t.SystemID AND v.DeletedDateTime IS NULL", AutoCallQueueRepository.ReadFlowSql);
+        Assert.Contains("t.SystemID=@FlowId AND t.DeletedDateTime IS NULL", AutoCallQueueRepository.ReadFlowSql);
     }
 
     [Theory]

@@ -25,11 +25,12 @@ BEGIN TRY
             @Response nvarchar(max) = N'<Response><Gather/></Response>',
             @Input nvarchar(max) = N'{"digits":"","speechResult":"","confidence":null}';
 
-    INSERT INTO dbo.CallFlowTemplates (Name, Version, TemplateJSON, TwiML, CreatedBy)
-    VALUES ('Next regression', 1, @Graph, @Bundle, 'isolated-test');
+    INSERT dbo.CallFlowTemplates(Name, CreatedBy) VALUES('Next regression', 'isolated-test');
     SET @FlowId = SCOPE_IDENTITY();
-    INSERT INTO dbo.AutomatedCalls (Provider, PhoneE164, FlowId, TwiML)
-    VALUES ('Twilio', @Phone, @FlowId, @Bundle);
+    INSERT dbo.CallFlowTemplateVersions(CallFlowTemplateID, Version, TemplateJSON, TwiML, CreatedBy) VALUES(@FlowId, 1, @Graph, @Bundle, 'isolated-test');
+    DECLARE @FlowIdVersion int = SCOPE_IDENTITY();
+    INSERT INTO dbo.AutomatedCalls (Provider, PhoneE164, FlowId, FlowVersionId, TwiML)
+    VALUES ('Twilio', @Phone, @FlowId, @FlowIdVersion, @Bundle);
     SET @CallId = SCOPE_IDENTITY();
     DECLARE @Result TABLE (Outcome varchar(30), ResponseTwiML nvarchar(max), StepId nvarchar(200), ExecutionId uniqueidentifier, Replayed bit);
 
@@ -78,14 +79,14 @@ BEGIN TRY
 
     DECLARE @UpdatedAt datetime2(3) = (SELECT UpdatedDateTime FROM dbo.AutomatedCalls WHERE SystemID = @CallId);
     UPDATE dbo.AutomatedCalls SET TwiML = N'invalid' WHERE SystemID = @CallId;
-    UPDATE dbo.CallFlowTemplates SET TemplateJSON = N'invalid' WHERE SystemID = @FlowId;
+    UPDATE dbo.CallFlowTemplateVersions SET TemplateJSON = N'invalid' WHERE SystemID = @FlowIdVersion;
     INSERT INTO @Result EXEC dbo.automatedcalls_Next @CallId, @SourceId, @Sid, @Phone, N'{"digits":"2"}';
     IF NOT EXISTS (SELECT 1 FROM @Result WHERE Outcome = 'advanced' AND ExecutionId = @NextId AND ResponseTwiML = @Response AND Replayed = 1)
        OR (SELECT COUNT(*) FROM dbo.AutomatedCallEvents WHERE CallId = @CallId) <> 4
        OR (SELECT UpdatedDateTime FROM dbo.AutomatedCalls WHERE SystemID = @CallId) <> @UpdatedAt
         THROW 51000, 'Replay did not preserve the first response, execution, events, and timestamp.', 1;
     UPDATE dbo.AutomatedCalls SET TwiML = @Bundle WHERE SystemID = @CallId;
-    UPDATE dbo.CallFlowTemplates SET TemplateJSON = @Graph WHERE SystemID = @FlowId;
+    UPDATE dbo.CallFlowTemplateVersions SET TemplateJSON = @Graph WHERE SystemID = @FlowIdVersion;
     DELETE FROM @Result;
 
     INSERT INTO @Result EXEC dbo.automatedcalls_Next @CallId, @SourceId, 'CAbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', @Phone, @Input;
@@ -95,8 +96,8 @@ BEGIN TRY
     IF NOT EXISTS (SELECT 1 FROM @Result WHERE Outcome = 'destination-mismatch' AND ResponseTwiML IS NULL) THROW 51000, 'Conflicting destination replayed.', 1;
     DELETE FROM @Result;
 
-    INSERT INTO dbo.AutomatedCalls (Provider, providerCallId, PhoneE164, FlowId, TwiML)
-    VALUES ('Twilio', @Sid, @Phone, @FlowId, @Bundle);
+    INSERT INTO dbo.AutomatedCalls (Provider, providerCallId, PhoneE164, FlowId, FlowVersionId, TwiML)
+    VALUES ('Twilio', @Sid, @Phone, @FlowId, @FlowIdVersion, @Bundle);
     SET @OtherCallId = SCOPE_IDENTITY();
     INSERT INTO @Result EXEC dbo.automatedcalls_Next @OtherCallId, @SourceId, @Sid, @Phone, @Input;
     IF NOT EXISTS (SELECT 1 FROM @Result WHERE Outcome = 'execution-not-found')

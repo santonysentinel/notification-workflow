@@ -536,7 +536,12 @@ public sealed class AutoCallSqlConcurrencyTests
                 await using var connection = await fixture.OpenAsync();
                 Assert.Equal(0, await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM dbo.AutomatedCallQueue WHERE Status IN('READY','PROCESSING')"));
                 await connection.ExecuteAsync("INSERT dbo.Client(OID) VALUES(@Oid)", new { fixture.Oid });
-                fixture.FlowId = await connection.QuerySingleAsync<int>("INSERT dbo.CallFlowTemplates(Name,TemplateJSON,TwiML,CreatedBy) OUTPUT inserted.SystemID VALUES(@Oid,N'{}',N'<CallFlow/>',N'rollout-test')", new { fixture.Oid });
+                fixture.FlowId = await connection.QuerySingleAsync<int>("""
+                    INSERT dbo.CallFlowTemplates(Name,CreatedBy) VALUES(@Oid,N'rollout-test');
+                    DECLARE @FlowId int=SCOPE_IDENTITY();
+                    INSERT dbo.CallFlowTemplateVersions(CallFlowTemplateID,Version,TemplateJSON,TwiML,CreatedBy) VALUES(@FlowId,1,N'{}',N'<CallFlow/>',N'rollout-test');
+                    SELECT @FlowId;
+                    """, new { fixture.Oid });
                 return fixture;
             }
             catch
@@ -560,6 +565,7 @@ public sealed class AutoCallSqlConcurrencyTests
                 DELETE dbo.AutomatedCallEvents WHERE CallId IN(SELECT SystemID FROM dbo.AutomatedCalls WHERE OID=@Oid);
                 DELETE dbo.AutomatedCalls WHERE OID=@Oid;
                 DELETE dbo.AutomatedCallQueue WHERE OID=@Oid;
+                DELETE dbo.CallFlowTemplateVersions WHERE CallFlowTemplateID=@FlowId;
                 DELETE dbo.CallFlowTemplates WHERE SystemID=@FlowId;
                 DELETE dbo.Client WHERE OID=@Oid;
                 """, new { Oid, FlowId }, commandTimeout: 10);

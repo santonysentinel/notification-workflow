@@ -9,8 +9,10 @@ IF DB_NAME() <> N'NotificationWorkflowTenantNoteTests'
 
 BEGIN TRY
     BEGIN TRANSACTION;
-    INSERT dbo.CallFlowTemplates(Name, TemplateJSON, TwiML, CreatedBy) VALUES ('note-test', N'{}', N'<CallFlow/>', N'test');
+    INSERT dbo.CallFlowTemplates(Name, CreatedBy) VALUES('note-test', N'test');
     DECLARE @FlowId int = SCOPE_IDENTITY(), @Key uniqueidentifier = NEWID();
+    INSERT dbo.CallFlowTemplateVersions(CallFlowTemplateID, Version, TemplateJSON, TwiML, CreatedBy) VALUES(@FlowId, 1, N'{}', N'<CallFlow/>', N'test');
+    DECLARE @FlowIdVersion int = SCOPE_IDENTITY();
     DECLARE @Queue TABLE (SystemID int);
     INSERT @Queue EXEC dbo.activealarms_call_InsertJob @ActiveAlarmID = 42, @OID = 'original-oid',
         @FlowId = @FlowId, @VariablesJSON = N'{}', @EnqueueIdempotencyKey = @Key,
@@ -23,8 +25,8 @@ BEGIN TRY
         THROW 51000, 'Equivalent immutable options must replay the same queue identity.', 1;
     DECLARE @Lease uniqueidentifier = NEWID();
     UPDATE dbo.AutomatedCallQueue SET Status = 'PROCESSING', LeaseToken = @Lease WHERE SystemID = @QueueId;
-    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, QueueLeaseToken, Provider, OID, PhoneE164, FlowId, CallStatus)
-    VALUES (@QueueId, @Lease, 'Twilio', 'original-oid', '+15555550100', @FlowId, 'in-progress');
+    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, QueueLeaseToken, Provider, OID, PhoneE164, FlowId, FlowVersionId, CallStatus)
+    VALUES (@QueueId, @Lease, 'Twilio', 'original-oid', '+15555550100', @FlowId, @FlowIdVersion, 'in-progress');
     DECLARE @CallId int = SCOPE_IDENTITY(), @End datetime2(3) = '2026-10-20T23:50:04.123';
     UPDATE dbo.AutomatedCallQueue SET CurrentAttemptId = @CallId WHERE SystemID = @QueueId;
 
@@ -107,8 +109,8 @@ BEGIN TRY
         (SELECT 1 FROM dbo.AutomatedCallNoteOutbox WHERE SystemID = @Id AND Status = 'DEAD_LETTER')
         THROW 51000, 'Exhausted expired leases must dead-letter instead of retrying forever.', 1;
 
-    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, Provider, OID, PhoneE164, FlowId, CallStatus)
-    VALUES (@QueueId, 'Twilio', 'original-oid', '+15555550100', @FlowId, 'failed');
+    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, Provider, OID, PhoneE164, FlowId, FlowVersionId, CallStatus)
+    VALUES (@QueueId, 'Twilio', 'original-oid', '+15555550100', @FlowId, @FlowIdVersion, 'failed');
     DECLARE @FailedCall int = SCOPE_IDENTITY();
     INSERT dbo.AutomatedCallNoteOutbox (CallId, Kind, SourceId, OID, HistoryID, OccurredAt, RecordingId, MessagesJSON)
     VALUES (@FailedCall, 'TRANSCRIPT', @JobId, 'original-oid', 81, SYSUTCDATETIME(), @RecordingId, N'[]');
@@ -119,8 +121,8 @@ BEGIN TRY
         THROW 51000, 'Failed calls must skip transcripts and never receive a completion note.', 1;
 
     SAVE TRANSACTION CallbackAtomicity;
-    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, Provider, OID, PhoneE164, FlowId, CallStatus)
-    VALUES (@QueueId, 'Twilio', 'original-oid', '+15555550100', @FlowId, 'in-progress');
+    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, Provider, OID, PhoneE164, FlowId, FlowVersionId, CallStatus)
+    VALUES (@QueueId, 'Twilio', 'original-oid', '+15555550100', @FlowId, @FlowIdVersion, 'in-progress');
     DECLARE @RollbackCall int = SCOPE_IDENTITY();
     EXEC dbo.automatedcalls_Status @RollbackCall, 'CAbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', '+15555550100',
         'completed', 1, @End, 30;
@@ -136,8 +138,8 @@ BEGIN TRY
         @FlowId = @FlowId, @VariablesJSON = N'{}', @EnqueueIdempotencyKey = @DisabledKey,
         @POGroupNum = 'note-group', @OptionsJSON = N'{"historyId":81,"postRecordingTranscript":false,"callDevices":[{"type":"CellPhone","phoneNumber":null}]}';
     DECLARE @DisabledQueue int = (SELECT SystemID FROM @Queue);
-    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, Provider, OID, PhoneE164, FlowId, CallStatus, EndedDateTime)
-    VALUES (@DisabledQueue, 'Twilio', 'original-oid', '+15555550100', @FlowId, 'completed', @End);
+    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, Provider, OID, PhoneE164, FlowId, FlowVersionId, CallStatus, EndedDateTime)
+    VALUES (@DisabledQueue, 'Twilio', 'original-oid', '+15555550100', @FlowId, @FlowIdVersion, 'completed', @End);
     DECLARE @DisabledCall int = SCOPE_IDENTITY();
     INSERT dbo.AutomatedCallRecordings (CallId, Provider, AccountSid, RecordingSid, RecordingStatus)
     VALUES (@DisabledCall, 'Twilio', 'ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'REbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'completed');
@@ -159,8 +161,8 @@ BEGIN TRY
 
     -- A record-step message replaces the whole-call transcript note; the whole-call recording is untouched.
     UPDATE dbo.AutomatedCallNoteOutbox SET Status = 'SKIPPED' WHERE Status IN ('READY', 'PROCESSING');
-    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, Provider, OID, PhoneE164, FlowId, CallStatus, EndedDateTime, PhoneType)
-    VALUES (@QueueId, 'Twilio', 'original-oid', '+15555550100', @FlowId, 'completed', @End, 'CellPhone');
+    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, Provider, OID, PhoneE164, FlowId, FlowVersionId, CallStatus, EndedDateTime, PhoneType)
+    VALUES (@QueueId, 'Twilio', 'original-oid', '+15555550100', @FlowId, @FlowIdVersion, 'completed', @End, 'CellPhone');
     DECLARE @MessageCall int = SCOPE_IDENTITY();
     INSERT dbo.AutomatedCallRecordings (CallId, Provider, AccountSid, RecordingSid, RecordingStatus, RecordingSource)
     VALUES (@MessageCall, 'Twilio', 'ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'REcccccccccccccccccccccccccccccccc', 'completed', 'OutboundAPI');
@@ -208,8 +210,8 @@ BEGIN TRY
     SET @Lease = NEWID();
     UPDATE dbo.AutomatedCallQueue SET Status = 'PROCESSING', LeaseToken = @Lease, LockedBy = @Worker,
         LockedUntil = DATEADD(minute, 5, SYSUTCDATETIME()) WHERE SystemID = @WaitQueue;
-    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, QueueLeaseToken, Provider, OID, PhoneE164, FlowId, CallStatus)
-    VALUES (@WaitQueue, @Lease, 'Twilio', 'original-oid', '+15555550101', @FlowId, 'in-progress');
+    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, QueueLeaseToken, Provider, OID, PhoneE164, FlowId, FlowVersionId, CallStatus)
+    VALUES (@WaitQueue, @Lease, 'Twilio', 'original-oid', '+15555550101', @FlowId, @FlowIdVersion, 'in-progress');
     DECLARE @WaitCall int = SCOPE_IDENTITY();
     UPDATE dbo.AutomatedCallQueue SET CurrentAttemptId = @WaitCall WHERE SystemID = @WaitQueue;
     EXEC dbo.automatedcalls_Status @WaitCall, 'CAcccccccccccccccccccccccccccccccc', '+15555550101',
@@ -292,8 +294,8 @@ BEGIN TRY
         @POGroupNum = 'note-group', @OptionsJSON = @WaitOptions;
     DECLARE @ObservedQueue int = (SELECT SystemID FROM @Queue);
     SET @Lease = NEWID();
-    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, QueueLeaseToken, Provider, providerCallId, OID, PhoneE164, FlowId, CallStatus)
-    VALUES (@ObservedQueue, @Lease, 'Twilio', 'CAdddddddddddddddddddddddddddddddd', 'original-oid', '+15555550102', @FlowId, 'in-progress');
+    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, QueueLeaseToken, Provider, providerCallId, OID, PhoneE164, FlowId, FlowVersionId, CallStatus)
+    VALUES (@ObservedQueue, @Lease, 'Twilio', 'CAdddddddddddddddddddddddddddddddd', 'original-oid', '+15555550102', @FlowId, @FlowIdVersion, 'in-progress');
     DECLARE @ObservedCall int = SCOPE_IDENTITY();
     UPDATE dbo.AutomatedCallQueue SET Status = 'PROCESSING', LeaseToken = @Lease, LockedBy = @Worker, CurrentAttemptId = @ObservedCall,
         LockedUntil = DATEADD(minute, 5, SYSUTCDATETIME()) WHERE SystemID = @ObservedQueue;
@@ -319,8 +321,8 @@ BEGIN TRY
     SET @Lease = NEWID();
     UPDATE dbo.AutomatedCallQueue SET Status = 'PROCESSING', LeaseToken = @Lease, LockedBy = @Worker,
         LockedUntil = DATEADD(minute, 5, SYSUTCDATETIME()) WHERE SystemID = @RootQueue;
-    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, QueueLeaseToken, Provider, OID, PhoneE164, FlowId, CallStatus, PhoneType, DeviceIndex)
-    VALUES (@RootQueue, @Lease, 'Twilio', 'original-oid', '+15555550103', @FlowId, 'ringing', 'CellPhone', 0);
+    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, QueueLeaseToken, Provider, OID, PhoneE164, FlowId, FlowVersionId, CallStatus, PhoneType, DeviceIndex)
+    VALUES (@RootQueue, @Lease, 'Twilio', 'original-oid', '+15555550103', @FlowId, @FlowIdVersion, 'ringing', 'CellPhone', 0);
     DECLARE @PrimaryCall int = SCOPE_IDENTITY();
     UPDATE dbo.AutomatedCallQueue SET CurrentAttemptId = @PrimaryCall WHERE SystemID = @RootQueue;
     EXEC dbo.automatedcalls_Status @PrimaryCall, 'CAeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', '+15555550103',
@@ -348,8 +350,8 @@ BEGIN TRY
     SET @Lease = NEWID();
     UPDATE dbo.AutomatedCallQueue SET Status = 'PROCESSING', LeaseToken = @Lease, LockedBy = @Worker,
         LockedUntil = DATEADD(minute, 5, SYSUTCDATETIME()) WHERE SystemID = @SecondQueue;
-    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, QueueLeaseToken, Provider, OID, PhoneE164, FlowId, CallStatus, PhoneType, DeviceIndex)
-    VALUES (@SecondQueue, @Lease, 'Twilio', 'original-oid', '+15555550199', @FlowId, 'in-progress', 'Custom', 1);
+    INSERT dbo.AutomatedCalls (AutomatedCallQueueId, QueueLeaseToken, Provider, OID, PhoneE164, FlowId, FlowVersionId, CallStatus, PhoneType, DeviceIndex)
+    VALUES (@SecondQueue, @Lease, 'Twilio', 'original-oid', '+15555550199', @FlowId, @FlowIdVersion, 'in-progress', 'Custom', 1);
     DECLARE @SecondCall int = SCOPE_IDENTITY();
     UPDATE dbo.AutomatedCallQueue SET CurrentAttemptId = @SecondCall WHERE SystemID = @SecondQueue;
     INSERT dbo.AutomatedCallEvents (CallId, CallEventDateTime, EventType, EventJSON, IdempotencyKey)

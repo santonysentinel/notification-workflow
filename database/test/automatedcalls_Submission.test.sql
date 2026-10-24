@@ -10,13 +10,15 @@ IF DB_NAME() NOT IN(N'NotificationWorkflowVoiceTests',N'NotificationWorkflowTran
 BEGIN TRY
     BEGIN TRANSACTION;
     INSERT dbo.Client(OID) VALUES('submission-test');
-    INSERT dbo.CallFlowTemplates(Name,TemplateJSON,TwiML,CreatedBy) VALUES('submission-test',N'{"schemaVersion":1}',N'<CallFlow/>',N'test');
+    INSERT dbo.CallFlowTemplates(Name,CreatedBy) VALUES('submission-test',N'test');
     DECLARE @Flow int=SCOPE_IDENTITY(),@Lease uniqueidentifier=NEWID(),@Send uniqueidentifier=NEWID(),@OtherSend uniqueidentifier=NEWID();
-    INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,LeaseToken,LockedBy,LockedUntil)
-    VALUES(42,'submission-test',@Flow,N'{}',NEWID(),'PROCESSING',1,@Lease,'submission-worker',DATEADD(minute,5,SYSUTCDATETIME()));
+    INSERT dbo.CallFlowTemplateVersions(CallFlowTemplateID,Version,TemplateJSON,TwiML,CreatedBy) VALUES(@Flow,1,N'{"schemaVersion":1}',N'<CallFlow/>',N'test');
+    DECLARE @FlowVersion int = SCOPE_IDENTITY();
+    INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,FlowVersionId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,LeaseToken,LockedBy,LockedUntil)
+    VALUES(42,'submission-test',@Flow,@FlowVersion,N'{}',NEWID(),'PROCESSING',1,@Lease,'submission-worker',DATEADD(minute,5,SYSUTCDATETIME()));
     DECLARE @Queue int=SCOPE_IDENTITY();
-    INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId,CallStatus,TwiML,Parameters)
-    VALUES(@Queue,@Lease,'Twilio','submission-test','+15551234567',@Flow,'queued',N'<CallFlow/>',N'{}');
+    INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId,FlowVersionId,CallStatus,TwiML,Parameters)
+    VALUES(@Queue,@Lease,'Twilio','submission-test','+15551234567',@Flow,@FlowVersion,'queued',N'<CallFlow/>',N'{}');
     DECLARE @Call int=SCOPE_IDENTITY(),@Request nvarchar(max),@Now datetime2(3)=SYSUTCDATETIME();
     SET @Request=(SELECT @Call AS CallId,'+15551234567' AS [To] FOR JSON PATH,WITHOUT_ARRAY_WRAPPER);
     DECLARE @Result TABLE(ShouldSubmit bit,SubmissionState varchar(20),SubmissionToken uniqueidentifier,ProviderCallId varchar(200),OpeningExecutionId uniqueidentifier);
@@ -45,11 +47,11 @@ BEGIN TRY
     WHILE @Case<=7
     BEGIN
         SET @Lease=NEWID(); SET @Send=NEWID();
-        INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,LeaseToken,LockedBy,LockedUntil)
-        VALUES(42,'submission-test',@Flow,N'{}',NEWID(),'PROCESSING',1,@Lease,'submission-worker',DATEADD(minute,5,SYSUTCDATETIME()));
+        INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,FlowVersionId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,LeaseToken,LockedBy,LockedUntil)
+        VALUES(42,'submission-test',@Flow,@FlowVersion,N'{}',NEWID(),'PROCESSING',1,@Lease,'submission-worker',DATEADD(minute,5,SYSUTCDATETIME()));
         SET @Queue=SCOPE_IDENTITY();
-        INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId,CallStatus,TwiML,Parameters)
-        VALUES(@Queue,@Lease,'Twilio','submission-test','+15551234567',@Flow,'queued',@Bundle,N'{}');
+        INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId,FlowVersionId,CallStatus,TwiML,Parameters)
+        VALUES(@Queue,@Lease,'Twilio','submission-test','+15551234567',@Flow,@FlowVersion,'queued',@Bundle,N'{}');
         SET @Call=SCOPE_IDENTITY();
         SET @Request=(SELECT @Call AS CallId,'+15551234567' AS [To] FOR JSON PATH,WITHOUT_ARRAY_WRAPPER);
         IF @Case=5 UPDATE dbo.AutomatedCalls SET SubmissionState=NULL WHERE SystemID=@Call;
@@ -117,13 +119,15 @@ BEGIN
     BEGIN TRY
         BEGIN TRANSACTION;
         INSERT dbo.Client(OID) VALUES('submission-guard');
-        INSERT dbo.CallFlowTemplates(Name,TemplateJSON,TwiML,CreatedBy) VALUES('submission-guard',N'{}',N'<CallFlow/>',N'test');
+        INSERT dbo.CallFlowTemplates(Name,CreatedBy) VALUES('submission-guard',N'test');
         DECLARE @GuardFlow int=SCOPE_IDENTITY(),@GuardLease uniqueidentifier=NEWID(),@GuardToken uniqueidentifier=NEWID(),@WrongToken uniqueidentifier=NEWID();
-        INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,LeaseToken,LockedBy,LockedUntil)
-        VALUES(42,'submission-guard',@GuardFlow,N'{}',NEWID(),'PROCESSING',1,@GuardLease,'submission-worker',DATEADD(minute,5,SYSUTCDATETIME()));
+        INSERT dbo.CallFlowTemplateVersions(CallFlowTemplateID,Version,TemplateJSON,TwiML,CreatedBy) VALUES(@GuardFlow,1,N'{}',N'<CallFlow/>',N'test');
+        DECLARE @GuardFlowVersion int = SCOPE_IDENTITY();
+        INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,FlowVersionId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,LeaseToken,LockedBy,LockedUntil)
+        VALUES(42,'submission-guard',@GuardFlow,@GuardFlowVersion,N'{}',NEWID(),'PROCESSING',1,@GuardLease,'submission-worker',DATEADD(minute,5,SYSUTCDATETIME()));
         DECLARE @GuardQueue int=SCOPE_IDENTITY();
-        INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId,CallStatus,TwiML,Parameters)
-        VALUES(@GuardQueue,@GuardLease,'Twilio','submission-guard','+15551234567',@GuardFlow,'queued',N'<CallFlow/>',N'{}');
+        INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId,FlowVersionId,CallStatus,TwiML,Parameters)
+        VALUES(@GuardQueue,@GuardLease,'Twilio','submission-guard','+15551234567',@GuardFlow,@GuardFlowVersion,'queued',N'<CallFlow/>',N'{}');
         DECLARE @GuardCall int=SCOPE_IDENTITY(),@GuardRequest nvarchar(max),@GuardWorker varchar(100)='submission-worker';
         SET @GuardRequest=(SELECT @GuardCall AS CallId,'+15551234567' AS [To] FOR JSON PATH,WITHOUT_ARRAY_WRAPPER);
         IF @Guard=1 SET @GuardWorker='SUBMISSION-WORKER';
@@ -163,13 +167,15 @@ BEGIN TRY
     DECLARE @InlineGraph nvarchar(max)=N'{"schemaVersion":1,"initialStep":"hello","steps":[{"id":"hello","type":"redirect","transitions":{"next":"end"}},{"id":"end","type":"terminal"}]}',
         @InlineBundle nvarchar(max)=N'<CallFlow initialStep="hello"><Step id="hello"><Response><Say>Alex &amp; Co</Say><Redirect>https://feedback.example/next?executionId={{executionId}}</Redirect></Response></Step><Step id="end"><Response><Hangup /></Response></Step></CallFlow>',
         @InlineLease uniqueidentifier=NEWID(),@InlineToken uniqueidentifier=NEWID(),@InlineExecution uniqueidentifier=NEWID(),@InlineNext uniqueidentifier=NEWID();
-    INSERT dbo.CallFlowTemplates(Name,TemplateJSON,TwiML,CreatedBy) VALUES('inline-test',@InlineGraph,@InlineBundle,N'test');
+    INSERT dbo.CallFlowTemplates(Name,CreatedBy) VALUES('inline-test',N'test');
     DECLARE @InlineFlow int=SCOPE_IDENTITY();
-    INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,LeaseToken,LockedBy,LockedUntil)
-    VALUES(42,'inline-test',@InlineFlow,N'{}',NEWID(),'PROCESSING',1,@InlineLease,'inline-worker',DATEADD(minute,5,SYSUTCDATETIME()));
+    INSERT dbo.CallFlowTemplateVersions(CallFlowTemplateID,Version,TemplateJSON,TwiML,CreatedBy) VALUES(@InlineFlow,1,@InlineGraph,@InlineBundle,N'test');
+    DECLARE @InlineFlowVersion int = SCOPE_IDENTITY();
+    INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,FlowVersionId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,LeaseToken,LockedBy,LockedUntil)
+    VALUES(42,'inline-test',@InlineFlow,@InlineFlowVersion,N'{}',NEWID(),'PROCESSING',1,@InlineLease,'inline-worker',DATEADD(minute,5,SYSUTCDATETIME()));
     DECLARE @InlineQueue int=SCOPE_IDENTITY();
-    INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId,CallStatus,TwiML,Parameters)
-    VALUES(@InlineQueue,@InlineLease,'Twilio','inline-test','+15551234567',@InlineFlow,'queued',@InlineBundle,N'{}');
+    INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId,FlowVersionId,CallStatus,TwiML,Parameters)
+    VALUES(@InlineQueue,@InlineLease,'Twilio','inline-test','+15551234567',@InlineFlow,@InlineFlowVersion,'queued',@InlineBundle,N'{}');
     DECLARE @InlineCall int=SCOPE_IDENTITY(),@InlineResponse nvarchar(max),@InlineRequest nvarchar(max),@InlineOpening nvarchar(max);
     SET @InlineResponse=N'<Response><Say>Alex &amp; Co</Say><Redirect>https://feedback.example/next?executionId='+LOWER(CONVERT(nvarchar(36),@InlineExecution))+N'</Redirect></Response>';
     SET @InlineOpening=(SELECT N'hello' AS StepId,LOWER(CONVERT(nvarchar(36),@InlineExecution)) AS ExecutionId,@InlineResponse AS ResponseTwiML FOR JSON PATH,WITHOUT_ARRAY_WRAPPER);
@@ -215,11 +221,11 @@ BEGIN TRY
         OR NOT EXISTS(SELECT 1 FROM dbo.AutomatedCallQueue WHERE SystemID=@InlineQueue AND Status='PROCESSING')
         THROW 51999,'Late acceptance must preserve the early inline callback and not complete the queue.',1;
     SET @InlineLease=NEWID(); SET @InlineToken=NEWID(); SET @InlineExecution=NEWID();
-    INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,LeaseToken,LockedBy,LockedUntil)
-    VALUES(42,'inline-test',@InlineFlow,N'{}',NEWID(),'PROCESSING',1,@InlineLease,'inline-worker',DATEADD(minute,5,SYSUTCDATETIME()));
+    INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,FlowVersionId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,LeaseToken,LockedBy,LockedUntil)
+    VALUES(42,'inline-test',@InlineFlow,@InlineFlowVersion,N'{}',NEWID(),'PROCESSING',1,@InlineLease,'inline-worker',DATEADD(minute,5,SYSUTCDATETIME()));
     SET @InlineQueue=SCOPE_IDENTITY();
-    INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId,CallStatus,TwiML,Parameters)
-    VALUES(@InlineQueue,@InlineLease,'Twilio','inline-test','+15551234567',@InlineFlow,'queued',@InlineBundle,N'{}');
+    INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId,FlowVersionId,CallStatus,TwiML,Parameters)
+    VALUES(@InlineQueue,@InlineLease,'Twilio','inline-test','+15551234567',@InlineFlow,@InlineFlowVersion,'queued',@InlineBundle,N'{}');
     SET @InlineCall=SCOPE_IDENTITY();
     SET @InlineResponse=N'<Response><Say>Alex &amp; Co</Say><Redirect>https://feedback.example/next?executionId='+LOWER(CONVERT(nvarchar(36),@InlineExecution))+N'</Redirect></Response>';
     SET @InlineOpening=(SELECT N'hello' AS StepId,LOWER(CONVERT(nvarchar(36),@InlineExecution)) AS ExecutionId,@InlineResponse AS ResponseTwiML FOR JSON PATH,WITHOUT_ARRAY_WRAPPER);

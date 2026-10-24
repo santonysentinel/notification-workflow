@@ -10,8 +10,10 @@ IF DB_NAME() NOT IN(N'NotificationWorkflowVoiceTests',N'NotificationWorkflowTran
 BEGIN TRY
     BEGIN TRANSACTION;
     INSERT dbo.Client(OID) VALUES('prep-test');
-    INSERT dbo.CallFlowTemplates(Name,TemplateJSON,TwiML,CreatedBy) VALUES('prep-test',N'{"schemaVersion":1}',N'<CallFlow/>',N'test');
+    INSERT dbo.CallFlowTemplates(Name,CreatedBy) VALUES('prep-test',N'test');
     DECLARE @Flow int=SCOPE_IDENTITY(),@Key uniqueidentifier=NEWID();
+    INSERT dbo.CallFlowTemplateVersions(CallFlowTemplateID,Version,TemplateJSON,TwiML,CreatedBy) VALUES(@Flow,1,N'{"schemaVersion":1}',N'<CallFlow/>',N'test');
+    DECLARE @FlowVersion int = SCOPE_IDENTITY();
     DECLARE @Jobs TABLE(SystemID int);
     INSERT @Jobs EXEC dbo.activealarms_call_InsertJob 42,'prep-test',@Flow,@VariablesJSON=N'{"OffenderName":"Alex"}',@EnqueueIdempotencyKey=@Key;
     DECLARE @Queue int=(SELECT SystemID FROM @Jobs),@Token uniqueidentifier=NEWID();
@@ -54,10 +56,12 @@ BEGIN
     BEGIN TRY
         BEGIN TRANSACTION;
         INSERT dbo.Client(OID) VALUES('prep-fence');
-        INSERT dbo.CallFlowTemplates(Name,TemplateJSON,TwiML,CreatedBy) VALUES('prep-fence',N'{"schemaVersion":1}',N'<CallFlow/>',N'test');
+        INSERT dbo.CallFlowTemplates(Name,CreatedBy) VALUES('prep-fence',N'test');
         DECLARE @CaseFlow int=SCOPE_IDENTITY(),@CaseToken uniqueidentifier=NEWID();
-        INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,LeaseToken,LockedBy,LockedUntil)
-        VALUES(42,'prep-fence',@CaseFlow,N'{}',NEWID(),'PROCESSING',1,@CaseToken,'prep-worker',DATEADD(minute,5,SYSUTCDATETIME()));
+        INSERT dbo.CallFlowTemplateVersions(CallFlowTemplateID,Version,TemplateJSON,TwiML,CreatedBy) VALUES(@CaseFlow,1,N'{"schemaVersion":1}',N'<CallFlow/>',N'test');
+        DECLARE @CaseFlowVersion int = SCOPE_IDENTITY();
+        INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,FlowVersionId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,LeaseToken,LockedBy,LockedUntil)
+        VALUES(42,'prep-fence',@CaseFlow,@CaseFlowVersion,N'{}',NEWID(),'PROCESSING',1,@CaseToken,'prep-worker',DATEADD(minute,5,SYSUTCDATETIME()));
         DECLARE @CaseQueue int=SCOPE_IDENTITY();
         EXEC dbo.automatedcalls_BeginAttempt @CaseQueue,@CaseToken,'prep-worker','+15551234567';
         DECLARE @CaseCall int=(SELECT SystemID FROM dbo.AutomatedCalls WHERE AutomatedCallQueueId=@CaseQueue);
@@ -76,8 +80,8 @@ BEGIN
             EXEC dbo.automatedcalls_SavePreparation @CaseQueue,@CaseToken,'prep-worker',@CaseCall,N'<CallFlow changed="true"/>',N'{}';
         END;
         IF @Case=4
-            INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId)
-            VALUES(@CaseQueue,@CaseToken,'Twilio','prep-fence','+15551234567',@CaseFlow);
+            INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId,FlowVersionId)
+            VALUES(@CaseQueue,@CaseToken,'Twilio','prep-fence','+15551234567',@CaseFlow,@CaseFlowVersion);
         THROW 51000,'Expected preparation ownership/immutability/uniqueness rejection.',1;
     END TRY
     BEGIN CATCH
@@ -90,10 +94,12 @@ END;
 BEGIN TRY
     BEGIN TRANSACTION;
     INSERT dbo.Client(OID) VALUES('prep-fail');
-    INSERT dbo.CallFlowTemplates(Name,TemplateJSON,TwiML,CreatedBy) VALUES('prep-fail',N'{"schemaVersion":1}',N'<CallFlow/>',N'test');
+    INSERT dbo.CallFlowTemplates(Name,CreatedBy) VALUES('prep-fail',N'test');
     DECLARE @FailFlow int=SCOPE_IDENTITY(),@FailToken uniqueidentifier=NEWID();
-    INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,LeaseToken,LockedBy,LockedUntil)
-    VALUES(42,'prep-fail',@FailFlow,N'{}',NEWID(),'PROCESSING',1,@FailToken,'prep-worker',DATEADD(minute,5,SYSUTCDATETIME()));
+    INSERT dbo.CallFlowTemplateVersions(CallFlowTemplateID,Version,TemplateJSON,TwiML,CreatedBy) VALUES(@FailFlow,1,N'{"schemaVersion":1}',N'<CallFlow/>',N'test');
+    DECLARE @FailFlowVersion int = SCOPE_IDENTITY();
+    INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,FlowVersionId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,LeaseToken,LockedBy,LockedUntil)
+    VALUES(42,'prep-fail',@FailFlow,@FailFlowVersion,N'{}',NEWID(),'PROCESSING',1,@FailToken,'prep-worker',DATEADD(minute,5,SYSUTCDATETIME()));
     DECLARE @FailQueue int=SCOPE_IDENTITY();
     EXEC dbo.automatedcalls_BeginAttempt @FailQueue,@FailToken,'prep-worker','+15551234567';
     EXEC dbo.automatedcalls_FailPreparation @FailQueue,@FailToken,'PREP-WORKER';

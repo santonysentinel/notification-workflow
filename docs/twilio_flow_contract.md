@@ -2,11 +2,11 @@
 
 ## Storage Change
 
-No table columns are added for transitions. `CallFlowTemplates.TemplateJSON` now
+No table columns are added for transitions. `CallFlowTemplateVersions.TemplateJSON`
 uses the versioned schema below to describe the complete executable graph.
-`CallFlowTemplates.TwiML` contains the unresolved XML responses for that graph.
+`CallFlowTemplateVersions.TwiML` contains the unresolved XML responses for that graph.
 The worker resolves ordinary variables into `AutomatedCalls.TwiML` and `Parameters`
-before dialing, retaining the template's immutable `FlowId`.
+before dialing, retaining the template's `FlowId` and the pinned `FlowVersionId`.
 
 The personalized bundle is not rewritten as the call advances. Its `Gather` actions
 and `Redirect` URLs call `/webhooks/twilio/voice/next` with the call ID and the current
@@ -80,8 +80,8 @@ question, and four terminal outcomes. IDs match the XML bundle below exactly.
   update completion status; `/status` handles terminal call reporting and guarded
   queue finalization. Worker feedback and business actions remain deferred.
 - Unknown transition keys, dangling targets, unsupported step types, and embedded
-  `actions` are rejected. Templates must be immutable: publish changes as a new
-  template row/version rather than editing a row referenced by existing calls.
+  `actions` are rejected. Versions must be immutable: publish changes as a new
+  version rather than editing a version referenced by existing calls.
 
 Selecting `acknowledged` records a conversational outcome only. It does not
 acknowledge an alarm, add a note, snooze, or invoke any tenant-specific action.

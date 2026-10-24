@@ -80,9 +80,9 @@ signature expiry enforced by this endpoint; replay is controlled by persisted st
 ### Bundle Contract
 
 The worker creates the attempt before dialing and resolves all ordinary variables,
-call IDs, and public callback URLs. `CallFlowTemplates.TwiML` may hold the unresolved
+call IDs, and public callback URLs. `CallFlowTemplateVersions.TwiML` holds the unresolved
 bundle; `AutomatedCalls.TwiML` holds its personalized copy. The immutable graph stays
-in `CallFlowTemplates.TemplateJSON`, referenced by the attempt's `FlowId`.
+in `CallFlowTemplateVersions.TemplateJSON`, referenced by the attempt's `FlowVersionId`.
 
 ```xml
 <CallFlow initialStep="reminder">
@@ -561,7 +561,7 @@ with the new API. It creates `dbo.automatedcalls_GetNextContext` and
 the documented schema, and make sure every transition target has a response in the
 personalized bundle. Direct Next procedure callers must supply a JavaScript-validated
 candidate for first issuance. The procedures do not evaluate branch rules or validate
-the full Twilio verb schema. Publish template changes as new rows/versions.
+the full Twilio verb schema. Publish template changes as new versions.
 
 The script creates the unique filtered event index if needed. Resolve existing
 duplicate non-NULL event keys before deployment; the script does not delete history.

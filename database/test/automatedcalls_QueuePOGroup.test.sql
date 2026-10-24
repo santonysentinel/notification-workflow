@@ -11,9 +11,10 @@ IF DB_NAME() <> N'NotificationWorkflowQueueGroupTests'
 
 BEGIN TRY
     BEGIN TRANSACTION;
-    INSERT dbo.CallFlowTemplates (Name, TemplateJSON, TwiML, CreatedBy)
-    VALUES ('group-snapshot', N'{"schemaVersion":1}', N'<CallFlow/>', N'test');
+    INSERT dbo.CallFlowTemplates(Name, CreatedBy) VALUES('group-snapshot', N'test');
     DECLARE @Flow int = SCOPE_IDENTITY(), @Key uniqueidentifier = NEWID(), @LegacyKey uniqueidentifier = NEWID();
+    INSERT dbo.CallFlowTemplateVersions(CallFlowTemplateID, Version, TemplateJSON, TwiML, CreatedBy) VALUES(@Flow, 1, N'{"schemaVersion":1}', N'<CallFlow/>', N'test');
+    DECLARE @FlowVersion int = SCOPE_IDENTITY();
     DECLARE @Result TABLE (SystemID int);
     INSERT @Result EXEC dbo.activealarms_call_InsertJob
         @ActiveAlarmID = 42, @OID = 'oid-42', @FlowId = @Flow, @VariablesJSON = N'{"offenderName":"Alex"}',
@@ -69,9 +70,9 @@ WHILE @@FETCH_STATUS = 0
 BEGIN
     BEGIN TRY
         BEGIN TRANSACTION;
-        INSERT dbo.CallFlowTemplates (Name, TemplateJSON, TwiML, CreatedBy)
-        VALUES ('group-conflict', N'{}', N'<CallFlow/>', N'test');
+        INSERT dbo.CallFlowTemplates(Name, CreatedBy) VALUES('group-conflict', N'test');
         SET @Flow = SCOPE_IDENTITY();
+        INSERT dbo.CallFlowTemplateVersions(CallFlowTemplateID, Version, TemplateJSON, TwiML, CreatedBy) VALUES(@Flow, 1, N'{}', N'<CallFlow/>', N'test');
         SET @Key = NEWID();
         DELETE @Result;
         INSERT @Result EXEC dbo.activealarms_call_InsertJob

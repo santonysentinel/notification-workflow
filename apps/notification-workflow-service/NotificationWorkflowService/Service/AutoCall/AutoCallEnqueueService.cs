@@ -8,8 +8,11 @@ using NotificationWorkflowService.Repository;
 
 namespace NotificationWorkflowService.Service.AutoCall;
 
-public sealed record AutoCallFlow(int SystemId, string TemplateJson, string TwiML);
-public sealed record AutoCallRequest(int ActiveAlarmId, string Oid, int FlowId, string VariablesJson, Guid EnqueueIdempotencyKey, string POGroupNum, string OptionsJson);
+// SystemId is the CallFlowTemplates row the profile names; VersionId is the active CallFlowTemplateVersions row that was read.
+public sealed record AutoCallFlow(int SystemId, string TemplateJson, string TwiML, int? VersionId = null);
+// FlowVersionId pins the version validated at capture; null lets the queue pin the active version.
+public sealed record AutoCallRequest(int ActiveAlarmId, string Oid, int FlowId, string VariablesJson, Guid EnqueueIdempotencyKey, string POGroupNum, string OptionsJson,
+    int? FlowVersionId = null);
 
 public interface IAutoCallQueueRepository
 {
@@ -79,7 +82,7 @@ public sealed class AutoCallEnqueueService(IAutoCallQueueRepository repository, 
         queueOptionValues["callDevices"] = options.CallDevices.Select(device => new { type = device.Type, phoneNumber = device.PhoneNumber }).ToArray();
         string queueOptions = JsonSerializer.Serialize(queueOptionValues);
         return new AutoCallRequest(alarm.SystemID, alarm.ClientID, options.FlowId, JsonSerializer.Serialize(participantDetails), key, alarm.POGroupNum,
-            queueOptions);
+            queueOptions, flow.VersionId);
     }
 
     internal static void ValidatePOGroupNum(string? poGroupNum)

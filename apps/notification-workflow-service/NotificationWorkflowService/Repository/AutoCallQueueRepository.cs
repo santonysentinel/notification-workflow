@@ -16,6 +16,12 @@ public sealed class AutoCallQueueRepository(IConfiguration configuration, ILogge
         this.logger = logger;
     }
 
+    // The profile names the flow template; the active version is the one not soft-deleted.
+    internal const string ReadFlowSql =
+        "SELECT t.SystemID,v.TemplateJSON,v.TwiML,v.SystemID FROM dbo.CallFlowTemplates t " +
+        "JOIN dbo.CallFlowTemplateVersions v ON v.CallFlowTemplateID=t.SystemID AND v.DeletedDateTime IS NULL " +
+        "WHERE t.SystemID=@FlowId AND t.DeletedDateTime IS NULL";
+
     private SqlConnection Connection()
     {
         string? value = configuration.GetConnectionString("AutoCallDB");
@@ -29,13 +35,13 @@ public sealed class AutoCallQueueRepository(IConfiguration configuration, ILogge
         cancellationToken.ThrowIfCancellationRequested();
         if (flowId <= 0) throw new ArgumentOutOfRangeException(nameof(flowId));
         await using var connection = Connection();
-        await using var command = new SqlCommand("SELECT SystemID,TemplateJSON,TwiML FROM dbo.CallFlowTemplates WHERE SystemID=@FlowId AND DeletedDateTime IS NULL", connection) { CommandTimeout = 30 };
+        await using var command = new SqlCommand(ReadFlowSql, connection) { CommandTimeout = 30 };
         command.Parameters.Add("@FlowId", SqlDbType.Int).Value = flowId;
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) || reader.IsDBNull(1) || reader.IsDBNull(2))
             throw new InvalidOperationException("Published call flow with graph and TwiML is required.");
-        return new AutoCallFlow(reader.GetInt32(0), reader.GetString(1), reader.GetString(2));
+        return new AutoCallFlow(reader.GetInt32(0), reader.GetString(1), reader.GetString(2), reader.GetInt32(3));
     }).ConfigureAwait(false);
 
     public async Task<int> EnqueueAsync(AutoCallRequest request, CancellationToken cancellationToken = default)
@@ -62,6 +68,7 @@ public sealed class AutoCallQueueRepository(IConfiguration configuration, ILogge
         command.Parameters.Add("@EnqueueIdempotencyKey", SqlDbType.UniqueIdentifier).Value = request.EnqueueIdempotencyKey;
         command.Parameters.Add("@POGroupNum", SqlDbType.VarChar, 20).Value = request.POGroupNum;
         command.Parameters.Add("@OptionsJSON", SqlDbType.NVarChar, -1).Value = request.OptionsJson;
+        command.Parameters.Add("@FlowVersionId", SqlDbType.Int).Value = request.FlowVersionId is int versionId ? versionId : DBNull.Value;
         return command;
     }
 }

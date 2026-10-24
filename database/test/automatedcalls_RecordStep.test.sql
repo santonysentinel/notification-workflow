@@ -23,11 +23,12 @@ BEGIN TRY
             @Response nvarchar(max) = N'<Response><Hangup/></Response>',
             @Recording nvarchar(max) = N'{"digits":"hangup","speechResult":"","confidence":null,"recordingSid":"REdddddddddddddddddddddddddddddddd","recordingDurationSeconds":7}';
 
-    INSERT INTO dbo.CallFlowTemplates (Name, Version, TemplateJSON, TwiML, CreatedBy)
-    VALUES ('Record step regression', 1, @Graph, @Bundle, 'isolated-test');
+    INSERT dbo.CallFlowTemplates(Name, CreatedBy) VALUES('Record step regression', 'isolated-test');
     SET @FlowId = SCOPE_IDENTITY();
-    INSERT INTO dbo.AutomatedCalls (Provider, PhoneE164, FlowId, TwiML)
-    VALUES ('Twilio', @Phone, @FlowId, @Bundle);
+    INSERT dbo.CallFlowTemplateVersions(CallFlowTemplateID, Version, TemplateJSON, TwiML, CreatedBy) VALUES(@FlowId, 1, @Graph, @Bundle, 'isolated-test');
+    DECLARE @FlowIdVersion int = SCOPE_IDENTITY();
+    INSERT INTO dbo.AutomatedCalls (Provider, PhoneE164, FlowId, FlowVersionId, TwiML)
+    VALUES ('Twilio', @Phone, @FlowId, @FlowIdVersion, @Bundle);
     SET @CallId = SCOPE_IDENTITY();
     DECLARE @Result TABLE (Outcome varchar(30), ResponseTwiML nvarchar(max), StepId nvarchar(200), ExecutionId uniqueidentifier, Replayed bit);
     INSERT INTO @Result EXEC dbo.automatedcalls_Start @CallId, @Sid, @Phone,

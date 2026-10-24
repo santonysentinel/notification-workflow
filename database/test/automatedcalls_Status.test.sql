@@ -22,13 +22,15 @@ BEGIN TRY
     DECLARE @Result TABLE (Outcome varchar(30), Applied bit, QueueFinalized bit, IgnoreReason varchar(40));
     DECLARE @StepResult TABLE (Outcome varchar(30), ResponseTwiML nvarchar(max), StepId nvarchar(200), ExecutionId uniqueidentifier, Replayed bit);
 
-    INSERT INTO dbo.CallFlowTemplates (TemplateJSON, TwiML, CreatedBy) VALUES (@Graph, @Bundle, 'isolated-test');
+    INSERT dbo.CallFlowTemplates(CreatedBy) VALUES('isolated-test');
     SET @FlowId = SCOPE_IDENTITY();
+    INSERT dbo.CallFlowTemplateVersions(CallFlowTemplateID, Version, TemplateJSON, TwiML, CreatedBy) VALUES(@FlowId, 1, @Graph, @Bundle, 'isolated-test');
+    DECLARE @FlowIdVersion int = SCOPE_IDENTITY();
     INSERT INTO dbo.AutomatedCallQueue (ActiveAlarmID, Status, AttemptCount, LeaseToken, LockedBy, LockedUntil)
     VALUES (42, 'PROCESSING', 1, @Lease, 'test-worker', DATEADD(minute, 5, SYSUTCDATETIME()));
     SET @QueueId = SCOPE_IDENTITY();
-    INSERT INTO dbo.AutomatedCalls (AutomatedCallQueueId, QueueLeaseToken, Provider, PhoneE164, FlowId, TwiML)
-    VALUES (@QueueId, @Lease, 'Twilio', @Phone, @FlowId, @Bundle);
+    INSERT INTO dbo.AutomatedCalls (AutomatedCallQueueId, QueueLeaseToken, Provider, PhoneE164, FlowId, FlowVersionId, TwiML)
+    VALUES (@QueueId, @Lease, 'Twilio', @Phone, @FlowId, @FlowIdVersion, @Bundle);
     SET @CallId = SCOPE_IDENTITY();
 
     INSERT INTO @Result EXEC dbo.automatedcalls_Status @CallId, @Sid, @Phone, 'initiated', 0, @Timestamp,

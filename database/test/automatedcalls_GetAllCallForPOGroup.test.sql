@@ -22,11 +22,12 @@ IF NOT EXISTS
 BEGIN TRY
     BEGIN TRANSACTION;
     DECLARE @Start datetime = '2026-10-17T00:00:00', @End datetime = '2026-10-18T00:00:00';
-    INSERT dbo.CallFlowTemplates (Name, TemplateJSON, TwiML, CreatedBy)
-    VALUES ('report-test', N'{}', N'<CallFlow/>', N'test');
+    INSERT dbo.CallFlowTemplates(Name, CreatedBy) VALUES('report-test', N'test');
     DECLARE @FlowId int = SCOPE_IDENTITY();
-    INSERT dbo.AutomatedCallQueue (ActiveAlarmID, OID, FlowId, POGroupNum, CreatedDateTime)
-    VALUES (42, 'report-oid', @FlowId, 'report-test', @Start);
+    INSERT dbo.CallFlowTemplateVersions(CallFlowTemplateID, Version, TemplateJSON, TwiML, CreatedBy) VALUES(@FlowId, 1, N'{}', N'<CallFlow/>', N'test');
+    DECLARE @FlowIdVersion int = SCOPE_IDENTITY();
+    INSERT dbo.AutomatedCallQueue (ActiveAlarmID, OID, FlowId, FlowVersionId, POGroupNum, CreatedDateTime)
+    VALUES (42, 'report-oid', @FlowId, @FlowIdVersion, 'report-test', @Start);
     DECLARE @QueueId int = SCOPE_IDENTITY();
     INSERT dbo.AutomatedCallQueue (ActiveAlarmID, POGroupNum, CreatedDateTime)
     VALUES (43, 'report-test-child', DATEADD(millisecond, -1, CONVERT(datetime2(3), @End)));
@@ -46,8 +47,8 @@ BEGIN TRY
     VALUES (48, 'report-test', DATEADD(hour, 1, @Start));
     DECLARE @NoMediaQueueId int = SCOPE_IDENTITY();
 
-    INSERT dbo.AutomatedCallQueue (ActiveAlarmID, OID, FlowId, POGroupNum, CreatedDateTime, AvailableAt)
-    VALUES (49, 'ready-oid', @FlowId, 'report-test', @Start, DATEADD(day, 7, @End));
+    INSERT dbo.AutomatedCallQueue (ActiveAlarmID, OID, FlowId, FlowVersionId, POGroupNum, CreatedDateTime, AvailableAt)
+    VALUES (49, 'ready-oid', @FlowId, @FlowIdVersion, 'report-test', @Start, DATEADD(day, 7, @End));
     DECLARE @ReadyQueueId int = SCOPE_IDENTITY();
     INSERT dbo.AutomatedCallQueue
         (ActiveAlarmID, POGroupNum, CreatedDateTime, Status, AttemptCount, MaxAttempts, LastErrorCode)

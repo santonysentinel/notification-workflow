@@ -9,10 +9,12 @@ IF DB_NAME() NOT IN(N'NotificationWorkflowVoiceTests',N'NotificationWorkflowTran
 BEGIN TRY
     BEGIN TRANSACTION;
     INSERT dbo.Client(OID) VALUES('recovery-test');
-    INSERT dbo.CallFlowTemplates(Name,TemplateJSON,TwiML,CreatedBy) VALUES('recovery-test',N'{}',N'<CallFlow/>',N'test');
+    INSERT dbo.CallFlowTemplates(Name,CreatedBy) VALUES('recovery-test',N'test');
     DECLARE @Flow int=SCOPE_IDENTITY(),@Token uniqueidentifier=NEWID(),@OtherToken uniqueidentifier=NEWID();
-    INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,LeaseToken,LockedBy,LockedUntil)
-    VALUES(42,'recovery-test',@Flow,N'{}',NEWID(),'PROCESSING',1,@Token,'recovery-worker',DATEADD(second,10,SYSUTCDATETIME()));
+    INSERT dbo.CallFlowTemplateVersions(CallFlowTemplateID,Version,TemplateJSON,TwiML,CreatedBy) VALUES(@Flow,1,N'{}',N'<CallFlow/>',N'test');
+    DECLARE @FlowVersion int = SCOPE_IDENTITY();
+    INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,FlowVersionId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,LeaseToken,LockedBy,LockedUntil)
+    VALUES(42,'recovery-test',@Flow,@FlowVersion,N'{}',NEWID(),'PROCESSING',1,@Token,'recovery-worker',DATEADD(second,10,SYSUTCDATETIME()));
     DECLARE @Queue int=SCOPE_IDENTITY();
     DECLARE @Renewed TABLE(Renewed bit);
     INSERT @Renewed EXEC dbo.automatedcalls_RenewLease @Queue,@Token,'recovery-worker',5;
@@ -46,13 +48,15 @@ END CATCH;
 BEGIN TRY
     BEGIN TRANSACTION;
     INSERT dbo.Client(OID) VALUES('recovery-resume');
-    INSERT dbo.CallFlowTemplates(Name,TemplateJSON,TwiML,CreatedBy) VALUES('recovery-resume',N'{}',N'<CallFlow/>',N'test');
+    INSERT dbo.CallFlowTemplates(Name,CreatedBy) VALUES('recovery-resume',N'test');
     DECLARE @ResumeFlow int=SCOPE_IDENTITY(),@Original uniqueidentifier=NEWID(),@Submission uniqueidentifier=NEWID();
-    INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,LeaseToken,LockedBy,LockedUntil,Priority)
-    VALUES(42,'recovery-resume',@ResumeFlow,N'{}',NEWID(),'PROCESSING',1,@Original,'original-worker',DATEADD(second,-1,SYSUTCDATETIME()),1000000000);
+    INSERT dbo.CallFlowTemplateVersions(CallFlowTemplateID,Version,TemplateJSON,TwiML,CreatedBy) VALUES(@ResumeFlow,1,N'{}',N'<CallFlow/>',N'test');
+    DECLARE @ResumeFlowVersion int = SCOPE_IDENTITY();
+    INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,FlowVersionId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,LeaseToken,LockedBy,LockedUntil,Priority)
+    VALUES(42,'recovery-resume',@ResumeFlow,@ResumeFlowVersion,N'{}',NEWID(),'PROCESSING',1,@Original,'original-worker',DATEADD(second,-1,SYSUTCDATETIME()),1000000000);
     DECLARE @ResumeQueue int=SCOPE_IDENTITY();
-    INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId,CallStatus,TwiML,Parameters)
-    VALUES(@ResumeQueue,@Original,'Twilio','recovery-resume','+15551234567',@ResumeFlow,'queued',N'<CallFlow/>',N'{}');
+    INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId,FlowVersionId,CallStatus,TwiML,Parameters)
+    VALUES(@ResumeQueue,@Original,'Twilio','recovery-resume','+15551234567',@ResumeFlow,@ResumeFlowVersion,'queued',N'<CallFlow/>',N'{}');
     DECLARE @ResumeCall int=SCOPE_IDENTITY();
     UPDATE dbo.AutomatedCallQueue SET CurrentAttemptId=@ResumeCall WHERE SystemID=@ResumeQueue;
     DECLARE @Claims TABLE(SystemID int,ActiveAlarmID int,OID varchar(20),FlowId int,VariablesJSON nvarchar(max),EnqueueIdempotencyKey uniqueidentifier,AttemptCount int,MaxAttempts int,LeaseToken uniqueidentifier,LockedUntil datetime2(3),CallDeviceIndex int,OptionsJSON nvarchar(max));
@@ -97,13 +101,15 @@ END CATCH;
 BEGIN TRY
     BEGIN TRANSACTION;
     INSERT dbo.Client(OID) VALUES('recovery-retry');
-    INSERT dbo.CallFlowTemplates(Name,TemplateJSON,TwiML,CreatedBy) VALUES('recovery-retry',N'{}',N'<CallFlow/>',N'test');
+    INSERT dbo.CallFlowTemplates(Name,CreatedBy) VALUES('recovery-retry',N'test');
     DECLARE @RetryFlow int=SCOPE_IDENTITY(),@RetryOriginal uniqueidentifier=NEWID(),@RetrySubmission uniqueidentifier=NEWID();
-    INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,SubmissionCount,LeaseToken,LockedBy,LockedUntil,Priority)
-    VALUES(42,'recovery-retry',@RetryFlow,N'{}',NEWID(),'PROCESSING',1,1,@RetryOriginal,'retry-worker',DATEADD(minute,5,SYSUTCDATETIME()),1000000000);
+    INSERT dbo.CallFlowTemplateVersions(CallFlowTemplateID,Version,TemplateJSON,TwiML,CreatedBy) VALUES(@RetryFlow,1,N'{}',N'<CallFlow/>',N'test');
+    DECLARE @RetryFlowVersion int = SCOPE_IDENTITY();
+    INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,FlowVersionId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,SubmissionCount,LeaseToken,LockedBy,LockedUntil,Priority)
+    VALUES(42,'recovery-retry',@RetryFlow,@RetryFlowVersion,N'{}',NEWID(),'PROCESSING',1,1,@RetryOriginal,'retry-worker',DATEADD(minute,5,SYSUTCDATETIME()),1000000000);
     DECLARE @RetryQueue int=SCOPE_IDENTITY();
-    INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId,CallStatus,SubmissionState,SubmissionToken,SubmissionStartedAt,SubmissionErrorCode,TwiML,Parameters)
-    VALUES(@RetryQueue,@RetryOriginal,'Twilio','recovery-retry','+15551234567',@RetryFlow,'queued','REJECTED',@RetrySubmission,SYSUTCDATETIME(),'TWILIO_20429',N'<CallFlow/>',N'{}');
+    INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId,FlowVersionId,CallStatus,SubmissionState,SubmissionToken,SubmissionStartedAt,SubmissionErrorCode,TwiML,Parameters)
+    VALUES(@RetryQueue,@RetryOriginal,'Twilio','recovery-retry','+15551234567',@RetryFlow,@RetryFlowVersion,'queued','REJECTED',@RetrySubmission,SYSUTCDATETIME(),'TWILIO_20429',N'<CallFlow/>',N'{}');
     DECLARE @RejectedCall int=SCOPE_IDENTITY();
     UPDATE dbo.AutomatedCallQueue SET CurrentAttemptId=@RejectedCall WHERE SystemID=@RetryQueue;
     EXEC dbo.automatedcalls_RecoveryDisposition @RetryQueue,@RetryOriginal,'retry-worker','RETRY','TWILIO_20429',30,3,3,24;
@@ -143,13 +149,15 @@ BEGIN
     BEGIN TRY
         BEGIN TRANSACTION;
         INSERT dbo.Client(OID) VALUES('recovery-bound');
-        INSERT dbo.CallFlowTemplates(Name,TemplateJSON,TwiML,CreatedBy) VALUES('recovery-bound',N'{}',N'<CallFlow/>',N'test');
+        INSERT dbo.CallFlowTemplates(Name,CreatedBy) VALUES('recovery-bound',N'test');
         DECLARE @BoundFlow int=SCOPE_IDENTITY(),@BoundLease uniqueidentifier=NEWID();
-        INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,SubmissionCount,LeaseToken,LockedBy,LockedUntil)
-        VALUES(42,'recovery-bound',@BoundFlow,N'{}',NEWID(),'PROCESSING',1,CASE WHEN @RecoveryCase=0 THEN 3 ELSE 1 END,@BoundLease,'bound-worker',DATEADD(minute,5,SYSUTCDATETIME()));
+        INSERT dbo.CallFlowTemplateVersions(CallFlowTemplateID,Version,TemplateJSON,TwiML,CreatedBy) VALUES(@BoundFlow,1,N'{}',N'<CallFlow/>',N'test');
+        DECLARE @BoundFlowVersion int = SCOPE_IDENTITY();
+        INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,FlowVersionId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,SubmissionCount,LeaseToken,LockedBy,LockedUntil)
+        VALUES(42,'recovery-bound',@BoundFlow,@BoundFlowVersion,N'{}',NEWID(),'PROCESSING',1,CASE WHEN @RecoveryCase=0 THEN 3 ELSE 1 END,@BoundLease,'bound-worker',DATEADD(minute,5,SYSUTCDATETIME()));
         DECLARE @BoundQueue int=SCOPE_IDENTITY();
-        INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId,CallStatus,SubmissionState,SubmissionStartedAt,SubmissionErrorCode)
-        VALUES(@BoundQueue,@BoundLease,'Twilio','recovery-bound','+15551234567',@BoundFlow,'queued',CASE WHEN @RecoveryCase=0 THEN 'REJECTED' WHEN @RecoveryCase=4 THEN 'READY' ELSE 'UNKNOWN' END,
+        INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId,FlowVersionId,CallStatus,SubmissionState,SubmissionStartedAt,SubmissionErrorCode)
+        VALUES(@BoundQueue,@BoundLease,'Twilio','recovery-bound','+15551234567',@BoundFlow,@BoundFlowVersion,'queued',CASE WHEN @RecoveryCase=0 THEN 'REJECTED' WHEN @RecoveryCase=4 THEN 'READY' ELSE 'UNKNOWN' END,
             DATEADD(hour,CASE WHEN @RecoveryCase IN(2,3) THEN -25 ELSE 0 END,SYSUTCDATETIME()),CASE WHEN @RecoveryCase=0 THEN 'TWILIO_20429' ELSE 'ACCEPTANCE_UNKNOWN' END);
         DECLARE @BoundCall int=SCOPE_IDENTITY();
         UPDATE dbo.AutomatedCallQueue SET CurrentAttemptId=@BoundCall WHERE SystemID=@BoundQueue;
@@ -192,17 +200,19 @@ BEGIN
     BEGIN TRY
         BEGIN TRANSACTION;
         INSERT dbo.Client(OID) VALUES('recovery-fence');
-        INSERT dbo.CallFlowTemplates(Name,TemplateJSON,TwiML,CreatedBy) VALUES('recovery-fence',N'{}',N'<CallFlow/>',N'test');
+        INSERT dbo.CallFlowTemplates(Name,CreatedBy) VALUES('recovery-fence',N'test');
         DECLARE @FenceFlow int=SCOPE_IDENTITY(),@FenceOld uniqueidentifier=NEWID(),@FenceCurrent uniqueidentifier=NEWID(),@FenceSubmission uniqueidentifier=NEWID();
-        INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,SubmissionCount,LeaseToken,LockedBy,LockedUntil,StartedAt)
-        VALUES(42,'recovery-fence',@FenceFlow,N'{}',NEWID(),'PROCESSING',1,CASE WHEN @FenceCase=4 THEN 3 ELSE 0 END,
+        INSERT dbo.CallFlowTemplateVersions(CallFlowTemplateID,Version,TemplateJSON,TwiML,CreatedBy) VALUES(@FenceFlow,1,N'{}',N'<CallFlow/>',N'test');
+        DECLARE @FenceFlowVersion int = SCOPE_IDENTITY();
+        INSERT dbo.AutomatedCallQueue(ActiveAlarmID,OID,FlowId,FlowVersionId,VariablesJSON,EnqueueIdempotencyKey,Status,AttemptCount,SubmissionCount,LeaseToken,LockedBy,LockedUntil,StartedAt)
+        VALUES(42,'recovery-fence',@FenceFlow,@FenceFlowVersion,N'{}',NEWID(),'PROCESSING',1,CASE WHEN @FenceCase=4 THEN 3 ELSE 0 END,
             @FenceCurrent,'current-worker',DATEADD(minute,5,SYSUTCDATETIME()),DATEADD(hour,CASE WHEN @FenceCase=5 THEN -25 ELSE 0 END,SYSUTCDATETIME()));
         DECLARE @FenceQueue int=SCOPE_IDENTITY();
         IF @FenceCase=6
-            INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId,CallStatus,SubmissionState)
-            VALUES(@FenceQueue,NEWID(),'Twilio','recovery-fence','+15551234567',@FenceFlow,'queued','UNKNOWN');
-        INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId,CallStatus,SubmissionState,providerCallId,TwiML,Parameters)
-        VALUES(@FenceQueue,@FenceOld,'Twilio','recovery-fence','+15551234567',@FenceFlow,'queued',CASE WHEN @FenceCase<3 THEN 'ACCEPTED' ELSE 'READY' END,
+            INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId,FlowVersionId,CallStatus,SubmissionState)
+            VALUES(@FenceQueue,NEWID(),'Twilio','recovery-fence','+15551234567',@FenceFlow,@FenceFlowVersion,'queued','UNKNOWN');
+        INSERT dbo.AutomatedCalls(AutomatedCallQueueId,QueueLeaseToken,Provider,OID,PhoneE164,FlowId,FlowVersionId,CallStatus,SubmissionState,providerCallId,TwiML,Parameters)
+        VALUES(@FenceQueue,@FenceOld,'Twilio','recovery-fence','+15551234567',@FenceFlow,@FenceFlowVersion,'queued',CASE WHEN @FenceCase<3 THEN 'ACCEPTED' ELSE 'READY' END,
             CASE WHEN @FenceCase<3 THEN 'CA66666666666666666666666666666666' ELSE NULL END,N'<CallFlow/>',N'{}');
         DECLARE @FenceCall int=SCOPE_IDENTITY();
         UPDATE dbo.AutomatedCallQueue SET CurrentAttemptId=@FenceCall WHERE SystemID=@FenceQueue;

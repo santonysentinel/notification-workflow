@@ -10,8 +10,10 @@ IF DB_NAME() NOT IN (N'NotificationWorkflowVoiceTests',N'NotificationWorkflowTra
 BEGIN TRY
     BEGIN TRANSACTION;
     INSERT dbo.Client(OID) VALUES('oid-42'),('oid-44'),('oid-45');
-    INSERT dbo.CallFlowTemplates(Name,TemplateJSON,TwiML,CreatedBy) VALUES('queue-test',N'{"schemaVersion":1}',N'<CallFlow/>',N'test');
+    INSERT dbo.CallFlowTemplates(Name,CreatedBy) VALUES('queue-test',N'test');
     DECLARE @Flow int=SCOPE_IDENTITY(), @First uniqueidentifier=NEWID(), @Second uniqueidentifier=NEWID(), @Future uniqueidentifier=NEWID();
+    INSERT dbo.CallFlowTemplateVersions(CallFlowTemplateID,Version,TemplateJSON,TwiML,CreatedBy) VALUES(@Flow,1,N'{"schemaVersion":1}',N'<CallFlow/>',N'test');
+    DECLARE @FlowVersion int = SCOPE_IDENTITY();
     DECLARE @Result TABLE(SystemID int);
     INSERT @Result EXEC dbo.activealarms_call_InsertJob 42,'oid-42',@Flow,@VariablesJSON=N'{"name":"Alex"}',@EnqueueIdempotencyKey=@First;
     DECLARE @Job int=(SELECT SystemID FROM @Result),@Before nvarchar(max);
