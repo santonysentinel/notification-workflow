@@ -248,10 +248,10 @@ public sealed class OfficerRoboCallTests
     }
 
     [Theory]
-    [InlineData("COMPLETED", null, "Officer Robo Call to CustomPhone completed.")]
-    [InlineData("DEVICE", null, "Officer Robo Call to CellPhone failed (no-answer); trying CustomPhone.")]
-    [InlineData("TRANSCRIPT", "RecordVerb", "Robo Call message from officer (CellPhone, step message) [00:00:01.000 - 00:00:02.000]: Hello")]
-    [InlineData("TRANSCRIPT", null, "Officer Robo Call transcript")]
+    [InlineData("COMPLETED", null, "Officer Robo Call (Call 1) to CustomPhone completed.")]
+    [InlineData("DEVICE", null, "Officer Robo Call (Call 1) to CellPhone failed (no-answer); trying CustomPhone.")]
+    [InlineData("TRANSCRIPT", "RecordVerb", "Officer Response (Call 1) 1/1 [00:01-00:02] : Hello")]
+    [InlineData("TRANSCRIPT", null, "Officer Call transcript (Call 1) 1/1 [00:01-00:02] : Hello")]
     public void OfficerNotesAreLabelledWithoutChangingMessageTimestamps(string kind, string? source, string expected)
     {
         var task = new AutoCallNoteTask

@@ -19,14 +19,14 @@ public sealed class AutoCallNoteDeliveryTests
     [Fact]
     public void CompletionContainsActualEndTimestampInUtc()
     {
-        Assert.Equal("Robo Call completed. Call connected and ended. Call ended at 2026-10-20 23:50:04.123 UTC.",
+        Assert.Equal("Robo Call (Call 42) completed. Call connected and ended. Call ended at 2026-10-20 23:50:04.123 UTC.",
             Assert.Single(AutoCallNoteFormatter.Format(Completion())));
     }
 
     [Fact]
     public void CompletionNamesTheDialledDevice()
     {
-        Assert.Equal("Robo Call to HomePhone completed. Call connected and ended. Call ended at 2026-10-20 23:50:04.123 UTC.",
+        Assert.Equal("Robo Call (Call 42) to HomePhone completed. Call connected and ended. Call ended at 2026-10-20 23:50:04.123 UTC.",
             Assert.Single(AutoCallNoteFormatter.Format(Completion() with { MessagesJSON = "{\"phoneType\":\"HomePhone\"}" })));
     }
 
@@ -63,20 +63,23 @@ public sealed class AutoCallNoteDeliveryTests
             })
         };
         var notes = AutoCallNoteFormatter.Format(task);
-        string prefix = "Robo Call transcript (call 42, recording 9) [00:00:01.250 - 01:00:01.234] channel 1: ";
         Assert.True(notes.Count > 1);
         Assert.Contains(notes, note => note.Length == 250);
-        Assert.All(notes, note =>
+        string restored = "";
+        for (int i = 0; i < notes.Count; i++)
         {
+            string note = notes[i];
+            string prefix = $"Participant Call transcript (Call 42) {i + 1}/{notes.Count} [00:01-60:01] : ";
             Assert.InRange(note.Length, prefix.Length + 1, 250);
             Assert.StartsWith(prefix, note);
             Assert.False(char.IsHighSurrogate(note[^1]));
-        });
-        Assert.Equal(text, string.Concat(notes.Select(note => note[prefix.Length..])));
+            restored += note[prefix.Length..];
+        }
+        Assert.Equal(text, restored);
     }
 
     [Fact]
-    public void SeparateMessagesRetainTheirOwnTimestampsAndChannels()
+    public void SeparateMessagesRetainTheirOwnTimestampsAndAreNumberedWithoutChannels()
     {
         var notes = AutoCallNoteFormatter.Format(Completion() with
         {
@@ -88,24 +91,24 @@ public sealed class AutoCallNoteDeliveryTests
             })
         });
         Assert.Equal(2, notes.Count);
-        Assert.EndsWith("[00:00:01.250 - 00:00:02.500] channel 0: First message", notes[0]);
-        Assert.EndsWith("[00:00:03.000 - 00:00:04.500] channel 1: Second message", notes[1]);
+        Assert.Equal("Participant Call transcript (Call 42) 1/2 [00:01-00:02] : First message", notes[0]);
+        Assert.Equal("Participant Call transcript (Call 42) 2/2 [00:03-00:04] : Second message", notes[1]);
     }
 
     [Fact]
     public void EmptyTranscriptHasExplicitNoSpeechNote()
     {
         var notes = AutoCallNoteFormatter.Format(Completion() with { Kind = "TRANSCRIPT", RecordingId = 9, MessagesJSON = "[]" });
-        Assert.Contains("No speech detected.", Assert.Single(notes));
+        Assert.Equal("Participant Call transcript (Call 42) 1/1 : No speech detected.", Assert.Single(notes));
         Assert.Throws<InvalidOperationException>(() => AutoCallNoteFormatter.Format(Completion() with { Kind = "UNKNOWN" }));
     }
 
     [Theory]
-    [InlineData("CellPhone", "leave-message", "Robo Call message from participant (CellPhone, step leave-message)")]
-    [InlineData(null, "leave-message", "Robo Call message from participant (step leave-message)")]
-    [InlineData("CellPhone", null, "Robo Call message from participant (CellPhone)")]
-    [InlineData(null, null, "Robo Call message from participant")]
-    public void RecordStepMessageNamesTheDeviceAndStep(string? phoneType, string? stepId, string label)
+    [InlineData("CellPhone", "leave-message")]
+    [InlineData(null, "leave-message")]
+    [InlineData("CellPhone", null)]
+    [InlineData(null, null)]
+    public void RecordStepMessageUsesResponseLabel(string? phoneType, string? stepId)
     {
         var task = Completion() with { Kind = "TRANSCRIPT", RecordingId = 9, RecordingSource = "RecordVerb", PhoneType = phoneType, MessageStepId = stepId };
         var notes = AutoCallNoteFormatter.Format(task with
@@ -115,12 +118,12 @@ public sealed class AutoCallNoteDeliveryTests
                 new { Sentence = 0, AudioChannel = 0, StartTimeMilliseconds = 1250, EndTimeMilliseconds = 6900, TranscriptText = "I'll be there in 10 minutes" }
             })
         });
-        Assert.Equal(label + " [00:00:01.250 - 00:00:06.900]: I'll be there in 10 minutes", Assert.Single(notes));
-        Assert.Equal(label + ": No speech detected.", Assert.Single(AutoCallNoteFormatter.Format(task with { MessagesJSON = "[]" })));
+        Assert.Equal("Participant Response (Call 42) 1/1 [00:01-00:06] : I'll be there in 10 minutes", Assert.Single(notes));
+        Assert.Equal("Participant Response (Call 42) 1/1 : No speech detected.", Assert.Single(AutoCallNoteFormatter.Format(task with { MessagesJSON = "[]" })));
     }
 
     [Fact]
-    public void RecordStepMessageTruncatesLongStepIdsAndSplitsWithinTheLimit()
+    public void RecordStepMessageOmitsStepIdsAndSplitsWithinTheLimit()
     {
         string text = new string('x', 600);
         var notes = AutoCallNoteFormatter.Format(Completion() with
@@ -128,9 +131,15 @@ public sealed class AutoCallNoteDeliveryTests
             Kind = "TRANSCRIPT", RecordingId = 9, RecordingSource = "RecordVerb", PhoneType = "CellPhone", MessageStepId = new string('s', 200),
             MessagesJSON = JsonSerializer.Serialize(new[] { new { Sentence = 0, AudioChannel = 0, StartTimeMilliseconds = 0, EndTimeMilliseconds = 1000, TranscriptText = text } })
         });
-        string prefix = "Robo Call message from participant (CellPhone, step " + new string('s', 60) + "...) [00:00:00.000 - 00:00:01.000]: ";
-        Assert.All(notes, note => { Assert.StartsWith(prefix, note); Assert.InRange(note.Length, prefix.Length + 1, 250); });
-        Assert.Equal(text, string.Concat(notes.Select(note => note[prefix.Length..])));
+        string restored = "";
+        for (int i = 0; i < notes.Count; i++)
+        {
+            string prefix = $"Participant Response (Call 42) {i + 1}/{notes.Count} [00:00-00:01] : ";
+            Assert.StartsWith(prefix, notes[i]);
+            Assert.InRange(notes[i].Length, prefix.Length + 1, 250);
+            restored += notes[i][prefix.Length..];
+        }
+        Assert.Equal(text, restored);
     }
 
     [Fact]
@@ -141,8 +150,50 @@ public sealed class AutoCallNoteDeliveryTests
             Kind = "TRANSCRIPT", RecordingId = 9, RecordingSource = "OutboundAPI", PhoneType = "CellPhone",
             MessagesJSON = JsonSerializer.Serialize(new[] { new { Sentence = 0, AudioChannel = 1, StartTimeMilliseconds = 0, EndTimeMilliseconds = 1000, TranscriptText = "Hi" } })
         });
-        Assert.Equal("Robo Call transcript (call 42, recording 9) [00:00:00.000 - 00:00:01.000] channel 1: Hi", Assert.Single(notes));
+        Assert.Equal("Participant Call transcript (Call 42) 1/1 [00:00-00:01] : Hi", Assert.Single(notes));
     }
+
+    [Theory]
+    [InlineData(9)]
+    [InlineData(10)]
+    [InlineData(99)]
+    [InlineData(100)]
+    public void ChunkTotalsAccountForNumberingDigitBoundaries(int expectedChunks)
+    {
+        int length = Enumerable.Range(1, expectedChunks).Sum(index =>
+            250 - $"Participant Call transcript (Call 42) {index}/{expectedChunks} [00:00-00:01] : ".Length);
+        string text = new('x', length);
+        var notes = AutoCallNoteFormatter.Format(Completion() with
+        {
+            Kind = "TRANSCRIPT", RecordingId = 9,
+            MessagesJSON = JsonSerializer.Serialize(new[] { new { Sentence = 0, AudioChannel = 0, StartTimeMilliseconds = 0, EndTimeMilliseconds = 1000, TranscriptText = text } })
+        });
+        Assert.Equal(expectedChunks, notes.Count);
+        Assert.All(notes, note => Assert.InRange(note.Length, 1, 250));
+        for (int i = 0; i < notes.Count; i++)
+            Assert.StartsWith($"Participant Call transcript (Call 42) {i + 1}/{notes.Count} ", notes[i]);
+        Assert.Equal(text, string.Concat(notes.Select(note => note[(note.IndexOf(" : ", StringComparison.Ordinal) + 3)..])));
+    }
+
+    [Fact]
+    public void BlankMessagesDoNotCountAsChunksAndMissingCallIdIsRejected()
+    {
+        var task = Completion() with
+        {
+            Kind = "TRANSCRIPT", RecordingId = 9,
+            MessagesJSON = """[{"Sentence":0,"AudioChannel":0,"StartTimeMilliseconds":0,"EndTimeMilliseconds":560,"TranscriptText":"hello"},{"Sentence":1,"AudioChannel":0,"StartTimeMilliseconds":1000,"EndTimeMilliseconds":2000,"TranscriptText":" "}]"""
+        };
+        Assert.Equal("Participant Call transcript (Call 42) 1/1 [00:00-00:00] : hello", Assert.Single(AutoCallNoteFormatter.Format(task)));
+        Assert.Throws<InvalidOperationException>(() => AutoCallNoteFormatter.Format(task with { CallId = null }));
+    }
+
+    [Fact]
+    public void DeviceOutcomeIncludesCallIdWhenAnAttemptExists()
+        => Assert.Equal("Robo Call (Call 42) to CellPhone failed (busy); no more devices.",
+            Assert.Single(AutoCallNoteFormatter.Format(Completion() with
+            {
+                Kind = "DEVICE", MessagesJSON = """{"phoneType":"CellPhone","status":"busy"}"""
+            })));
 
     [Theory]
     [InlineData(false)]

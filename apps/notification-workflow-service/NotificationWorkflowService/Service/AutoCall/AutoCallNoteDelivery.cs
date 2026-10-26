@@ -90,54 +90,45 @@ internal static class AutoCallNoteFormatter
         {
             string? phoneType = ReadPhoneType(task.MessagesJSON);
             string target = phoneType is null ? "" : " to " + DeviceLabel(task, phoneType);
-            return [$"{CallLabel(task)}{target} completed. Call connected and ended. Call ended at {task.OccurredAt.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture)} UTC."];
+            return [$"{CallLabel(task)}{CallNumber(task)}{target} completed. Call connected and ended. Call ended at {task.OccurredAt.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture)} UTC."];
         }
         if (task.Kind == "DEVICE") return [FormatDevice(task)];
-        if (task.Kind != "TRANSCRIPT" || task.RecordingId is null || task.MessagesJSON is null)
+        if (task.Kind != "TRANSCRIPT" || task.CallId is not > 0 || task.RecordingId is null || task.MessagesJSON is null)
             throw new InvalidOperationException("Invalid transcript delivery payload.");
         var messages = JsonSerializer.Deserialize<List<Message>>(task.MessagesJSON)
             ?? throw new InvalidOperationException("Transcript messages must be an array.");
-        var notes = new List<string>();
-        string? messageLabel = task.RecordingSource == "RecordVerb" ? MessageLabel(task) : null;
+        string actor = task.OfficerJSON is null ? "Participant" : "Officer";
+        string label = actor + (task.RecordingSource == "RecordVerb" ? " Response" : " Call transcript");
+        var content = new List<(string Range, string Text)>();
         foreach (var message in messages)
         {
             if (message.StartTimeMilliseconds < 0 || message.EndTimeMilliseconds < message.StartTimeMilliseconds || message.AudioChannel < 0)
                 throw new InvalidOperationException("Invalid transcript message timestamps or channel.");
             if (string.IsNullOrWhiteSpace(message.TranscriptText)) continue;
-            string range = $"[{Offset(message.StartTimeMilliseconds)} - {Offset(message.EndTimeMilliseconds)}]";
-            string prefix = messageLabel is not null
-                ? $"{messageLabel} {range}: "
-                : FormattableString.Invariant($"{CallLabel(task)} transcript (call {task.CallId}, recording {task.RecordingId}) {range} channel {message.AudioChannel}: ");
-            string text = message.TranscriptText;
-            for (int start = 0; start < text.Length;)
-            {
-                int count = Math.Min(250 - prefix.Length, text.Length - start);
-                if (count <= 0) throw new InvalidOperationException("Transcript note prefix exceeds the history limit.");
-                if (start + count < text.Length && char.IsHighSurrogate(text[start + count - 1]) && char.IsLowSurrogate(text[start + count]))
-                    count--;
-                notes.Add(prefix + text.Substring(start, count));
-                start += count;
-            }
+            content.Add(($"[{Offset(message.StartTimeMilliseconds)}-{Offset(message.EndTimeMilliseconds)}]", message.TranscriptText));
         }
-        if (notes.Count == 0)
-            notes.Add(messageLabel is not null
-                ? messageLabel + ": No speech detected."
-                : FormattableString.Invariant($"{CallLabel(task)} recording transcript (call {task.CallId}, recording {task.RecordingId}): No speech detected."));
-        return notes;
-    }
-
-    /// <summary>Labels a record-step message, e.g. "Robo Call message from participant (CellPhone, step leave-message)".</summary>
-    private static string MessageLabel(AutoCallNoteTask task)
-    {
-        var parts = new List<string>(2);
-        if (!string.IsNullOrWhiteSpace(task.PhoneType)) parts.Add(DeviceLabel(task, task.PhoneType.Trim()));
-        if (!string.IsNullOrWhiteSpace(task.MessageStepId))
+        if (content.Count == 0) content.Add(("", "No speech detected."));
+        int total = 1;
+        while (true)
         {
-            string step = task.MessageStepId.Trim();
-            parts.Add("step " + (step.Length > 60 ? step[..60] + "..." : step));
+            var notes = new List<string>();
+            foreach (var (range, text) in content)
+            {
+                for (int start = 0; start < text.Length;)
+                {
+                    string prefix = FormattableString.Invariant($"{label} (Call {task.CallId}) {notes.Count + 1}/{total}{(range.Length == 0 ? "" : " " + range)} : ");
+                    int count = Math.Min(250 - prefix.Length, text.Length - start);
+                    if (count <= 0) throw new InvalidOperationException("Transcript note prefix exceeds the history limit.");
+                    if (start + count < text.Length && char.IsHighSurrogate(text[start + count - 1]) && char.IsLowSurrogate(text[start + count]))
+                        count--;
+                    notes.Add(prefix + text.Substring(start, count));
+                    start += count;
+                }
+            }
+            // The total's digit count changes the space available for transcript text.
+            if (notes.Count == total) return notes;
+            total = notes.Count;
         }
-        string label = task.OfficerJSON is null ? "Robo Call message from participant" : "Robo Call message from officer";
-        return parts.Count == 0 ? label : $"{label} ({string.Join(", ", parts)})";
     }
 
     private static string? ReadPhoneType(string? messagesJson)
@@ -163,9 +154,11 @@ internal static class AutoCallNoteFormatter
             _ => $"failed ({outcome.Status})"
         };
         string next = string.IsNullOrWhiteSpace(outcome.NextPhoneType) ? "no more devices" : "trying " + DeviceLabel(task, outcome.NextPhoneType);
-        return $"{CallLabel(task)} to {DeviceLabel(task, outcome.PhoneType)} {result}; {next}.";
+        return $"{CallLabel(task)}{CallNumber(task)} to {DeviceLabel(task, outcome.PhoneType)} {result}; {next}.";
     }
 
+    private static string CallNumber(AutoCallNoteTask task)
+        => task.CallId is > 0 ? FormattableString.Invariant($" (Call {task.CallId})") : "";
     private static string CallLabel(AutoCallNoteTask task) => task.OfficerJSON is null ? "Robo Call" : "Officer Robo Call";
     private static string DeviceLabel(AutoCallNoteTask task, string type)
         => task.OfficerJSON is not null && type == RoboCallDevice.Custom ? "CustomPhone" : type;
@@ -173,7 +166,7 @@ internal static class AutoCallNoteFormatter
     private static string Offset(int milliseconds)
     {
         var time = TimeSpan.FromMilliseconds(milliseconds);
-        return FormattableString.Invariant($"{(int)time.TotalHours:00}:{time.Minutes:00}:{time.Seconds:00}.{time.Milliseconds:000}");
+        return FormattableString.Invariant($"{(int)time.TotalMinutes:00}:{time.Seconds:00}");
     }
 }
 
