@@ -24,6 +24,7 @@ public sealed class AutoCallEnqueueTests
 
     private sealed class Repository : IAutoCallQueueRepository
     {
+        public Task<RoboCallOfficer?> ReadQueuedOfficerAsync(Guid enqueueKey, CancellationToken cancellationToken) => Task.FromResult<RoboCallOfficer?>(null);
         public int Reads { get; private set; }
         public int Writes { get; private set; }
         public AutoCallFlow Template { get; set; } = Flow();

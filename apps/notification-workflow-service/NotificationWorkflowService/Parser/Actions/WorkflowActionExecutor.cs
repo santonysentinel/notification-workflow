@@ -252,13 +252,20 @@ internal static class WorkflowActionExecutor
                 await operations.AddNoteAsync(a.Instruction, a.ClientID, a.SystemID, a.HistoryID, cancellationToken).ConfigureAwait(false);
                 break;
             case 19:
-                sb.Append("Auto Call Participant");
-                WriteAction(a, context, "Auto Call Participant");
+            case 20:
+                bool officerCall = a.Priority == 20;
+                string callAction = officerCall ? "Officer Robo Call" : "Auto Call Participant";
+                sb.Append(callAction);
+                WriteAction(a, context, callAction);
                 a.RoboCallWaitQueueId = null;
                 int queueId = await operations.EnqueueAutoCallAsync(a, context.Platform, cancellationToken).ConfigureAwait(false);
-                var roboCallOptions = ParticipantRoboCallOptions.Parse(a.OptionsJson);
+                var officerOptions = officerCall ? OfficerRoboCallOptions.Parse(a.OptionsJson) : null;
+                var roboCallOptions = officerOptions?.CallOptions ?? ParticipantRoboCallOptions.Parse(a.OptionsJson);
+                string queuedNote = officerOptions is null
+                    ? $"Robo Call queued for participant ({roboCallOptions.PrimaryCallDevice!.Type})."
+                    : $"Officer Robo Call queued for {OfficerTarget(officerOptions.Officer)} ({DisplayDevice(roboCallOptions.PrimaryCallDevice!.Type)}).";
                 await operations.AddHistoryNoteAsync(a.HistoryID,
-                    $"Robo Call queued for participant ({roboCallOptions.PrimaryCallDevice!.Type}).", cancellationToken).ConfigureAwait(false);
+                    queuedNote, cancellationToken).ConfigureAwait(false);
                 if (roboCallOptions.WaitForCallCompletion && queueId > 0)
                 {
                     a.RoboCallWaitQueueId = queueId;
@@ -280,6 +287,15 @@ internal static class WorkflowActionExecutor
     }
 
     private static string Truncate(string value) => value.Length > 4096 ? value.Substring(0, 4096) : value;
+
+    private static string OfficerTarget(RoboCallOfficerSelection officer) => officer.Type switch
+    {
+        "Primary" => "primary officer",
+        "RoleBased" => "role " + (officer.RoleType!.Length > 80 ? officer.RoleType[..80] + "..." : officer.RoleType),
+        _ => "custom number"
+    };
+
+    private static string DisplayDevice(string type) => type == RoboCallDevice.Custom ? "CustomPhone" : type;
 
     private static void WriteAction(ActiveAlarm a, WorkflowActionContext context, string action)
     {

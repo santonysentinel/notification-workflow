@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using NotificationWorkflowService.Repository;
 
 namespace NotificationWorkflowService.Service.AutoCall;
 
@@ -45,17 +46,38 @@ public sealed class AutoCallContactService
     private readonly IAutoCallPhoneRepository phoneRepository;
     private readonly IConfiguration configuration;
     private readonly ILogger<AutoCallContactService> logger;
+    private readonly IAutoCallOfficerRepository? officerRepository;
 
     public AutoCallContactService(IAutoCallRoutingStore routingStore, IAutoCallPhoneRepository phoneRepository, IConfiguration configuration,
-        ILogger<AutoCallContactService>? logger = null)
+        ILogger<AutoCallContactService>? logger = null, IAutoCallOfficerRepository? officerRepository = null)
     {
         this.routingStore = routingStore;
         this.phoneRepository = phoneRepository;
         this.configuration = configuration;
         this.logger = logger ?? NullLogger<AutoCallContactService>.Instance;
+        this.officerRepository = officerRepository;
     }
 
     public async Task<AutoCallContacts> ResolveAsync(string oid, CancellationToken cancellationToken = default)
+        => await ResolveAsync(oid, null, cancellationToken).ConfigureAwait(false);
+
+    public async Task<AutoCallContacts> ResolveAsync(string oid, RoboCallOfficer? officer, CancellationToken cancellationToken = default,
+        bool readOfficerPhone = true)
+    {
+        var (platform, connectionString) = await ResolveRouteAsync(oid, cancellationToken).ConfigureAwait(false);
+        IReadOnlyList<AutoCallPhone> phones;
+        if (officer is null)
+            phones = await phoneRepository.ReadAsync(connectionString, oid, cancellationToken).ConfigureAwait(false);
+        else if (officer.Selection.Type == "Custom" || !readOfficerPhone)
+            phones = [];
+        else
+            phones = await (officerRepository ?? throw new InvalidOperationException("Officer phone repository is required."))
+                .ReadPhonesAsync(connectionString, officer.Id ?? throw new InvalidOperationException("A pinned officer ID is required."), cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        return new AutoCallContacts(oid, platform, phones.Select(phone => phone with { Number = NormalizePhoneNumber(phone.Number) }).ToArray());
+    }
+
+    private async Task<(string Platform, string ConnectionString)> ResolveRouteAsync(string oid, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ValidateOid(oid);
@@ -80,9 +102,7 @@ public sealed class AutoCallContactService
         string? connectionString = configuration.GetConnectionString(platform);
         if (string.IsNullOrWhiteSpace(connectionString))
             throw new AutoCallRoutingException(AutoCallRoutingFailure.DatabaseNotConfigured);
-        var phones = await phoneRepository.ReadAsync(connectionString, oid, cancellationToken).ConfigureAwait(false);
-        cancellationToken.ThrowIfCancellationRequested();
-        return new AutoCallContacts(oid, platform, phones.Select(phone => phone with { Number = NormalizePhoneNumber(phone.Number) }).ToArray());
+        return (platform, connectionString);
     }
 
     internal static string NormalizePhoneNumber(string phone)

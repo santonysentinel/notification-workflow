@@ -27,6 +27,9 @@ public sealed record ParticipantRoboCallOptions(int FlowId, bool ShowParticipant
         new[] { PrimaryCallDevice, SecondaryCallDevice }.OfType<RoboCallDevice>().ToArray();
 
     public static ParticipantRoboCallOptions Parse(string? optionsJson)
+        => Parse(optionsJson, SectionName, "ShowParticipantResponseTranscript", false);
+
+    internal static ParticipantRoboCallOptions Parse(string? optionsJson, string sectionName, string transcriptProperty, bool officer)
     {
         if (string.IsNullOrWhiteSpace(optionsJson))
             throw Invalid("OptionsJSON is required.");
@@ -36,26 +39,26 @@ public sealed record ParticipantRoboCallOptions(int FlowId, bool ShowParticipant
         using (document)
         {
             if (document.RootElement.ValueKind != JsonValueKind.Object) throw Invalid("OptionsJSON must be a JSON object.");
-            var section = Single(document.RootElement, SectionName)
-                ?? throw Invalid($"OptionsJSON.{SectionName} is required.");
-            if (section.ValueKind != JsonValueKind.Object) throw Invalid($"OptionsJSON.{SectionName} must be a JSON object.");
+            var section = Single(document.RootElement, sectionName)
+                ?? throw Invalid($"OptionsJSON.{sectionName} is required.");
+            if (section.ValueKind != JsonValueKind.Object) throw Invalid($"OptionsJSON.{sectionName} must be a JSON object.");
 
             var flow = Single(section, "FlowId");
             if (flow is not { ValueKind: JsonValueKind.Number } || !flow.Value.TryGetInt32(out int flowId) || flowId <= 0)
-                throw Invalid($"OptionsJSON.{SectionName}.FlowId must be a positive integer.");
+                throw Invalid($"OptionsJSON.{sectionName}.FlowId must be a positive integer.");
 
-            bool showTranscript = Single(section, "ShowParticipantResponseTranscript") switch
+            bool showTranscript = Single(section, transcriptProperty) switch
             {
                 null or { ValueKind: JsonValueKind.Null } => true,
                 { ValueKind: JsonValueKind.True } => true,
                 { ValueKind: JsonValueKind.False } => false,
-                _ => throw Invalid($"OptionsJSON.{SectionName}.ShowParticipantResponseTranscript must be a boolean."),
+                _ => throw Invalid($"OptionsJSON.{sectionName}.{transcriptProperty} must be a boolean."),
             };
             bool wait = Single(section, "WaitForCallCompletion") switch
             {
                 null or { ValueKind: JsonValueKind.Null } or { ValueKind: JsonValueKind.False } => false,
                 { ValueKind: JsonValueKind.True } => true,
-                _ => throw Invalid($"OptionsJSON.{SectionName}.WaitForCallCompletion must be a boolean."),
+                _ => throw Invalid($"OptionsJSON.{sectionName}.WaitForCallCompletion must be a boolean."),
             };
 
             int timeout = DefaultCallTimeoutSeconds;
@@ -63,25 +66,27 @@ public sealed record ParticipantRoboCallOptions(int FlowId, bool ShowParticipant
             if (timeoutElement is { ValueKind: not JsonValueKind.Null })
             {
                 if (timeoutElement.Value.ValueKind != JsonValueKind.Number || !timeoutElement.Value.TryGetInt32(out timeout) || timeout <= 0)
-                    throw Invalid($"OptionsJSON.{SectionName}.CallTimeoutSeconds must be a positive integer or null.");
+                    throw Invalid($"OptionsJSON.{sectionName}.CallTimeoutSeconds must be a positive integer or null.");
             }
-            var primary = Device(section, "PrimaryCallDevice")
-                ?? throw Invalid($"OptionsJSON.{SectionName}.PrimaryCallDevice is required.");
-            var secondary = Device(section, "SecondaryCallDevice");
+            var primary = Device(section, "PrimaryCallDevice", sectionName, officer)
+                ?? throw Invalid($"OptionsJSON.{sectionName}.PrimaryCallDevice is required.");
+            var secondary = Device(section, "SecondaryCallDevice", sectionName, officer);
             return new ParticipantRoboCallOptions(flowId, showTranscript, wait, timeout, primary, secondary);
         }
     }
 
-    private static RoboCallDevice? Device(JsonElement section, string name)
+    private static RoboCallDevice? Device(JsonElement section, string name, string sectionName, bool officer)
     {
         var element = Single(section, name);
         if (element is null or { ValueKind: JsonValueKind.Null }) return null;
-        string path = $"OptionsJSON.{SectionName}.{name}";
+        string path = $"OptionsJSON.{sectionName}.{name}";
         if (element.Value.ValueKind != JsonValueKind.Object) throw Invalid($"{path} must be a JSON object or null.");
         var typeElement = Single(element.Value, "Type");
         string? type = typeElement is { ValueKind: JsonValueKind.String } ? typeElement.Value.GetString() : null;
-        type = RoboCallDevice.Types.FirstOrDefault(known => string.Equals(known, type, StringComparison.OrdinalIgnoreCase))
-            ?? throw Invalid($"{path}.Type must be one of {string.Join(", ", RoboCallDevice.Types)}.");
+        IReadOnlyList<string> allowedTypes = officer ? ["CellPhone", "CustomPhone"] : RoboCallDevice.Types;
+        type = allowedTypes.FirstOrDefault(known => string.Equals(known, type, StringComparison.OrdinalIgnoreCase))
+            ?? throw Invalid($"{path}.Type must be one of {string.Join(", ", allowedTypes)}.");
+        if (type == "CustomPhone") type = RoboCallDevice.Custom;
         var numberElement = Single(element.Value, "PhoneNumber");
         string? number = numberElement switch
         {
@@ -100,7 +105,7 @@ public sealed record ParticipantRoboCallOptions(int FlowId, bool ShowParticipant
         return new RoboCallDevice(type, number);
     }
 
-    private static JsonElement? Single(JsonElement parent, string name)
+    internal static JsonElement? Single(JsonElement parent, string name)
     {
         JsonElement? found = null;
         foreach (var property in parent.EnumerateObject())

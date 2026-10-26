@@ -51,7 +51,7 @@ BEGIN TRY
         SystemID bigint, DeliveryId uniqueidentifier, LeaseToken uniqueidentifier, CallId int,
         Kind varchar(20), OID varchar(20), HistoryID int, OccurredAt datetime2(3),
         RecordingId int, MessagesJSON nvarchar(max), QueueId int, ActiveAlarmID int,
-        RecordingSource varchar(100), PhoneType varchar(20), MessageStepId nvarchar(200)
+        RecordingSource varchar(100), PhoneType varchar(20), MessageStepId nvarchar(200), OfficerJSON nvarchar(max)
     );
     INSERT @Claim EXEC dbo.automatedcalls_ClaimNote;
     IF EXISTS (SELECT 1 FROM @Claim)

@@ -128,7 +128,8 @@ BEGIN TRY
         RecordingsJSON nvarchar(max), TranscriptionsJSON nvarchar(max),
         QueueCreatedDateTime datetime2(3), QueueUpdatedAt datetime2(3), QueueAvailableAt datetime2(3),
         QueueAttemptCount int, QueueMaxAttempts int, QueueLastErrorCode varchar(100),
-        PhoneType varchar(20), AnsweredBy varchar(30), CallDeviceIndex int, RootQueueId int
+        PhoneType varchar(20), AnsweredBy varchar(30), CallDeviceIndex int, RootQueueId int,
+        RecipientKind varchar(20), OfficerId int, OfficerName nvarchar(200), OfficerType varchar(20), OfficerRoleType nvarchar(4000)
     );
     UPDATE dbo.AutomatedCalls SET PhoneType = 'CellPhone', DeviceIndex = 0, AnsweredBy = 'human' WHERE SystemID = @CallId;
     UPDATE dbo.AutomatedCallQueue SET CallDeviceIndex = 1, RootQueueId = @QueueId,
@@ -270,6 +271,16 @@ BEGIN TRY
         )
         THROW 51000, 'Messages must be ordered and retain each sentence, channel, text, and recording-relative millisecond timestamps.', 1;
 
+    IF EXISTS (SELECT 1 FROM @Result WHERE RecipientKind <> 'Participant' OR OfficerId IS NOT NULL)
+        THROW 51000, 'Legacy participant reports must not identify an officer.', 1;
+    UPDATE dbo.AutomatedCallQueue SET OptionsJSON = JSON_MODIFY(OptionsJSON, '$.officer',
+        JSON_QUERY(N'{"selection":{"type":"RoleBased","roleType":"Duty role","roleId":7,"rolePOGroup":"OTHER"},"id":91,"name":"Officer Name"}'))
+    WHERE SystemID = @ReadyQueueId;
+    DELETE @Result;
+    INSERT @Result EXEC dbo.automatedcalls_GetAllCallForPOGroup 'report-test', @Start, @End;
+    IF NOT EXISTS (SELECT 1 FROM @Result WHERE AutomatedCallQueueId = @ReadyQueueId AND RecipientKind = 'Officer'
+        AND OfficerId = 91 AND OfficerName = N'Officer Name' AND OfficerType = 'RoleBased' AND OfficerRoleType = N'Duty role')
+        THROW 51000, 'Reports must expose officer identity for queued calls before dialing.', 1;
     DELETE @Result;
     INSERT @Result EXEC dbo.automatedcalls_GetAllCallForPOGroup 'missing-group', @Start, @End;
     IF EXISTS (SELECT 1 FROM @Result)

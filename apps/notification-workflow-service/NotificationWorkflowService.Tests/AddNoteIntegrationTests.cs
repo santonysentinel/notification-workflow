@@ -366,13 +366,15 @@ public class AddNoteIntegrationTests
     }
 
     [Theory]
-    [InlineData(false, "offenderName", false)]
-    [InlineData(true, "offenderName", false)]
-    [InlineData(false, "OffenderName", true)]
-    [InlineData(true, "OffenderName", true)]
-    [InlineData(false, "offendername", true)]
-    [InlineData(true, "offendername", true)]
-    public async Task NormalAndStepAutoCallActionsQueueTheParticipantSnapshot(bool step, string nameColumn, bool nullLocation)
+    [InlineData(false, "offenderName", false, 19)]
+    [InlineData(true, "offenderName", false, 19)]
+    [InlineData(false, "OffenderName", true, 19)]
+    [InlineData(true, "OffenderName", true, 19)]
+    [InlineData(false, "offendername", true, 19)]
+    [InlineData(true, "offendername", true, 19)]
+    [InlineData(false, "offenderName", false, 20)]
+    [InlineData(true, "offenderName", false, 20)]
+    public async Task NormalAndStepAutoCallActionsQueueTheParticipantSnapshot(bool step, string nameColumn, bool nullLocation, int action)
     {
         var spy = RepositorySpy.Create();
         var fixture = new AddNoteTests.Fixture();
@@ -391,14 +393,14 @@ public class AddNoteIntegrationTests
             Details = await ParticipantCurrentDetailsRepository.ReadDetailsAsync(reader, default)
         };
         var queue = new QueueRepository();
-        var enqueue = new AutoCallEnqueueService(queue, details);
+        var enqueue = new AutoCallEnqueueService(queue, details, new OfficerRoboCallTests.Officers());
         var sender = (NotificationSender)RuntimeHelpers.GetUninitializedObject(typeof(NotificationSender));
         object parser = step
             ? new WorkFlowSteps(NullLogger<WorkFlowSteps>.Instance, Configuration(), (IRepository)spy, fixture.Service, enqueue)
             : new WorkFlowCommon(NullLogger<WorkFlowCommon>.Instance, Configuration(), sender, (IRepository)spy, fixture.Service, enqueue);
         var alarm = Alarm();
-        alarm.Priority = 19;
-        alarm.OptionsJson = AutoCallEnqueueTests.RoboCallOptions();
+        alarm.Priority = action;
+        alarm.OptionsJson = action == 20 ? OfficerRoboCallTests.Options() : AutoCallEnqueueTests.RoboCallOptions();
         alarm.OffenderName = "";
         Set(parser, "platForm", "offline");
         Set(parser, "activeAlarms", new List<ActiveAlarm> { alarm });
@@ -412,6 +414,7 @@ public class AddNoteIntegrationTests
         Assert.Equal("client", request.Oid);
         Assert.Equal(12, request.FlowId);
         Assert.Equal(alarm.POGroupNum, request.POGroupNum);
+        if (action == 20) Assert.Equal(91, RoboCallOfficer.ReadFromOptions(request.OptionsJson)!.Id);
         using var command = AutoCallQueueRepository.BuildEnqueueCommand(request);
         Assert.Equal("group", command.Parameters["@POGroupNum"].Value);
         Assert.Equal(request.VariablesJson, command.Parameters["@VariablesJSON"].Value);
@@ -440,6 +443,7 @@ public class AddNoteIntegrationTests
 
     private sealed class QueueRepository : IAutoCallQueueRepository
     {
+        public Task<RoboCallOfficer?> ReadQueuedOfficerAsync(Guid enqueueKey, CancellationToken cancellationToken) => Task.FromResult<RoboCallOfficer?>(null);
         public AutoCallRequest? Request { get; private set; }
         public CancellationToken Token { get; private set; }
         public Task<AutoCallFlow> ReadFlowAsync(int flowId, CancellationToken cancellationToken = default)

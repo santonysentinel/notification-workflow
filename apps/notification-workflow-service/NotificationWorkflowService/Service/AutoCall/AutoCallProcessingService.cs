@@ -14,7 +14,11 @@ public sealed class AutoCallProcessingService(IAutoCallRepository repository, Au
             throw new AutoCallValidationException("A complete claimed job is required for preparation.");
         AutoCallContactService.ValidateOid(job.OID);
         AutoCallWorkerOptions.ValidateBaseUrl(options.FeedbackBaseUrl);
-        var resolved = await contacts.ResolveAsync(job.OID, cancellationToken).ConfigureAwait(false);
+        var officer = RoboCallOfficer.ReadFromOptions(job.OptionsJSON);
+        string? customOfficerNumber = officer is null ? null
+            : SelectRecipient(job, new AutoCallContacts(job.OID, "", []), out _);
+        var resolved = await contacts.ResolveAsync(job.OID, officer, cancellationToken,
+            readOfficerPhone: customOfficerNumber is null).ConfigureAwait(false);
         string? recipient = SelectRecipient(job, resolved, out string? deviceType);
         if (recipient is null)
         {

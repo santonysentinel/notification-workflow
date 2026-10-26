@@ -76,6 +76,41 @@ public sealed class AutoCallPreparationTests
         new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["ConnectionStrings:TENANT"] = "unused" }).Build());
 
     [Fact]
+    public async Task OfficerPreparationUsesPinnedIdentityAndSkipsMissingCellPhone()
+    {
+        foreach (bool missing in new[] { false, true })
+        {
+            var officers = new OfficerRoboCallTests.Officers
+            {
+                Phones = missing ? [] : [new AutoCallPhone("CellPhone", "+15551234567")]
+            };
+            var contacts = new AutoCallContactService(new Routing(), new Phones([new("CellPhone", "+19999999999")]),
+                new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["ConnectionStrings:TENANT"] = "routed" }).Build(),
+                officerRepository: officers);
+            string json = JsonSerializer.Serialize(new
+            {
+                officer = JsonSerializer.SerializeToElement(new RoboCallOfficer(new("Primary", null, null, null), 91, "Officer"), RoboCallOfficer.QueueJson),
+                callDevices = new[] { new { type = "CellPhone", phoneNumber = (string?)null } }
+            });
+            var job = new AutoCallJob { SystemID = 1, OID = "oid", FlowId = 12, LeaseToken = Token, OptionsJSON = json };
+            var repository = new Repository();
+            var service = new AutoCallProcessingService(repository, contacts, Options());
+            if (missing)
+            {
+                await Assert.ThrowsAsync<AutoCallDeviceSkippedException>(() => service.PrepareAsync(job, "worker", default));
+                Assert.Equal(["skip"], repository.Calls);
+            }
+            else
+            {
+                await service.PrepareAsync(job, "worker", default);
+                Assert.Equal("+15551234567", repository.Recipient);
+            }
+            Assert.Equal(("routed", 91), Assert.Single(officers.PhoneCalls));
+            Assert.Equal(0, officers.Resolutions);
+        }
+    }
+
+    [Fact]
     public async Task CreatesIdentityThenPersonalizesAndPersistsBeforeReturning()
     {
         var repository = new Repository();

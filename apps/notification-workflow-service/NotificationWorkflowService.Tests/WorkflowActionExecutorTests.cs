@@ -122,6 +122,23 @@ public class WorkflowActionExecutorTests
     }
 
     [Fact]
+    public async Task OfficerActionRecordsWaitAndHistoryInBothParserModes()
+    {
+        foreach (bool step in new[] { false, true })
+        foreach (bool wait in new[] { false, true })
+        {
+            var fixture = new Fixture(step, 20);
+            fixture.Alarm.OptionsJson = OfficerRoboCallTests.Options(wait: wait);
+            fixture.Operations.QueueId = 909;
+            await fixture.ExecuteAsync();
+            Assert.Equal(["autocall", "historyNote"], fixture.Operations.Calls.Select(call => call.Name));
+            Assert.Equal(wait ? (int?)909 : null, fixture.Alarm.RoboCallWaitQueueId);
+            if (wait) Assert.Equal(300, fixture.Alarm.RoboCallWaitSeconds);
+            Assert.Equal("Officer Robo Call queued for role Custom duty role (CellPhone).", fixture.Operations.Calls.Last().Text);
+        }
+    }
+
+    [Fact]
     public void NextStateExpiry_UsesLongerOfStateTimeAndCallTimeoutOnlyWhenWaiting()
     {
         var now = new DateTime(2025, 1, 2, 3, 4, 5, DateTimeKind.Utc);

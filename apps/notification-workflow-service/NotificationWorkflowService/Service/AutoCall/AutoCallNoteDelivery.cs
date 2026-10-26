@@ -26,6 +26,7 @@ public sealed record AutoCallNoteTask
     public string? RecordingSource { get; init; }
     public string? PhoneType { get; init; }
     public string? MessageStepId { get; init; }
+    public string? OfficerJSON { get; init; }
 }
 
 public interface IAutoCallNoteRepository
@@ -88,8 +89,8 @@ internal static class AutoCallNoteFormatter
         if (task.Kind == "COMPLETED")
         {
             string? phoneType = ReadPhoneType(task.MessagesJSON);
-            string target = phoneType is null ? "" : " to " + phoneType;
-            return [$"Robo Call{target} completed. Call connected and ended. Call ended at {task.OccurredAt.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture)} UTC."];
+            string target = phoneType is null ? "" : " to " + DeviceLabel(task, phoneType);
+            return [$"{CallLabel(task)}{target} completed. Call connected and ended. Call ended at {task.OccurredAt.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture)} UTC."];
         }
         if (task.Kind == "DEVICE") return [FormatDevice(task)];
         if (task.Kind != "TRANSCRIPT" || task.RecordingId is null || task.MessagesJSON is null)
@@ -106,7 +107,7 @@ internal static class AutoCallNoteFormatter
             string range = $"[{Offset(message.StartTimeMilliseconds)} - {Offset(message.EndTimeMilliseconds)}]";
             string prefix = messageLabel is not null
                 ? $"{messageLabel} {range}: "
-                : FormattableString.Invariant($"Robo Call transcript (call {task.CallId}, recording {task.RecordingId}) {range} channel {message.AudioChannel}: ");
+                : FormattableString.Invariant($"{CallLabel(task)} transcript (call {task.CallId}, recording {task.RecordingId}) {range} channel {message.AudioChannel}: ");
             string text = message.TranscriptText;
             for (int start = 0; start < text.Length;)
             {
@@ -121,7 +122,7 @@ internal static class AutoCallNoteFormatter
         if (notes.Count == 0)
             notes.Add(messageLabel is not null
                 ? messageLabel + ": No speech detected."
-                : FormattableString.Invariant($"Robo Call recording transcript (call {task.CallId}, recording {task.RecordingId}): No speech detected."));
+                : FormattableString.Invariant($"{CallLabel(task)} recording transcript (call {task.CallId}, recording {task.RecordingId}): No speech detected."));
         return notes;
     }
 
@@ -129,13 +130,14 @@ internal static class AutoCallNoteFormatter
     private static string MessageLabel(AutoCallNoteTask task)
     {
         var parts = new List<string>(2);
-        if (!string.IsNullOrWhiteSpace(task.PhoneType)) parts.Add(task.PhoneType.Trim());
+        if (!string.IsNullOrWhiteSpace(task.PhoneType)) parts.Add(DeviceLabel(task, task.PhoneType.Trim()));
         if (!string.IsNullOrWhiteSpace(task.MessageStepId))
         {
             string step = task.MessageStepId.Trim();
             parts.Add("step " + (step.Length > 60 ? step[..60] + "..." : step));
         }
-        return parts.Count == 0 ? "Robo Call message from participant" : $"Robo Call message from participant ({string.Join(", ", parts)})";
+        string label = task.OfficerJSON is null ? "Robo Call message from participant" : "Robo Call message from officer";
+        return parts.Count == 0 ? label : $"{label} ({string.Join(", ", parts)})";
     }
 
     private static string? ReadPhoneType(string? messagesJson)
@@ -160,9 +162,13 @@ internal static class AutoCallNoteFormatter
                 outcome.MessageLeft ? "reached voicemail; message left" : "reached an answering machine; no message left",
             _ => $"failed ({outcome.Status})"
         };
-        string next = string.IsNullOrWhiteSpace(outcome.NextPhoneType) ? "no more devices" : "trying " + outcome.NextPhoneType;
-        return $"Robo Call to {outcome.PhoneType} {result}; {next}.";
+        string next = string.IsNullOrWhiteSpace(outcome.NextPhoneType) ? "no more devices" : "trying " + DeviceLabel(task, outcome.NextPhoneType);
+        return $"{CallLabel(task)} to {DeviceLabel(task, outcome.PhoneType)} {result}; {next}.";
     }
+
+    private static string CallLabel(AutoCallNoteTask task) => task.OfficerJSON is null ? "Robo Call" : "Officer Robo Call";
+    private static string DeviceLabel(AutoCallNoteTask task, string type)
+        => task.OfficerJSON is not null && type == RoboCallDevice.Custom ? "CustomPhone" : type;
 
     private static string Offset(int milliseconds)
     {

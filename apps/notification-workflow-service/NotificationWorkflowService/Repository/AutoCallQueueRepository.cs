@@ -57,6 +57,21 @@ public sealed class AutoCallQueueRepository(IConfiguration configuration, ILogge
         return jobId;
     }).ConfigureAwait(false);
 
+    public async Task<RoboCallOfficer?> ReadQueuedOfficerAsync(Guid enqueueKey, CancellationToken cancellationToken)
+        => await DatabaseDiagnostics.ExecuteAsync(logger, "AutoCallDB", "ReadQueuedOfficer", cancellationToken, async () =>
+        {
+            await using var connection = Connection();
+            await using var command = new SqlCommand(
+                "SELECT OptionsJSON FROM dbo.AutomatedCallQueue WHERE EnqueueIdempotencyKey=@Key", connection) { CommandTimeout = 30 };
+            command.Parameters.Add("@Key", SqlDbType.UniqueIdentifier).Value = enqueueKey;
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            object? result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            if (result is null) return null;
+            if (result is not string json) throw new InvalidOperationException("Queued officer options are missing.");
+            return RoboCallOfficer.ReadFromOptions(json)
+                ?? throw new InvalidOperationException("Existing Officer Robo Call has no officer snapshot.");
+        }).ConfigureAwait(false);
+
     internal static SqlCommand BuildEnqueueCommand(AutoCallRequest request)
     {
         AutoCallEnqueueService.ValidatePOGroupNum(request.POGroupNum);

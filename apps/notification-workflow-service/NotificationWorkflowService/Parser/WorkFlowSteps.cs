@@ -104,7 +104,8 @@
             this.repository = repository;
             this.noteService = noteService;
             this.autoCallService = autoCallService ?? new NotificationWorkflowService.Service.AutoCall.AutoCallEnqueueService(
-                new AutoCallQueueRepository(configuration, logger), new ParticipantCurrentDetailsRepository(configuration, logger));
+                new AutoCallQueueRepository(configuration, logger), new ParticipantCurrentDetailsRepository(configuration, logger),
+                new AutoCallOfficerRepository(configuration));
             setUpConnnectionStrings();
         }
 
@@ -857,6 +858,7 @@
             PriorityMapping.Add(17, "Text All Victims");
             PriorityMapping.Add(18, "Add Note");
             PriorityMapping.Add(19, "Auto Call Participant");
+            PriorityMapping.Add(20, "Officer Robo Call");
 
             Dictionary<int, String> RoleActionMapping = new Dictionary<int, String>();
             RoleActionMapping.Add(1, "Call");
