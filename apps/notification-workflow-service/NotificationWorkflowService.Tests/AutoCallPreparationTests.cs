@@ -75,14 +75,17 @@ public sealed class AutoCallPreparationTests
     private static AutoCallContactService TypedContacts(params AutoCallPhone[] phones) => new(new Routing(), new Phones(phones),
         new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["ConnectionStrings:TENANT"] = "unused" }).Build());
 
-    [Fact]
-    public async Task OfficerPreparationUsesPinnedIdentityAndSkipsMissingCellPhone()
+    [Theory]
+    [InlineData("CellPhone", 0)]
+    [InlineData("OfficePhone", 0)]
+    [InlineData("OfficePhone", 1)]
+    public async Task OfficerPreparationUsesPinnedIdentityAndSkipsMissingPhone(string device, int index)
     {
         foreach (bool missing in new[] { false, true })
         {
             var officers = new OfficerRoboCallTests.Officers
             {
-                Phones = missing ? [] : [new AutoCallPhone("CellPhone", "+15551234567")]
+                Phones = missing ? [] : [new AutoCallPhone(device, "+15551234567")]
             };
             var contacts = new AutoCallContactService(new Routing(), new Phones([new("CellPhone", "+19999999999")]),
                 new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["ConnectionStrings:TENANT"] = "routed" }).Build(),
@@ -90,9 +93,9 @@ public sealed class AutoCallPreparationTests
             string json = JsonSerializer.Serialize(new
             {
                 officer = JsonSerializer.SerializeToElement(new RoboCallOfficer(new("Primary", null, null, null), 91, "Officer"), RoboCallOfficer.QueueJson),
-                callDevices = new[] { new { type = "CellPhone", phoneNumber = (string?)null } }
+                callDevices = Enumerable.Range(0, index + 1).Select(_ => new { type = device, phoneNumber = (string?)null }).ToArray()
             });
-            var job = new AutoCallJob { SystemID = 1, OID = "oid", FlowId = 12, LeaseToken = Token, OptionsJSON = json };
+            var job = new AutoCallJob { SystemID = 1, OID = "oid", FlowId = 12, LeaseToken = Token, OptionsJSON = json, CallDeviceIndex = index };
             var repository = new Repository();
             var service = new AutoCallProcessingService(repository, contacts, Options());
             if (missing)

@@ -70,11 +70,18 @@ public sealed class AutoCallOfficerRepository(IConfiguration configuration, ILog
             command.Connection = connection;
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
             await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            var phones = await AutoCallPhoneRepository.ReadPhonesAsync(reader, cancellationToken).ConfigureAwait(false);
-            if (phones.Count > 1 || phones.Any(phone => phone.Type != "CellPhone") || await reader.NextResultAsync(cancellationToken).ConfigureAwait(false))
-                throw new InvalidOperationException("Officer phones must return a single result set with at most one CellPhone.");
-            return phones;
+            return await ReadPhonesAsync(reader, cancellationToken).ConfigureAwait(false);
         }).ConfigureAwait(false);
+
+    internal static async Task<IReadOnlyList<AutoCallPhone>> ReadPhonesAsync(DbDataReader reader, CancellationToken token)
+    {
+        var phones = await AutoCallPhoneRepository.ReadPhonesAsync(reader, token).ConfigureAwait(false);
+        if (phones.Any(phone => phone.Type is not ("CellPhone" or "OfficePhone")) ||
+            phones.GroupBy(phone => phone.Type).Any(group => group.Count() > 1) ||
+            await reader.NextResultAsync(token).ConfigureAwait(false))
+            throw new InvalidOperationException("Officer phones must return a single result set with at most one CellPhone and one OfficePhone.");
+        return phones;
+    }
 
     internal static SqlCommand BuildPhonesCommand(int officerId)
     {

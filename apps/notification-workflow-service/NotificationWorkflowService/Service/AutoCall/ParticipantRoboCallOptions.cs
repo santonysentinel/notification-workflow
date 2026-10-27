@@ -83,7 +83,7 @@ public sealed record ParticipantRoboCallOptions(int FlowId, bool ShowParticipant
         if (element.Value.ValueKind != JsonValueKind.Object) throw Invalid($"{path} must be a JSON object or null.");
         var typeElement = Single(element.Value, "Type");
         string? type = typeElement is { ValueKind: JsonValueKind.String } ? typeElement.Value.GetString() : null;
-        IReadOnlyList<string> allowedTypes = officer ? ["CellPhone", "CustomPhone"] : RoboCallDevice.Types;
+        IReadOnlyList<string> allowedTypes = officer ? ["CellPhone", "OfficePhone", "CustomPhone"] : RoboCallDevice.Types;
         type = allowedTypes.FirstOrDefault(known => string.Equals(known, type, StringComparison.OrdinalIgnoreCase))
             ?? throw Invalid($"{path}.Type must be one of {string.Join(", ", allowedTypes)}.");
         if (type == "CustomPhone") type = RoboCallDevice.Custom;

@@ -86,6 +86,8 @@ public sealed class OfficerRoboCallTests
     [Theory]
     [InlineData("Primary", "CellPhone")]
     [InlineData("RoleBased", "CellPhone")]
+    [InlineData("Primary", "OfficePhone")]
+    [InlineData("RoleBased", "OfficePhone")]
     [InlineData("Custom", "CustomPhone")]
     public void ParsesOfficerSelectionAndReusesCallDefaults(string type, string device)
     {
@@ -116,19 +118,82 @@ public sealed class OfficerRoboCallTests
     public void RejectsIncompleteOrInvalidOfficerOptions(string before, string after)
         => Assert.Throws<InvalidOperationException>(() => OfficerRoboCallOptions.Parse(Options().Replace(before, after)));
 
-    [Fact]
-    public void CustomOfficerCannotUseCellPhone()
-        => Assert.Throws<InvalidOperationException>(() => OfficerRoboCallOptions.Parse(Options("Custom", "CellPhone")));
+    [Theory]
+    [InlineData("CellPhone")]
+    [InlineData("OfficePhone")]
+    public void CustomOfficerCannotUseOfficerPhone(string device)
+        => Assert.Throws<InvalidOperationException>(() => OfficerRoboCallOptions.Parse(Options("Custom", device)));
+
+    [Theory]
+    [InlineData("CellPhone", "OfficePhone")]
+    [InlineData("OfficePhone", "CellPhone")]
+    [InlineData("OfficePhone", "OfficePhone")]
+    [InlineData("CustomPhone", "OfficePhone")]
+    public async Task OfficerDeviceOrderSurvivesEnqueue(string primary, string secondary)
+    {
+        var queue = new Queue();
+        string options = Options(primary: primary).Replace(
+            "\"SecondaryCallDevice\":{\"Type\":\"CustomPhone\",\"PhoneNumber\":\"+15555550101\"}",
+            $"\"SecondaryCallDevice\":{{\"Type\":\"{secondary}\",\"PhoneNumber\":null}}");
+        var parsed = OfficerRoboCallOptions.Parse(options);
+        Assert.Equal(secondary, parsed.CallOptions.SecondaryCallDevice!.Type);
+        await new AutoCallEnqueueService(queue, new ParticipantCurrentDetailsTests.Stub(), new Officers())
+            .EnqueueAsync(Alarm(options), "TENANT");
+        var contacts = new AutoCallContacts("oid", "TENANT",
+            [new("CellPhone", "+15555550100"), new("OfficePhone", "+15555550102")]);
+        var job = new AutoCallJob { OptionsJSON = queue.Request!.OptionsJson, CallDeviceIndex = 0 };
+        Assert.Equal(primary == "OfficePhone" ? "+15555550102" : "+15555550100",
+            AutoCallProcessingService.SelectRecipient(job, contacts, out _));
+        Assert.Equal(secondary == "OfficePhone" ? "+15555550102" : "+15555550100",
+            AutoCallProcessingService.SelectRecipient(new AutoCallJob { OptionsJSON = queue.Request.OptionsJson, CallDeviceIndex = 1 }, contacts, out _));
+    }
 
     [Fact]
     public void PrimaryOfficerCannotCarryRoleFields()
         => Assert.Throws<InvalidOperationException>(() => OfficerRoboCallOptions.Parse(Options().Replace("\"RoleBased\"", "\"Primary\"")));
 
-    [Fact]
-    public void OfficerOptionsDoNotChangeParticipantDeviceValidation()
+    [Theory]
+    [InlineData("CustomPhone")]
+    [InlineData("OfficePhone")]
+    public void OfficerOptionsDoNotChangeParticipantDeviceValidation(string device)
     {
-        var json = AutoCallEnqueueTests.RoboCallOptions(primary: """{"Type":"CustomPhone","PhoneNumber":"+15555550100"}""");
+        var json = AutoCallEnqueueTests.RoboCallOptions(primary: $"{{\"Type\":\"{device}\",\"PhoneNumber\":null}}");
         Assert.Throws<InvalidOperationException>(() => ParticipantRoboCallOptions.Parse(json));
+    }
+
+    [Theory]
+    [InlineData("CellPhone", "OfficePhone", true)]
+    [InlineData("OfficePhone", "CellPhone", true)]
+    [InlineData("OfficePhone", "OfficePhone", false)]
+    [InlineData("CellPhone", "CellPhone", false)]
+    [InlineData("OfficePhone", "HomePhone", false)]
+    public async Task PhoneReaderAllowsOneNumberPerOfficerDevice(string first, string second, bool valid)
+    {
+        using var table = new DataTable();
+        table.Columns.Add("phone_type", typeof(string));
+        table.Columns.Add("phone_number", typeof(string));
+        table.Rows.Add(first, "+15555550100");
+        table.Rows.Add(second, "+15555550102");
+        await using var reader = table.CreateDataReader();
+        if (valid)
+            Assert.Equal(2, (await AutoCallOfficerRepository.ReadPhonesAsync(reader, default)).Count);
+        else
+            await Assert.ThrowsAsync<InvalidOperationException>(() => AutoCallOfficerRepository.ReadPhonesAsync(reader, default));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public async Task PhoneReaderOmitsMissingOfficeNumber(string? number)
+    {
+        using var table = new DataTable();
+        table.Columns.Add("phone_type", typeof(string));
+        table.Columns.Add("phone_number", typeof(string));
+        table.Rows.Add("OfficePhone", (object?)number ?? DBNull.Value);
+        table.Rows.Add("CellPhone", "+15555550100");
+        await using var reader = table.CreateDataReader();
+        Assert.Equal("CellPhone", Assert.Single(await AutoCallOfficerRepository.ReadPhonesAsync(reader, default)).Type);
     }
 
     [Fact]
